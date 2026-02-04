@@ -15,18 +15,13 @@ from typing import Dict, Optional, Any, List
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 
-import redis.asyncio as redis
 import socketio
+from backend.database.redis_manager import redis_manager, REDIS_SESSION_PREFIX, REDIS_GAME_PREFIX, SESSION_EXPIRY
 
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
-REDIS_SESSION_PREFIX = 'arena:session:'
-REDIS_GAME_PREFIX = 'arena:game:'
-SESSION_EXPIRY = 3600  # 1 hour session expiry
 
 # Socket.IO configuration for resilient connections
 PING_INTERVAL = 25  # seconds
@@ -88,18 +83,16 @@ class SocketManager:
     
     def __init__(
         self,
-        redis_url: str = REDIS_URL,
         cors_origins: List[str] = None
     ):
         """
         Initialize the Socket Manager.
         
         Args:
-            redis_url: Redis connection URL
             cors_origins: List of allowed CORS origins
         """
-        self.redis_url = redis_url
-        self.redis_client: Optional[redis.Redis] = None
+        # Use global RedisManager instance
+        self.redis_manager = redis_manager
         
         # Create Socket.IO server with heartbeat configuration
         self.sio = socketio.AsyncServer(
@@ -118,24 +111,17 @@ class SocketManager:
         self._game_state_providers: Dict[str, Any] = {}
     
     async def init_redis(self):
-        """Initialize Redis connection."""
-        try:
-            self.redis_client = redis.from_url(
-                self.redis_url,
-                encoding='utf-8',
-                decode_responses=True
-            )
-            await self.redis_client.ping()
-            print(f"✓ Redis connected: {self.redis_url}")
-        except Exception as e:
-            print(f"⚠ Redis connection failed: {e}")
+        """Initialize Redis connection via RedisManager."""
+        connected = await self.redis_manager.connect()
+        if connected:
+            print(f"✓ Redis connected via RedisManager")
+        else:
+            print(f"⚠ Redis connection failed")
             print("  Falling back to in-memory session storage")
-            self.redis_client = None
     
     async def close_redis(self):
-        """Close Redis connection."""
-        if self.redis_client:
-            await self.redis_client.close()
+        """Close Redis connection via RedisManager."""
+        await self.redis_manager.disconnect()
     
     def register_game_provider(self, game_type: str, provider: Any):
         """
@@ -177,24 +163,23 @@ class SocketManager:
         # Store in cache
         self._session_cache[sid] = session
         
-        # Store in Redis if available
-        if self.redis_client:
-            try:
-                # Store session by SID
-                await self.redis_client.setex(
-                    f"{REDIS_SESSION_PREFIX}sid:{sid}",
-                    SESSION_EXPIRY,
-                    json.dumps(session.to_dict())
-                )
-                
-                # Map wallet -> SID for reconnection lookup
-                await self.redis_client.setex(
-                    f"{REDIS_SESSION_PREFIX}wallet:{wallet_address.lower()}",
-                    SESSION_EXPIRY,
-                    sid
-                )
-            except Exception as e:
-                print(f"Redis session create error: {e}")
+        # Store in Redis via RedisManager
+        try:
+            # Store session by SID
+            await self.redis_manager.save_session(
+                f"{REDIS_SESSION_PREFIX}sid:{sid}",
+                session.to_dict(),
+                SESSION_EXPIRY
+            )
+            
+            # Map wallet -> SID for reconnection lookup
+            await self.redis_manager.save_session(
+                f"{REDIS_SESSION_PREFIX}wallet:{wallet_address.lower()}",
+                {"sid": sid},
+                SESSION_EXPIRY
+            )
+        except Exception as e:
+            print(f"Redis session create error: {e}")
         
         return session
     
@@ -212,16 +197,15 @@ class SocketManager:
         if sid in self._session_cache:
             return self._session_cache[sid]
         
-        # Check Redis if available
-        if self.redis_client:
-            try:
-                data = await self.redis_client.get(f"{REDIS_SESSION_PREFIX}sid:{sid}")
-                if data:
-                    session = PlayerSession.from_dict(json.loads(data))
-                    self._session_cache[sid] = session
-                    return session
-            except Exception as e:
-                print(f"Redis session get error: {e}")
+        # Check Redis via RedisManager
+        try:
+            data = await self.redis_manager.get_session(f"{REDIS_SESSION_PREFIX}sid:{sid}")
+            if data:
+                session = PlayerSession.from_dict(data)
+                self._session_cache[sid] = session
+                return session
+        except Exception as e:
+            print(f"Redis session get error: {e}")
         
         return None
     
@@ -242,14 +226,13 @@ class SocketManager:
             if session.wallet_address.lower() == wallet_lower:
                 return session
         
-        # Check Redis if available
-        if self.redis_client:
-            try:
-                sid = await self.redis_client.get(f"{REDIS_SESSION_PREFIX}wallet:{wallet_lower}")
-                if sid:
-                    return await self.get_session(sid)
-            except Exception as e:
-                print(f"Redis wallet lookup error: {e}")
+        # Check Redis via RedisManager
+        try:
+            data = await self.redis_manager.get_session(f"{REDIS_SESSION_PREFIX}wallet:{wallet_lower}")
+            if data and "sid" in data:
+                return await self.get_session(data["sid"])
+        except Exception as e:
+            print(f"Redis wallet lookup error: {e}")
         
         return None
     
@@ -278,16 +261,15 @@ class SocketManager:
         # Update cache
         self._session_cache[sid] = session
         
-        # Update Redis if available
-        if self.redis_client:
-            try:
-                await self.redis_client.setex(
-                    f"{REDIS_SESSION_PREFIX}sid:{sid}",
-                    SESSION_EXPIRY,
-                    json.dumps(session.to_dict())
-                )
-            except Exception as e:
-                print(f"Redis session update error: {e}")
+        # Update Redis via RedisManager
+        try:
+            await self.redis_manager.save_session(
+                f"{REDIS_SESSION_PREFIX}sid:{sid}",
+                session.to_dict(),
+                SESSION_EXPIRY
+            )
+        except Exception as e:
+            print(f"Redis session update error: {e}")
         
         return session
     
@@ -303,10 +285,10 @@ class SocketManager:
         """
         session = self._session_cache.pop(sid, None)
         
-        if self.redis_client and session:
+        if session:
             try:
-                await self.redis_client.delete(f"{REDIS_SESSION_PREFIX}sid:{sid}")
-                await self.redis_client.delete(
+                await self.redis_manager.delete_session(f"{REDIS_SESSION_PREFIX}sid:{sid}")
+                await self.redis_manager.delete_session(
                     f"{REDIS_SESSION_PREFIX}wallet:{session.wallet_address.lower()}"
                 )
             except Exception as e:
@@ -330,10 +312,11 @@ class SocketManager:
         await self.update_session(sid, current_game_id=game_id)
         
         # Store game -> players mapping in Redis
-        if self.redis_client:
+        redis_client = self.redis_manager.client
+        if redis_client:
             try:
-                await self.redis_client.sadd(f"{REDIS_GAME_PREFIX}{game_id}:players", sid)
-                await self.redis_client.setex(
+                await redis_client.sadd(f"{REDIS_GAME_PREFIX}{game_id}:players", sid)
+                await redis_client.setex(
                     f"{REDIS_GAME_PREFIX}{game_id}:type",
                     SESSION_EXPIRY * 2,
                     game_type
@@ -355,9 +338,10 @@ class SocketManager:
         await self.update_session(sid, current_game_id=None)
         
         # Remove from game -> players mapping
-        if self.redis_client:
+        redis_client = self.redis_manager.client
+        if redis_client:
             try:
-                await self.redis_client.srem(f"{REDIS_GAME_PREFIX}{game_id}:players", sid)
+                await redis_client.srem(f"{REDIS_GAME_PREFIX}{game_id}:players", sid)
             except Exception as e:
                 print(f"Redis game leave error: {e}")
         
@@ -374,9 +358,10 @@ class SocketManager:
         Returns:
             List of player socket IDs
         """
-        if self.redis_client:
+        redis_client = self.redis_manager.client
+        if redis_client:
             try:
-                players = await self.redis_client.smembers(f"{REDIS_GAME_PREFIX}{game_id}:players")
+                players = await redis_client.smembers(f"{REDIS_GAME_PREFIX}{game_id}:players")
                 return list(players)
             except Exception as e:
                 print(f"Redis get game players error: {e}")
@@ -435,13 +420,14 @@ class SocketManager:
             await self.sio.enter_room(new_sid, game_id)
             
             # Update player SID in game mapping
-            if self.redis_client:
+            redis_client = self.redis_manager.client
+            if redis_client:
                 try:
-                    await self.redis_client.srem(
+                    await redis_client.srem(
                         f"{REDIS_GAME_PREFIX}{game_id}:players",
                         old_session.socket_sid
                     )
-                    await self.redis_client.sadd(
+                    await redis_client.sadd(
                         f"{REDIS_GAME_PREFIX}{game_id}:players",
                         new_sid
                     )

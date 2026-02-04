@@ -117,13 +117,9 @@ werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
 # DATABASE INITIALIZATION
 # ============================================================================
 
-# Initialize database on startup
-try:
-    init_db()
-    print("✓ Database initialized")
-except Exception as e:
-    print(f"⚠ Database initialization failed: {e}")
-    print("  Make sure MySQL is running and credentials are correct")
+# Note: Database initialization with retry logic is performed in the async startup handler
+# to properly wait for MySQL to be ready in Docker environments.
+# The init_db() function now includes retry logic for container startup scenarios.
 
 
 # ============================================================================
@@ -134,7 +130,21 @@ except Exception as e:
 async def startup_event():
     """
     Initialize services and restore persisted game states on server startup.
+    
+    This handler runs after the app is created and properly waits for:
+    - MySQL database to be ready (with retry logic)
+    - Redis connection
+    - Game state restoration
     """
+    # Initialize database with retry logic (waits for MySQL to be ready)
+    print("Initializing database...")
+    db_success = init_db(retry=True)
+    if db_success:
+        print("✓ Database initialized and tables created")
+    else:
+        print("⚠ Database initialization failed - some features may not work")
+        print("  Make sure MySQL is running and credentials are correct")
+    
     # Connect to Redis
     await redis_manager.connect()
     print("✓ RedisManager connected")

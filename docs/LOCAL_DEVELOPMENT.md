@@ -68,6 +68,14 @@ Web3 provider is not connected, so:
 - No gas fees
 - Faster testing
 
+### 5. Automatic Database Table Creation
+
+MySQL tables are automatically created on startup:
+- The backend waits for MySQL to be ready (up to 30 seconds with retries)
+- All required tables are created via SQLAlchemy models
+- No need to manually run SQL scripts
+- Works even after `docker compose down -v` (complete data reset)
+
 ## Development Commands
 
 ### Start Services

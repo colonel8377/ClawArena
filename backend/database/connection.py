@@ -4,16 +4,20 @@ Database connection setup using SQLAlchemy with async support.
 This module handles:
 - Async database engine creation
 - Async session management
-- Database initialization
+- Database initialization with retry logic
 - Sync fallback for compatibility
+- Automatic table creation for local debug mode
 """
 
 import os
+import time
+import asyncio
 from typing import AsyncGenerator
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool, NullPool
+from sqlalchemy.exc import OperationalError
 from contextlib import contextmanager, asynccontextmanager
 
 from .models import Base
@@ -24,6 +28,10 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', '')
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '3306')
 DB_NAME = os.getenv('DB_NAME', 'agent_arena')
+
+# Retry configuration for database connection
+DB_CONNECT_RETRIES = int(os.getenv('DB_CONNECT_RETRIES', '10'))
+DB_CONNECT_RETRY_DELAY = int(os.getenv('DB_CONNECT_RETRY_DELAY', '3'))
 
 # Create sync database URL (for backwards compatibility)
 SYNC_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -72,30 +80,119 @@ else:
     AsyncSessionLocal = None
 
 
-def init_db():
+def wait_for_db(max_retries: int = DB_CONNECT_RETRIES, retry_delay: int = DB_CONNECT_RETRY_DELAY) -> bool:
+    """
+    Wait for database to be ready with retry logic.
+    
+    Args:
+        max_retries: Maximum number of connection attempts
+        retry_delay: Seconds to wait between retries
+        
+    Returns:
+        True if connection successful, False otherwise
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print(f"✓ Database connection established (attempt {attempt})")
+            return True
+        except OperationalError as e:
+            if attempt < max_retries:
+                print(f"⏳ Waiting for database... (attempt {attempt}/{max_retries})")
+                time.sleep(retry_delay)
+            else:
+                print(f"✗ Database connection failed after {max_retries} attempts: {e}")
+                return False
+    # This should never be reached, but satisfies type checker
+    return False
+
+
+def init_db(retry: bool = True) -> bool:
     """
     Initialize the database by creating all tables.
     
-    This should be called once at application startup.
+    Waits for database to be ready and creates all tables defined in models.
+    
+    Args:
+        retry: Whether to retry connection if database is not ready
+        
+    Returns:
+        True if initialization successful, False otherwise
     """
-    Base.metadata.create_all(bind=engine)
-    print("Database initialized successfully")
+    if retry:
+        if not wait_for_db():
+            return False
+    
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("✓ Database tables created successfully")
+        return True
+    except Exception as e:
+        print(f"✗ Database initialization failed: {e}")
+        return False
 
 
-async def async_init_db():
+async def async_wait_for_db(max_retries: int = DB_CONNECT_RETRIES, retry_delay: int = DB_CONNECT_RETRY_DELAY) -> bool:
+    """
+    Async version: Wait for database to be ready with retry logic.
+    
+    Args:
+        max_retries: Maximum number of connection attempts
+        retry_delay: Seconds to wait between retries
+        
+    Returns:
+        True if connection successful, False otherwise
+    """
+    if async_engine is None:
+        # Fallback to sync version
+        return wait_for_db(max_retries, retry_delay)
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with async_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            print(f"✓ Database connection established (attempt {attempt})")
+            return True
+        except OperationalError as e:
+            if attempt < max_retries:
+                print(f"⏳ Waiting for database... (attempt {attempt}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+            else:
+                print(f"✗ Database connection failed after {max_retries} attempts: {e}")
+                return False
+    # This should never be reached, but satisfies type checker
+    return False
+
+
+async def async_init_db(retry: bool = True) -> bool:
     """
     Async version of database initialization.
     
-    Creates all tables asynchronously.
+    Waits for database to be ready and creates all tables asynchronously.
+    
+    Args:
+        retry: Whether to retry connection if database is not ready
+        
+    Returns:
+        True if initialization successful, False otherwise
     """
     if async_engine is None:
         # Fallback to sync initialization
-        init_db()
-        return
+        return init_db(retry)
     
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("Async database initialized successfully")
+    if retry:
+        if not await async_wait_for_db():
+            return False
+    
+    try:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        print("✓ Database tables created successfully (async)")
+        return True
+    except Exception as e:
+        print(f"✗ Async database initialization failed: {e}")
+        return False
 
 
 @contextmanager

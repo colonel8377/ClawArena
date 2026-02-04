@@ -11,6 +11,7 @@ The engine is designed for AI Agent gameplay with robust timeout handling.
 """
 
 import asyncio
+import random
 import uuid
 from typing import Dict, List, Optional, Any, Callable, Awaitable
 from enum import Enum
@@ -466,8 +467,6 @@ class WerewolfEngine(BaseGame):
         - Night (Witch): Skip (to preserve strategic potion use)
         - Voting: Random vote on alive player
         """
-        import random
-        
         if not player.is_zombie():
             # Non-zombie timeout: just skip (original behavior)
             return

@@ -45,6 +45,7 @@ SESSION_EXPIRY = 3600  # 1 hour
 LOCK_TIMEOUT = 10  # seconds
 LOCK_RETRY_DELAY = 0.1  # seconds
 GAME_STATE_EXPIRY = 86400  # 24 hours
+NONCE_EXPIRY = 86400  # 24 hours (same as game state)
 
 
 # ============================================================================
@@ -101,7 +102,7 @@ class RedisManager:
                     self._connected = False
             
             try:
-                self._redis = await redis.from_url(
+                self._redis = redis.from_url(
                     self.redis_url,
                     encoding="utf-8",
                     decode_responses=True,
@@ -237,7 +238,7 @@ class RedisManager:
         
         # Set expiry on first use (prevent memory leak)
         if new_nonce == 1:
-            await self._redis.expire(nonce_key, 86400)  # 24 hour expiry
+            await self._redis.expire(nonce_key, NONCE_EXPIRY)
         
         # Return previous value (new_nonce - 1)
         return new_nonce - 1

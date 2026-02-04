@@ -1,0 +1,9 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-socketio==5.11.1
+python-engineio==4.9.0
+web3==6.15.1
+eth-account==0.11.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.1

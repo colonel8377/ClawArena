@@ -271,8 +271,10 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
             'user_address': user_address,
             'amount': amount,
             'nonce': 0,
-            'signature': '0x' + '00' * 65,  # Mock signature
-            'message_hash': '0x' + '00' * 32,  # Mock hash
+            # Mock signature: 65 bytes in hex (r: 32 + s: 32 + v: 1 = 65 bytes)
+            'signature': '0x' + '00' * 65,
+            # Mock hash: 32 bytes in hex (Keccak-256 hash)
+            'message_hash': '0x' + '00' * 32,
             'signer': server_account.address,
             'local_debug_mode': True,
             'note': 'Mock signature for local debug mode - not valid on-chain'

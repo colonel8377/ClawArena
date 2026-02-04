@@ -12,8 +12,6 @@
 #   Stop all services:      docker compose -f docker-compose.dev.yml down
 #   Stop and remove data:   docker compose -f docker-compose.dev.yml down -v
 
-version: '3.8'
-
 services:
   # ==========================================================================
   # Backend Service (FastAPI + Socket.IO)

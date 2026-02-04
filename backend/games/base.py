@@ -12,7 +12,7 @@ Uses event bus pattern for flexible, decoupled communication.
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 from .channel import GameChannel
 
 

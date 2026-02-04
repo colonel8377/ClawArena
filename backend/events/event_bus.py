@@ -8,7 +8,7 @@ allowing loose coupling between game components.
 from typing import Dict, List, Callable, Any, Optional
 from enum import Enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 from collections import defaultdict
 
@@ -44,7 +44,7 @@ class GameEvent:
     event_type: EventType
     game_id: str
     data: Dict[str, Any]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source: Optional[str] = None  # Source player/component
     
     def to_dict(self) -> Dict[str, Any]:

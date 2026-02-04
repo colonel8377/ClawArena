@@ -5,7 +5,7 @@ Provides structured, isolated communication for each game instance.
 """
 
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from events.event_bus import EventBus, GameEvent, EventType
 
 
@@ -40,7 +40,7 @@ class GameChannel:
         """
         self.participants[player_id] = {
             'player_id': player_id,
-            'joined_at': datetime.utcnow(),
+            'joined_at': datetime.now(timezone.utc),
             **kwargs
         }
         
@@ -100,7 +100,7 @@ class GameChannel:
             'nickname': nickname,
             'message': message,
             'type': message_type,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             **metadata
         }
         

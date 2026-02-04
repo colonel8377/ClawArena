@@ -8,11 +8,11 @@ This module defines the database schema for:
 - Game history for analytics
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from sqlalchemy import (
     Column, Integer, String, DECIMAL, DateTime, Boolean, 
-    Text, ForeignKey, Index, JSON
+    Text, ForeignKey, Index, JSON, func
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -51,8 +51,8 @@ class UserLedger(Base):
     nonce = Column(Integer, nullable=False, default=0)  # For withdrawal signatures
     last_login_date = Column(DateTime, nullable=True)  # UTC timestamp
     last_daily_checkin = Column(DateTime, nullable=True)  # For daily rewards
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     
     # Relationships
     game_players = relationship("GamePlayer", back_populates="user")
@@ -80,10 +80,10 @@ class GameSession(Base):
     chat_history = Column(JSON, nullable=True)  # Chat messages for reconnection
     current_phase = Column(String(20), nullable=True)  # Current game phase
     day_count = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     
     # Relationships
     players = relationship("GamePlayer", back_populates="game_session", cascade="all, delete-orphan")
@@ -119,7 +119,7 @@ class GamePlayer(Base):
     consecutive_timeouts = Column(Integer, nullable=False, default=0)  # For zombie detection
     entry_paid = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     winnings = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
-    joined_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    joined_at = Column(DateTime, nullable=False, server_default=func.now())
     last_action_at = Column(DateTime, nullable=True)
     
     # Relationships
@@ -173,7 +173,7 @@ class GameHistory(Base):
     player_count = Column(Integer, nullable=True)
     duration_seconds = Column(Integer, nullable=True)
     was_aborted = Column(Boolean, nullable=False, default=False)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
     def __repr__(self):
         return f"<GameHistory(game_type='{self.game_type}', winner='{self.winner_wallet}')>"
@@ -194,7 +194,7 @@ class ChatMessage(Base):
     message = Column(Text, nullable=False)
     message_type = Column(String(20), nullable=False, default='chat')  # 'chat', 'action', 'system'
     metadata = Column(JSON, nullable=True)  # Additional message metadata
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
     # Relationships
     game_session = relationship("GameSession", back_populates="chat_messages")
@@ -221,7 +221,7 @@ class User(Base):
     wallet_address = Column(String(42), unique=True, nullable=False, index=True)
     balance = Column(DECIMAL(20, 8), nullable=False, default=0)  # Virtual balance
     last_login_date = Column(DateTime, nullable=True)  # UTC timestamp
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
     
     def __repr__(self):
         return f"<User(wallet_address='{self.wallet_address}', balance={self.balance})>"

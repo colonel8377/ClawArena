@@ -162,18 +162,15 @@ class WerewolfGame(BaseGame):
         - hunter_shoot: Hunter shoots someone when dying (target_sid)
         - chat: Send a chat message (message in kwargs)
         """
-        player = self._get_player_by_sid(sid)
-        if not player or not player['is_alive']:
-            # Allow dead players to chat
-            if action == 'chat':
-                message = kwargs.get('message', '')
-                return {'success': True, 'chat': self.add_chat_message(sid, message)}
-            return {'success': False, 'error': 'Player not found or dead'}
-        
-        # Handle chat action
+        # Handle chat action (allowed for all players, dead or alive)
         if action == 'chat':
             message = kwargs.get('message', '')
             return {'success': True, 'chat': self.add_chat_message(sid, message)}
+        
+        # For non-chat actions, validate player exists and is alive
+        player = self._get_player_by_sid(sid)
+        if not player or not player['is_alive']:
+            return {'success': False, 'error': 'Player not found or dead'}
         
         # Route to appropriate handler
         if action == 'night_kill':

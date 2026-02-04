@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
+import enum
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from .models import (
     PhaseEnum,
     RoleEnum,
     Base,
+    _default_flags,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,6 +51,11 @@ class ProcessResult:
     data: Optional[Dict] = None
 
 
+class SeerResult(str, enum.Enum):
+    GOOD = "GOOD"
+    BAD = "BAD"
+
+
 class WerewolfEngine:
     """
     Core Werewolf game engine with immediate persistence.
@@ -56,6 +63,31 @@ class WerewolfEngine:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self.session_factory = session_factory
+
+    async def create_game(self, players: Dict[str, RoleEnum]) -> int:
+        """
+        Create a new game with predefined roles.
+
+        Args:
+            players: mapping of agent_id -> RoleEnum
+
+        Returns:
+            game_id of the newly created session
+        """
+        async with self.session_factory() as session:
+            game = GameSession()
+            session.add(game)
+            await session.flush()
+            for agent_id, role in players.items():
+                gp = GamePlayer(
+                    session_id=game.id,
+                    agent_id=agent_id,
+                    role=role,
+                    status_flags=_default_flags(role),
+                )
+                session.add(gp)
+            await session.commit()
+            return game.id
 
     # ------------------------------- Public API --------------------------- #
 
@@ -142,7 +174,8 @@ class WerewolfEngine:
             return await self._log_and_response(
                 session, game, actor.id, action, target_id, "Invalid target"
             )
-        game.state_flags["seer_last_result"] = "BAD" if target.role == RoleEnum.WEREWOLF else "GOOD"
+        result = SeerResult.BAD if target.role == RoleEnum.WEREWOLF else SeerResult.GOOD
+        game.state_flags["seer_last_result"] = result.value
         return await self._advance(session, game, PhaseEnum.NIGHT_WITCH, actor, action, target)
 
     async def _handle_witch(
@@ -239,12 +272,12 @@ class WerewolfEngine:
             )
         # Persist vote
         votes = game.state_flags.get("votes", {})
-        votes[str(actor.id)] = target.id
+        votes[int(actor.id)] = target.id  # enforce int keys
         game.state_flags["votes"] = votes
 
         # For simplicity, resolve when all alive players have voted
         alive_ids = {p.id for p in players.values() if p.is_alive}
-        if set(map(int, votes.keys())) >= alive_ids:
+        if set(votes.keys()) >= alive_ids:
             await self._resolve_votes(game, players)
             if game.phase != PhaseEnum.FINISHED and game.state_flags.get("hunter_pending"):
                 game.phase = PhaseEnum.DEATH_RATTLE
@@ -403,7 +436,7 @@ class WerewolfEngine:
             game.phase = PhaseEnum.FINISHED
             game.state_flags["winner"] = "TOWN"
             await self._finalize_game(game, "TOWN")
-        elif not villagers or not gods:
+        elif (not villagers) or (not gods):
             game.phase = PhaseEnum.FINISHED
             game.state_flags["winner"] = "WOLF"
             await self._finalize_game(game, "WOLF")

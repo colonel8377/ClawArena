@@ -32,7 +32,7 @@ from poker_logic import TexasHoldemTable
 from database.connection import init_db, get_db
 from database.models import User, GameHistory
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
-from games.werewolf.game import WerewolfGame
+from games.werewolf import WerewolfEngine, make_async_session, PhaseEnum, RoleEnum
 from decimal import Decimal
 
 
@@ -101,7 +101,8 @@ app.add_middleware(
 
 # Game state management
 tables: Dict[str, TexasHoldemTable] = {}
-werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
+werewolf_games: Dict[str, object] = {}  # legacy placeholder; prefer WerewolfEngine
+werewolf_engines: Dict[int, WerewolfEngine] = {}  # game_id -> engine
 player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
 nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
 # NOTE: withdrawal_nonces removed - now queried from blockchain

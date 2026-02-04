@@ -547,6 +547,217 @@ class SocketManager:
             'refunded': True,
             'timestamp': datetime.utcnow().isoformat()
         })
+    
+    # ========================================================================
+    # POKER DUAL-CHANNEL BROADCAST
+    # ========================================================================
+    
+    async def broadcast_poker_move(
+        self,
+        game_id: str,
+        move_result: Dict[str, Any],
+        game_state: Dict[str, Any],
+        player_hole_cards: Dict[str, List[str]]
+    ):
+        """
+        Broadcast a poker move with dual-channel logic.
+        
+        This implements the crucial dual-channel broadcast:
+        1. player_private: Sent ONLY to each specific player with their hole_cards
+        2. game_broadcast: Sent to ALL players AND spectators with sanitized public state
+        
+        Args:
+            game_id: Game session ID
+            move_result: Result from poker engine's process_move
+            game_state: Current game state (sanitized for public)
+            player_hole_cards: Dict mapping player_sid -> their hole cards
+        """
+        timestamp = datetime.utcnow().isoformat()
+        
+        # Construct public broadcast (sanitized - NO hole cards of active players)
+        public_data = {
+            'game_id': game_id,
+            'phase': game_state.get('phase'),
+            'public_board': game_state.get('community_cards', []),
+            'pot_size': game_state.get('pot', 0),
+            'current_bet': game_state.get('current_bet', 0),
+            'current_player': game_state.get('current_player'),
+            'last_action': {
+                'player_sid': move_result.get('player_sid'),
+                'player_nickname': move_result.get('player_nickname'),
+                'action': move_result.get('action'),
+                'amount': move_result.get('amount', 0)
+            },
+            'chat': {
+                'nickname': move_result.get('player_nickname'),
+                'message': move_result.get('chat'),
+                'action': move_result.get('action')
+            } if move_result.get('chat') else None,
+            'players': [
+                {
+                    'sid': p['sid'],
+                    'nickname': p['nickname'],
+                    'chips': p['chips'],
+                    'current_bet': p['current_bet'],
+                    'status': p['status'],
+                    'last_action': p.get('last_action')
+                }
+                for p in game_state.get('players', [])
+            ],
+            'timestamp': timestamp
+        }
+        
+        # Send public broadcast to entire game room (agents + spectators)
+        await self.broadcast_to_game(game_id, 'game_broadcast', public_data)
+        
+        # Send private state to each player with their hole cards
+        for player_sid, hole_cards in player_hole_cards.items():
+            private_data = {
+                'game_id': game_id,
+                'hole_cards': hole_cards,
+                'your_turn': game_state.get('current_player') == player_sid,
+                'timestamp': timestamp
+            }
+            await self.send_to_player(player_sid, 'player_private', private_data)
+    
+    async def broadcast_poker_phase_change(
+        self,
+        game_id: str,
+        phase_result: Dict[str, Any],
+        player_hole_cards: Dict[str, List[str]]
+    ):
+        """
+        Broadcast a poker phase change (flop, turn, river).
+        
+        Args:
+            game_id: Game session ID
+            phase_result: Result from poker engine's advance_phase
+            player_hole_cards: Dict mapping player_sid -> their hole cards
+        """
+        timestamp = datetime.utcnow().isoformat()
+        
+        # Public broadcast with new community cards
+        public_data = {
+            'game_id': game_id,
+            'event': 'phase_change',
+            'phase': phase_result.get('phase'),
+            'community_cards': phase_result.get('community_cards', []),
+            'current_player': phase_result.get('current_player'),
+            'timestamp': timestamp
+        }
+        
+        await self.broadcast_to_game(game_id, 'game_broadcast', public_data)
+        
+        # Send private state to each player
+        for player_sid, hole_cards in player_hole_cards.items():
+            private_data = {
+                'game_id': game_id,
+                'hole_cards': hole_cards,
+                'your_turn': phase_result.get('current_player') == player_sid,
+                'timestamp': timestamp
+            }
+            await self.send_to_player(player_sid, 'player_private', private_data)
+    
+    async def broadcast_showdown_reveal(
+        self,
+        game_id: str,
+        showdown_result: Dict[str, Any]
+    ):
+        """
+        Broadcast showdown reveal - all hole cards are now public.
+        
+        This is called when the hand reaches showdown, revealing all
+        players' hole cards to everyone (agents and spectators).
+        
+        Args:
+            game_id: Game session ID
+            showdown_result: Result from poker engine's showdown
+        """
+        timestamp = datetime.utcnow().isoformat()
+        
+        # At showdown, ALL hole cards are revealed publicly
+        reveal_data = {
+            'game_id': game_id,
+            'event': 'showdown_reveal',
+            'phase': 'showdown',
+            'community_cards': showdown_result.get('community_cards', []),
+            'player_hands': showdown_result.get('player_hands', {}),
+            'winners': showdown_result.get('winners', []),
+            'timestamp': timestamp
+        }
+        
+        await self.broadcast_to_game(game_id, 'showdown_reveal', reveal_data)
+    
+    async def broadcast_poker_chat(
+        self,
+        game_id: str,
+        player_sid: str,
+        player_nickname: str,
+        message: str,
+        action: Optional[str] = None
+    ):
+        """
+        Broadcast a chat/bluff message from a player.
+        
+        Chat messages are always public and visible to all players and spectators.
+        
+        Args:
+            game_id: Game session ID
+            player_sid: Socket ID of the player who sent the message
+            player_nickname: Display name of the player
+            message: The chat/bluff message
+            action: Optional action that accompanied the message
+        """
+        timestamp = datetime.utcnow().isoformat()
+        
+        chat_data = {
+            'game_id': game_id,
+            'event': 'chat',
+            'player_sid': player_sid,
+            'nickname': player_nickname,
+            'message': message,
+            'action': action,
+            'timestamp': timestamp
+        }
+        
+        await self.broadcast_to_game(game_id, 'game_broadcast', chat_data)
+    
+    async def send_poker_game_snapshot(
+        self,
+        sid: str,
+        game_id: str,
+        game_state: Dict[str, Any],
+        hole_cards: List[str],
+        chat_history: List[Dict[str, Any]]
+    ):
+        """
+        Send a complete game snapshot to a reconnecting player.
+        
+        Used when a player reconnects to restore their game context.
+        
+        Args:
+            sid: Socket.IO session ID of the reconnecting player
+            game_id: Game session ID
+            game_state: Current public game state
+            hole_cards: The player's hole cards
+            chat_history: Recent chat history
+        """
+        snapshot_data = {
+            'game_id': game_id,
+            'game_type': 'poker',
+            'phase': game_state.get('phase'),
+            'hole_cards': hole_cards,
+            'community_cards': game_state.get('community_cards', []),
+            'pot_size': game_state.get('pot', 0),
+            'current_bet': game_state.get('current_bet', 0),
+            'current_player': game_state.get('current_player'),
+            'your_turn': game_state.get('current_player') == sid,
+            'players': game_state.get('players', []),
+            'chat_history': chat_history,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        await self.sio.emit('GAME_SNAPSHOT', snapshot_data, room=sid)
 
 
 # ============================================================================

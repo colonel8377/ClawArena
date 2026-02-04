@@ -140,6 +140,33 @@ game.process_action(sid="player1", action="chat", message="Who's suspicious?")
 
 ## Chat System
 
+### Per-Game Communication Channels
+
+**Important**: Each game instance has its own isolated communication channel.
+
+- **Channel ID**: Each game's `game_id` serves as its unique channel identifier
+- **Isolation**: Messages in one game are completely isolated from other games
+- **Persistence**: All messages are scoped to their specific game session
+
+**Example**:
+```python
+# Game 1 has its own channel
+texas_game_1 = TexasGame(game_id="texas_room_1")
+texas_game_1.add_chat_message("player1", "Hello from room 1")
+
+# Game 2 has a separate, isolated channel
+texas_game_2 = TexasGame(game_id="texas_room_2") 
+texas_game_2.add_chat_message("player2", "Hello from room 2")
+
+# Messages are isolated
+assert len(texas_game_1.get_chat_history()) == 1
+assert len(texas_game_2.get_chat_history()) == 1
+
+# Each game has its own channel ID
+assert texas_game_1.get_channel_id() == "texas_room_1"
+assert texas_game_2.get_channel_id() == "texas_room_2"
+```
+
 ### Unified Chat Feature
 
 All games now have a built-in chat system through `BaseGame`:

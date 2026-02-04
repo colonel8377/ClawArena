@@ -52,7 +52,7 @@ class WerewolfGame(BaseGame):
         Args:
             game_id: Unique identifier for this game
         """
-        super().__init__(game_id)
+        super().__init__(game_id, game_type="werewolf")
         self.phase = WerewolfPhase.WAITING
         self.players: List[Dict] = []
         self.day_count = 0
@@ -96,15 +96,25 @@ class WerewolfGame(BaseGame):
         if any(p['sid'] == sid for p in self.players):
             return False
         
+        nickname = kwargs.get('nickname', f'Player{len(self.players) + 1}')
+        
         player = {
             'sid': sid,
             'wallet_address': wallet_address,
             'role': None,  # Assigned when game starts
             'is_alive': True,
-            'nickname': kwargs.get('nickname', f'Player{len(self.players) + 1}')
+            'nickname': nickname
         }
         
         self.players.append(player)
+        
+        # Register with game channel
+        self.channel.add_participant(
+            player_id=sid,
+            wallet_address=wallet_address,
+            nickname=nickname
+        )
+        
         return True
     
     def remove_player(self, sid: str) -> bool:

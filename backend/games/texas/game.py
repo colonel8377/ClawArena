@@ -30,7 +30,7 @@ class TexasGame(BaseGame):
             small_blind: Small blind amount
             big_blind: Big blind amount
         """
-        super().__init__(game_id)
+        super().__init__(game_id, game_type="texas")
         
         # Use PokerEngine as the game logic engine
         self.engine = PokerEngine(
@@ -67,6 +67,13 @@ class TexasGame(BaseGame):
             'buy_in': buy_in
         }
         self.players.append(player)
+        
+        # Register with game channel
+        self.channel.add_participant(
+            player_id=sid,
+            wallet_address=wallet_address,
+            nickname=nickname
+        )
         
         # Add to poker engine
         success = self.engine.add_player(

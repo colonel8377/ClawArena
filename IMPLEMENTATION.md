@@ -5,10 +5,50 @@ This document describes the newly implemented features for the Agent Game Arena 
 ## Overview
 
 The platform now includes:
-1. **Werewolf Game** - A multiplayer social deduction game
-2. **Economic System** - MySQL-based virtual currency and user management
-3. **Smart Contracts** - Solidity contracts for treasury management
-4. **Extensible Architecture** - Base classes for easy game integration
+1. **Texas Hold'em Poker** - No-limit poker with unified game structure
+2. **Werewolf Game** - A multiplayer social deduction game
+3. **Unified Game Architecture** - BaseGame and BaseEngine abstractions
+4. **Unified Chat System** - Persistent chat across all games
+5. **Economic System** - MySQL-based virtual currency and user management
+6. **Smart Contracts** - Solidity contracts for treasury management
+7. **Extensible Architecture** - Base classes for easy game integration
+
+## Recent Updates (Unified Architecture)
+
+### Unified Game Structure
+
+All games now follow a consistent architecture:
+
+- **BaseGame**: Abstract class for room management, players, and networking
+- **BaseEngine**: Optional abstraction for separating game logic from management
+- **Unified Chat System**: Built-in chat functionality inherited by all games
+- **ChatMessage Model**: Database persistence for chat across sessions
+
+**Benefits**:
+- Consistent interface across all game types
+- Easy to add new games
+- Shared features (chat, player management) work the same everywhere
+- Better maintainability and testing
+
+See [UNIFIED_ARCHITECTURE.md](docs/UNIFIED_ARCHITECTURE.md) for detailed documentation.
+
+### Texas Hold'em Refactoring
+
+Texas Hold'em poker has been refactored to follow the unified structure:
+
+- **TexasGame**: New class extending BaseGame
+- **PokerEngine**: Core poker logic (backward compatible)
+- **Unified Chat**: Players can chat during games
+- **Consistent Interface**: Same methods as other games
+
+### Werewolf Enhancements
+
+Werewolf game updated to use unified features:
+
+- **Chat Integration**: Built-in chat through BaseGame
+- **Consistent Interface**: Same patterns as other games
+- **Better Organization**: Clear separation of concerns
+
 
 ## Directory Structure
 
@@ -19,21 +59,26 @@ backend/
 │   └── ArenaTreasury.sol   # New treasury contract for deposits/withdrawals
 ├── database/
 │   ├── __init__.py
-│   ├── models.py           # SQLAlchemy models (User, GameHistory)
+│   ├── models.py           # SQLAlchemy models (User, GameSession, ChatMessage)
 │   ├── connection.py       # Database setup and session management
 │   └── schema.sql          # MySQL schema (reference)
 ├── economy/
 │   ├── __init__.py
 │   └── account.py          # User registration, login, balance management
 ├── games/
-│   ├── __init__.py
-│   ├── base.py            # Abstract base class for all games
+│   ├── __init__.py         # Exports BaseGame, BaseEngine
+│   ├── base.py             # Abstract base classes + unified chat system
+│   ├── texas/
+│   │   ├── __init__.py
+│   │   ├── game.py         # TexasGame (extends BaseGame)
+│   │   └── poker_engine.py # PokerEngine (core poker logic)
 │   └── werewolf/
 │       ├── __init__.py
-│       ├── roles.py       # Role definitions (Villager, Wolf, Seer, Witch, Hunter)
-│       └── game.py        # Game logic, phases, and state management
-├── poker_logic.py         # Texas Hold'em placeholder
-└── main.py               # FastAPI + Socket.IO server (updated)
+│       ├── roles.py        # Role definitions (Villager, Wolf, Seer, Witch, Hunter)
+│       ├── game.py         # WerewolfGame (extends BaseGame with chat)
+│       ├── game_config.py  # Role setup configurations
+│       └── matchmaker.py   # Matchmaking logic
+└── main.py                 # FastAPI + Socket.IO server
 ```
 
 ## Database Schema

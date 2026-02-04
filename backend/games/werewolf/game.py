@@ -52,7 +52,7 @@ class WerewolfGame(BaseGame):
         Args:
             game_id: Unique identifier for this game
         """
-        super().__init__(game_id)
+        super().__init__(game_id, game_type="werewolf")
         self.phase = WerewolfPhase.WAITING
         self.players: List[Dict] = []
         self.day_count = 0
@@ -96,15 +96,25 @@ class WerewolfGame(BaseGame):
         if any(p['sid'] == sid for p in self.players):
             return False
         
+        nickname = kwargs.get('nickname', f'Player{len(self.players) + 1}')
+        
         player = {
             'sid': sid,
             'wallet_address': wallet_address,
             'role': None,  # Assigned when game starts
             'is_alive': True,
-            'nickname': kwargs.get('nickname', f'Player{len(self.players) + 1}')
+            'nickname': nickname
         }
         
         self.players.append(player)
+        
+        # Register with game channel
+        self.channel.add_participant(
+            player_id=sid,
+            wallet_address=wallet_address,
+            nickname=nickname
+        )
+        
         return True
     
     def remove_player(self, sid: str) -> bool:
@@ -160,7 +170,14 @@ class WerewolfGame(BaseGame):
         - witch_poison: Witch uses poison (target_sid)
         - vote: Vote to eliminate someone (target_sid)
         - hunter_shoot: Hunter shoots someone when dying (target_sid)
+        - chat: Send a chat message (message in kwargs)
         """
+        # Handle chat action (allowed for all players, dead or alive)
+        if action == 'chat':
+            message = kwargs.get('message', '')
+            return {'success': True, 'chat': self.add_chat_message(sid, message)}
+        
+        # For non-chat actions, validate player exists and is alive
         player = self._get_player_by_sid(sid)
         if not player or not player['is_alive']:
             return {'success': False, 'error': 'Player not found or dead'}
@@ -425,7 +442,8 @@ class WerewolfGame(BaseGame):
             'game_id': self.game_id,
             'phase': self.phase.value,
             'day_count': self.day_count,
-            'players': []
+            'players': [],
+            'chat_messages': self.get_chat_history(limit=50)  # Include recent chat
         }
         
         # Add player information

@@ -4,49 +4,43 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /**
- * @title ArenaTreasury
- * @notice Treasury contract for Agent Arena game platform
- * @dev Manages deposits, withdrawals, and airdrops for the gaming platform
+ * @title UniversalGameVault
+ * @notice Generic vault contract for managing ERC20 tokens across multiple games
+ * @dev Holds player deposits and allows withdrawals/claims only with server-signed permits
  * 
- * This contract serves as the main treasury for the Agent Arena platform,
- * handling token deposits from users and authorizing withdrawals for
- * game winnings and airdrops.
+ * This contract is a universal "Bank" for all games in the Agent Arena platform.
+ * Players deposit tokens to play any game, and can only withdraw/claim with a 
+ * permission slip (signature) from the Python Game Server.
  * 
  * Security features:
- * - Server-signed withdrawal authorization
- * - Nonce-based replay attack prevention
+ * - Nonce-based replay attack prevention (per-user)
+ * - Server signature verification using ECDSA
+ * - Cross-chain and cross-contract replay protection (chainId + contract address in signature)
  * - ReentrancyGuard protection
- * - Emergency pause mechanism
  * - Owner-controlled server signer updates
+ * - Generic design supports game wins AND airdrops through the same claim mechanism
  */
-contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
+contract UniversalGameVault is Ownable, ReentrancyGuard {
     using ECDSA for bytes32;
 
     // ============================================================================
     // STATE VARIABLES
     // ============================================================================
 
-    /// @notice The ERC20 token used for the platform
+    /// @notice The ERC20 token used for deposits/withdrawals
     IERC20 public immutable token;
 
-    /// @notice Address authorized to sign withdrawal permits
+    /// @notice Address of the Python off-chain game engine (authorized to sign claims)
     address public serverSigner;
 
-    /// @notice User deposit balances
-    mapping(address => uint256) public deposits;
+    /// @notice User deposit balances (on-chain accounting)
+    mapping(address => uint256) public balances;
 
     /// @notice Nonce for each user (prevents replay attacks)
     mapping(address => uint256) public nonces;
-
-    /// @notice Total tokens deposited into the contract
-    uint256 public totalDeposits;
-
-    /// @notice Total tokens withdrawn from the contract
-    uint256 public totalWithdrawals;
 
     // ============================================================================
     // EVENTS
@@ -56,12 +50,13 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
     event Deposit(
         address indexed user,
         uint256 amount,
+        string gameId,
         uint256 newBalance,
         uint256 timestamp
     );
 
-    /// @notice Emitted when tokens are withdrawn
-    event Withdrawal(
+    /// @notice Emitted when tokens are claimed (withdrawal or airdrop)
+    event Claim(
         address indexed user,
         uint256 amount,
         uint256 nonce,
@@ -73,13 +68,6 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
     event ServerSignerUpdated(
         address indexed oldSigner,
         address indexed newSigner,
-        uint256 timestamp
-    );
-
-    /// @notice Emitted when tokens are airdropped
-    event Airdrop(
-        address indexed recipient,
-        uint256 amount,
         uint256 timestamp
     );
 
@@ -99,9 +87,9 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
     // ============================================================================
 
     /**
-     * @notice Initializes the ArenaTreasury contract
+     * @notice Initializes the UniversalGameVault contract
      * @param _token Address of the ERC20 token
-     * @param _serverSigner Initial server signer address
+     * @param _serverSigner Initial address of the Python backend server
      */
     constructor(IERC20 _token, address _serverSigner) {
         if (address(_token) == address(0)) revert ZeroAddress();
@@ -116,109 +104,117 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
     // ============================================================================
 
     /**
-     * @notice Deposit tokens into the treasury
+     * @notice Deposit tokens into the vault
      * @param amount Amount of tokens to deposit
-     * @dev Requires prior token approval
+     * @param gameId Optional game identifier for off-chain analytics (can be empty string)
+     * @dev Transfers tokens from caller to contract and updates balances mapping
+     * 
+     * Requirements:
+     * - Amount must be greater than 0
+     * - Caller must have approved this contract to spend tokens
      */
-    function deposit(uint256 amount) external nonReentrant whenNotPaused {
+    function deposit(uint256 amount, string calldata gameId) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
         
         // Transfer tokens from user to contract
         bool success = token.transferFrom(msg.sender, address(this), amount);
         if (!success) revert TransferFailed();
         
-        // Update state
-        deposits[msg.sender] += amount;
-        totalDeposits += amount;
+        // Update user balance
+        balances[msg.sender] += amount;
         
         emit Deposit(
             msg.sender,
             amount,
-            deposits[msg.sender],
+            gameId,
+            balances[msg.sender],
             block.timestamp
         );
     }
 
     // ============================================================================
-    // WITHDRAWAL FUNCTION
+    // CLAIM FUNCTION (UNIVERSAL: WITHDRAWALS + AIRDROPS)
     // ============================================================================
 
     /**
-     * @notice Withdraw tokens with server authorization
-     * @param amount Amount to withdraw
-     * @param nonce User's current nonce (must match stored nonce)
-     * @param signature Server's signature authorizing the withdrawal
+     * @notice Claim tokens with server-signed authorization (for game wins OR airdrops)
+     * @param amount Amount of tokens to claim
+     * @param nonce Unique nonce for this claim (must match current nonce)
+     * @param signature Server's signature authorizing this claim
      * 
-     * @dev The signature must be from serverSigner over:
-     *      keccak256(abi.encodePacked(msg.sender, amount, nonce))
+     * @dev CRITICAL SECURITY FUNCTION
+     * 
+     * This function implements a dual-authorization claim system:
+     * 1. User initiates claim request (could be withdrawal or airdrop)
+     * 2. Python backend verifies eligibility and signs claim
+     * 3. User submits signed claim to this function
+     * 
+     * Security measures:
+     * - Nonce verification prevents replay attacks (blockchain is source of truth)
+     * - Signature verification ensures backend authorization
+     * - ChainId and contract address prevent cross-chain/cross-contract replay
+     * - ReentrancyGuard prevents reentrancy attacks
+     * - Checks-Effects-Interactions pattern
+     * 
+     * The signature must be over:
+     * keccak256(abi.encodePacked(user, amount, nonce, block.chainid, address(this)))
+     * 
+     * Requirements:
+     * - Amount must be greater than 0
+     * - Nonce must match current nonce for user
+     * - Signature must be valid and from serverSigner
      */
-    function withdraw(
+    function claimWithSignature(
         uint256 amount,
         uint256 nonce,
         bytes memory signature
-    ) external nonReentrant whenNotPaused {
+    ) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
-        if (deposits[msg.sender] < amount) revert InsufficientBalance();
         if (nonce != nonces[msg.sender]) revert InvalidNonce();
         
-        // Reconstruct the message hash
+        // Reconstruct the message hash with replay attack protection
+        // Includes chainId and contract address to prevent cross-chain/contract replay
         bytes32 messageHash = keccak256(
-            abi.encodePacked(msg.sender, amount, nonce)
+            abi.encodePacked(
+                msg.sender,
+                amount,
+                nonce,
+                block.chainid,
+                address(this)
+            )
         );
         
         // Convert to Ethereum Signed Message format
         bytes32 ethSignedMessageHash = messageHash.toEthSignedMessageHash();
         
-        // Recover signer
+        // Recover the signer from the signature
         address recoveredSigner = ethSignedMessageHash.recover(signature);
         
-        // Verify signature
+        // Verify the signature is from the authorized server signer
         if (recoveredSigner != serverSigner) revert InvalidSignature();
         
-        // Update state BEFORE transfer (Checks-Effects-Interactions)
+        // Update state BEFORE external call (Checks-Effects-Interactions pattern)
         nonces[msg.sender]++;
-        deposits[msg.sender] -= amount;
-        totalWithdrawals += amount;
         
-        // Transfer tokens
+        // For withdrawals: deduct from balance
+        // For airdrops: balance check not needed (tokens come from contract treasury)
+        // We perform a balance check but allow claims even if balance is insufficient
+        // (this enables airdrops from contract treasury)
+        if (balances[msg.sender] >= amount) {
+            balances[msg.sender] -= amount;
+        }
+        
+        // Transfer tokens to user
         bool success = token.transfer(msg.sender, amount);
         if (!success) revert TransferFailed();
         
-        emit Withdrawal(
+        emit Claim(
             msg.sender,
             amount,
             nonce,
-            deposits[msg.sender],
+            balances[msg.sender],
             block.timestamp
         );
-    }
-
-    // ============================================================================
-    // AIRDROP FUNCTION (OWNER ONLY)
-    // ============================================================================
-
-    /**
-     * @notice Airdrop tokens to users (owner only)
-     * @param recipients Array of recipient addresses
-     * @param amounts Array of amounts to airdrop
-     * @dev Arrays must have equal length
-     */
-    function airdrop(
-        address[] calldata recipients,
-        uint256[] calldata amounts
-    ) external onlyOwner nonReentrant whenNotPaused {
-        require(recipients.length == amounts.length, "Array length mismatch");
-        
-        for (uint256 i = 0; i < recipients.length; i++) {
-            if (recipients[i] == address(0)) continue;
-            if (amounts[i] == 0) continue;
-            
-            // Transfer tokens
-            bool success = token.transfer(recipients[i], amounts[i]);
-            if (success) {
-                emit Airdrop(recipients[i], amounts[i], block.timestamp);
-            }
-        }
     }
 
     // ============================================================================
@@ -227,7 +223,8 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
 
     /**
      * @notice Update the server signer address
-     * @param _newSigner New server signer address
+     * @param _newSigner New address for the Python backend server
+     * @dev Only owner can update the server signer
      */
     function setServerSigner(address _newSigner) external onlyOwner {
         if (_newSigner == address(0)) revert ZeroAddress();
@@ -239,28 +236,14 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Pause the contract (emergency)
-     */
-    function pause() external onlyOwner {
-        _pause();
-    }
-
-    /**
-     * @notice Unpause the contract
-     */
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
-    /**
      * @notice Emergency token recovery (owner only)
-     * @param _token Token to recover
-     * @param amount Amount to recover
-     * @dev Should only be used for tokens sent by mistake
+     * @param amount Amount of tokens to recover
+     * @dev Should only be used in emergencies to recover contract treasury
      */
-    function recoverTokens(IERC20 _token, uint256 amount) external onlyOwner {
-        require(address(_token) != address(token), "Cannot recover main token");
-        bool success = _token.transfer(owner(), amount);
+    function emergencyWithdraw(uint256 amount) external onlyOwner nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        
+        bool success = token.transfer(owner(), amount);
         if (!success) revert TransferFailed();
     }
 
@@ -269,26 +252,26 @@ contract ArenaTreasury is Ownable, ReentrancyGuard, Pausable {
     // ============================================================================
 
     /**
-     * @notice Get current nonce for a user
-     * @param user User address
-     * @return Current nonce
+     * @notice Get the current nonce for a user
+     * @param user Address of the user
+     * @return Current nonce value
      */
     function getNonce(address user) external view returns (uint256) {
         return nonces[user];
     }
 
     /**
-     * @notice Get deposit balance for a user
-     * @param user User address
+     * @notice Get the deposit balance for a user
+     * @param user Address of the user
      * @return Current deposit balance
      */
     function getBalance(address user) external view returns (uint256) {
-        return deposits[user];
+        return balances[user];
     }
 
     /**
-     * @notice Get contract's token balance
-     * @return Token balance
+     * @notice Get the contract's token balance (treasury)
+     * @return Contract's token balance
      */
     function getContractBalance() external view returns (uint256) {
         return token.balanceOf(address(this));

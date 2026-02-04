@@ -887,10 +887,11 @@ class PokerAgent:
         pot = self.game_state.get('pot_size', 0)
         to_call = self.game_state.get('current_bet', 0)
         
-        # Find our current bet
+        # Find our current bet by comparing SID
         my_bet = 0
+        my_sid = self.sio.get_sid()  # Get our session ID
         for p in self.game_state.get('players', []):
-            if p.get('hole_cards'):  # This is us
+            if p.get('sid') == my_sid:
                 my_bet = p.get('current_bet', 0)
                 break
         

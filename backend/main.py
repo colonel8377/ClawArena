@@ -617,8 +617,8 @@ async def player_move(sid, data):
                 showdown_result = table.get_game_state()
                 # Broadcast showdown reveal
                 await sio.emit('showdown_reveal', {
-                    'player_hands': table._get_all_hole_cards(),
-                    'community_cards': table._cards_to_strings(table.community_cards),
+                    'player_hands': table.get_all_hole_cards(),
+                    'community_cards': table.cards_to_strings(table.community_cards),
                     'winners': showdown_result.get('winners', [])
                 }, room=table_id)
                 

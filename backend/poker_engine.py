@@ -368,25 +368,31 @@ class PokerEngine:
         active_sids = [sid for sid in self.player_order 
                        if self.players[sid].status == PlayerStatus.ACTIVE]
         
-        if len(active_sids) < 2:
+        if len(active_sids) < MIN_PLAYERS:
             return
         
-        # Calculate blind positions
+        # Calculate blind positions relative to active_sids
+        dealer_pos = self.dealer_index % len(active_sids)
+        
         if len(active_sids) == 2:
             # Heads-up: dealer is small blind
-            self.small_blind_index = self.dealer_index
-            self.big_blind_index = (self.dealer_index + 1) % len(active_sids)
+            sb_pos = dealer_pos
+            bb_pos = (dealer_pos + 1) % len(active_sids)
         else:
-            self.small_blind_index = (self.dealer_index + 1) % len(active_sids)
-            self.big_blind_index = (self.dealer_index + 2) % len(active_sids)
+            sb_pos = (dealer_pos + 1) % len(active_sids)
+            bb_pos = (dealer_pos + 2) % len(active_sids)
+        
+        # Store positions for this hand
+        self.small_blind_index = sb_pos
+        self.big_blind_index = bb_pos
         
         # Post small blind
-        sb_sid = active_sids[self.small_blind_index]
+        sb_sid = active_sids[sb_pos]
         sb_amount = min(self.small_blind, self.players[sb_sid].chips)
         self._place_bet(sb_sid, sb_amount)
         
         # Post big blind
-        bb_sid = active_sids[self.big_blind_index]
+        bb_sid = active_sids[bb_pos]
         bb_amount = min(self.big_blind, self.players[bb_sid].chips)
         self._place_bet(bb_sid, bb_amount)
         
@@ -401,9 +407,10 @@ class PokerEngine:
         active_sids = [sid for sid in self.player_order 
                        if self.players[sid].status == PlayerStatus.ACTIVE]
         
-        if len(active_sids) < 2:
+        if len(active_sids) < MIN_PLAYERS:
             return
         
+        # Rotate dealer position
         self.dealer_index = (self.dealer_index + 1) % len(active_sids)
     
     def _set_first_to_act(self):
@@ -411,9 +418,12 @@ class PokerEngine:
         active_sids = [sid for sid in self.player_order 
                        if self.players[sid].can_act()]
         
+        if not active_sids:
+            return
+        
         if len(active_sids) <= 2:
             # Heads-up: small blind acts first pre-flop
-            self.current_player_index = self.small_blind_index
+            self.current_player_index = self.small_blind_index % len(active_sids)
         else:
             # UTG acts first (player after big blind)
             self.current_player_index = (self.big_blind_index + 1) % len(active_sids)
@@ -859,13 +869,38 @@ class PokerEngine:
         
         return {'winners': winners}
     
-    def _get_all_hole_cards(self) -> Dict[str, List[str]]:
-        """Get all players' hole cards for showdown reveal."""
+    def get_all_hole_cards(self) -> Dict[str, List[str]]:
+        """
+        Get all players' hole cards for showdown reveal.
+        
+        Public method for accessing hole cards at showdown.
+        
+        Returns:
+            Dict mapping player SID to their hole cards as strings
+        """
         return {
             sid: self._cards_to_strings(player.hole_cards)
             for sid, player in self.players.items()
             if player.hole_cards
         }
+    
+    def cards_to_strings(self, cards: List[int]) -> List[str]:
+        """
+        Convert card integers to human-readable strings.
+        
+        Public wrapper for _cards_to_strings.
+        
+        Args:
+            cards: List of treys card integers
+            
+        Returns:
+            List of card strings (e.g., ["Ah", "Ks"])
+        """
+        return self._cards_to_strings(cards)
+    
+    def _get_all_hole_cards(self) -> Dict[str, List[str]]:
+        """Get all players' hole cards for showdown reveal."""
+        return self.get_all_hole_cards()
     
     # ========================================================================
     # TIMEOUT HANDLING

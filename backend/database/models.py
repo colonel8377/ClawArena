@@ -87,6 +87,7 @@ class GameSession(Base):
     
     # Relationships
     players = relationship("GamePlayer", back_populates="game_session", cascade="all, delete-orphan")
+    chat_messages = relationship("ChatMessage", back_populates="game_session", cascade="all, delete-orphan")
     
     # Indexes
     __table_args__ = (
@@ -176,6 +177,35 @@ class GameHistory(Base):
     
     def __repr__(self):
         return f"<GameHistory(game_type='{self.game_type}', winner='{self.winner_wallet}')>"
+
+
+class ChatMessage(Base):
+    """
+    Chat message table.
+    
+    Stores all chat messages for games with persistence across sessions.
+    """
+    __tablename__ = 'chat_messages'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_session_id = Column(String(64), ForeignKey('game_sessions.id'), nullable=False, index=True)
+    player_wallet = Column(String(42), nullable=False, index=True)  # Player who sent the message
+    nickname = Column(String(50), nullable=False, default="Player")
+    message = Column(Text, nullable=False)
+    message_type = Column(String(20), nullable=False, default='chat')  # 'chat', 'action', 'system'
+    metadata = Column(JSON, nullable=True)  # Additional message metadata
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    game_session = relationship("GameSession", back_populates="chat_messages")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_chat_messages_game_time', 'game_session_id', 'timestamp'),
+    )
+    
+    def __repr__(self):
+        return f"<ChatMessage(game='{self.game_session_id}', player='{self.nickname}', type='{self.message_type}')>"
 
 
 # Legacy User model for backwards compatibility

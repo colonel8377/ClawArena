@@ -63,17 +63,17 @@ CREATE TABLE IF NOT EXISTS game_sessions (
 COMMENT='Game session history and results';
 
 -- ============================================================================
--- Table: nonce_tracker
--- Purpose: Track nonces for preventing replay attacks on withdrawals
+-- Table: nonce_tracker (DEPRECATED - REMOVED)
 -- ============================================================================
-CREATE TABLE IF NOT EXISTS nonce_tracker (
-    wallet_address VARCHAR(42) PRIMARY KEY COMMENT 'Ethereum wallet address',
-    nonce BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Current nonce value',
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Last nonce update',
-    
-    FOREIGN KEY (wallet_address) REFERENCES agents(wallet_address) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Nonce tracking for replay attack prevention';
+-- NOTE: This table has been REMOVED per security audit recommendations.
+-- Nonces are now tracked exclusively on the blockchain (ArenaVault contract)
+-- to prevent desynchronization race conditions.
+-- 
+-- Migration: All nonce tracking now uses contract.getNonce(address) via Web3.py
+-- The blockchain is the single source of truth for nonces.
+-- ============================================================================
+
+-- Table removed - DO NOT CREATE
 
 -- ============================================================================
 -- Table: transactions

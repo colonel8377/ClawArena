@@ -31,6 +31,7 @@ from web3 import Web3
 from games.texas import TexasGame, PokerEngine, create_poker_game, create_texas_game
 from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
+from database.redis_manager import redis_manager
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
 from games.werewolf.werewolf_game import WerewolfGame
 from games.werewolf.matchmaker import WerewolfMatchmaker
@@ -125,6 +126,42 @@ except Exception as e:
 
 
 # ============================================================================
+# STARTUP AND SHUTDOWN HANDLERS
+# ============================================================================
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize services and restore persisted game states on server startup.
+    """
+    # Connect to Redis
+    await redis_manager.connect()
+    print("✓ RedisManager connected")
+    
+    # Restore persisted games from Redis
+    try:
+        persisted_game_ids = await redis_manager.list_persisted_games()
+        if persisted_game_ids:
+            print(f"Restoring {len(persisted_game_ids)} persisted games...")
+            for game_id in persisted_game_ids:
+                try:
+                    state_with_meta = await redis_manager.restore_game_state(game_id)
+                    if state_with_meta and state_with_meta.get('game_type') == 'werewolf':
+                        # Restore werewolf game
+                        game_state = state_with_meta.get('state', {})
+                        restored_game = WerewolfGame.from_dict(game_id, game_state)
+                        werewolf_games[game_id] = restored_game
+                        print(f"  ✓ Restored werewolf game: {game_id}")
+                except Exception as e:
+                    print(f"  ⚠ Failed to restore game {game_id}: {e}")
+            print(f"✓ Game restoration complete")
+        else:
+            print("No persisted games to restore")
+    except Exception as e:
+        print(f"⚠ Game restoration failed: {e}")
+
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
@@ -207,12 +244,12 @@ def get_nonce_from_blockchain(user_address: str) -> int:
 
 
 
-def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
+async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     """
     Generate a withdrawal signature for on-chain claiming.
     
-    SECURITY UPDATE: Nonce is now queried from blockchain (single source of truth)
-    instead of being tracked in MySQL/memory.
+    SECURITY UPDATE: Nonce is now synchronized via RedisManager to prevent
+    race conditions during concurrent withdrawal requests.
     
     This creates a signature that can be verified by the smart contract
     to allow the user to withdraw their winnings.
@@ -224,8 +261,8 @@ def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     Returns:
         Dict containing the signature, message hash, nonce, and parameters
     """
-    # Get current nonce from blockchain (SINGLE SOURCE OF TRUTH)
-    nonce = get_nonce_from_blockchain(user_address)
+    # Get and increment nonce atomically via RedisManager (prevents race conditions)
+    nonce = await redis_manager.get_and_increment_nonce(user_address)
     
     # Ensure address is checksummed
     user_address = Web3.to_checksum_address(user_address)
@@ -321,14 +358,14 @@ async def request_withdrawal(request: Request, address: str, amount: int):
     """
     Request a withdrawal signature.
     
-    Security update: Nonce is now automatically fetched from blockchain.
+    Security update: Nonce is now synchronized via RedisManager.
     """
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invalid amount")
     
     try:
-        # Generate signature with blockchain-sourced nonce
-        signature_data = generate_withdrawal_signature(address, amount)
+        # Generate signature with synchronized nonce from RedisManager
+        signature_data = await generate_withdrawal_signature(address, amount)
         return signature_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate signature: {str(e)}")
@@ -338,16 +375,16 @@ async def request_withdrawal(request: Request, address: str, amount: int):
 @limiter.limit("10/minute")
 async def get_withdrawal_nonce(request: Request, address: str):
     """
-    Get current withdrawal nonce for an address from blockchain.
+    Get current withdrawal nonce for an address from RedisManager.
     
-    This queries the smart contract directly (single source of truth).
+    This queries the synchronized nonce counter.
     """
     try:
-        nonce = get_nonce_from_blockchain(address)
+        nonce = await redis_manager.get_nonce(address)
         return {
             "address": address,
             "nonce": nonce,
-            "source": "blockchain"
+            "source": "redis_synchronized"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get nonce: {str(e)}")
@@ -734,7 +771,7 @@ async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount:
     """
     Generate withdrawal signature and emit to the user.
     
-    SECURITY UPDATE: Nonce is now queried from blockchain (single source of truth).
+    SECURITY UPDATE: Nonce is now synchronized via RedisManager.
     
     This is called when:
     - A game ends with winnings
@@ -742,8 +779,8 @@ async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount:
     
     The signature allows the user to claim their winnings on-chain.
     """
-    # Generate signature (nonce automatically fetched from blockchain)
-    withdrawal_data = generate_withdrawal_signature(user_address, amount)
+    # Generate signature (nonce atomically fetched from RedisManager)
+    withdrawal_data = await generate_withdrawal_signature(user_address, amount)
     
     # Emit to all sessions for this address in this table
     await sio.emit('withdrawal_signature', withdrawal_data, room=table_id)
@@ -792,12 +829,21 @@ async def create_werewolf_game(sid, data):
             await sio.emit('error', {'message': 'game_id required'}, room=sid)
             return
         
-        # Create game if doesn't exist
-        if game_id in werewolf_games:
-            await sio.emit('error', {'message': 'Game already exists'}, room=sid)
-            return
-        
-        werewolf_games[game_id] = WerewolfGame(game_id)
+        # Use distributed lock to prevent race conditions on game creation
+        async with redis_manager.lock(f"game_create:{game_id}"):
+            # Create game if doesn't exist
+            if game_id in werewolf_games:
+                await sio.emit('error', {'message': 'Game already exists'}, room=sid)
+                return
+            
+            werewolf_games[game_id] = WerewolfGame(game_id)
+            
+            # Persist game state to Redis
+            await redis_manager.save_game_state(
+                game_id,
+                werewolf_games[game_id].to_dict(),
+                game_type="werewolf"
+            )
         
         await sio.emit('werewolf_game_created', {'game_id': game_id}, room=sid)
         
@@ -825,16 +871,26 @@ async def join_werewolf_game(sid, data):
             await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
             return
         
-        game = werewolf_games[game_id]
         address = player_sessions[sid]['address']
         
-        # Add player to game
-        if not game.add_player(sid, address, nickname=nickname):
-            await sio.emit('error', {'message': 'Could not join game'}, room=sid)
-            return
-        
-        # Update session
-        player_sessions[sid]['game_id'] = game_id
+        # Use distributed lock to prevent race conditions on player join
+        async with redis_manager.lock(f"game_join:{game_id}"):
+            game = werewolf_games[game_id]
+            
+            # Add player to game
+            if not game.add_player(sid, address, nickname=nickname):
+                await sio.emit('error', {'message': 'Could not join game'}, room=sid)
+                return
+            
+            # Update session
+            player_sessions[sid]['game_id'] = game_id
+            
+            # Persist updated game state
+            await redis_manager.save_game_state(
+                game_id,
+                game.to_dict(),
+                game_type="werewolf"
+            )
         
         # Join Socket.IO room
         await sio.enter_room(sid, game_id)

@@ -1082,6 +1082,23 @@ async def broadcast_werewolf_state(game_id: str):
 # MATCHMAKING
 # ============================================================================
 
+async def on_matchmaking_fallback(players, target_size: int):
+    """
+    Callback before matchmaker downgrades from 9-player to 6-8 player game.
+    
+    Args:
+        players: List of QueuedPlayer objects
+        target_size: Target game size (6-8)
+    """
+    # Notify all players in queue about the fallback
+    for player in players:
+        await sio.emit('matchmaking_fallback_warning', {
+            'message': f'Starting {target_size}-player game (waited 30+ seconds, not enough for 9-player)',
+            'player_count': target_size,
+            'original_target': 9
+        }, room=player.sid)
+
+
 async def on_game_matched(players, game_size: int):
     """
     Callback when matchmaker creates a game.
@@ -1145,7 +1162,10 @@ async def join_matchmaking(sid, data):
         
         # Initialize matchmaker if needed
         if werewolf_matchmaker is None:
-            werewolf_matchmaker = WerewolfMatchmaker(game_start_callback=on_game_matched)
+            werewolf_matchmaker = WerewolfMatchmaker(
+                game_start_callback=on_game_matched,
+                fallback_warning_callback=on_matchmaking_fallback
+            )
             werewolf_matchmaker.start()
         
         # Add to queue

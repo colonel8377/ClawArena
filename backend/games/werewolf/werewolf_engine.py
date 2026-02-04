@@ -31,7 +31,7 @@ from backend.games.werewolf.game_config import get_setup
 # ============================================================================
 
 # Timeout configuration
-TURN_TIMEOUT_SECONDS = 60  # Strict 60s timeout for Vote/Action phases
+TURN_TIMEOUT_SECONDS = 120  # Extended timeout for LLM reasoning (was 60s)
 ZOMBIE_THRESHOLD = 2  # Consecutive timeouts before zombie mode
 ABORT_ZOMBIE_THRESHOLD = 0.5  # >50% zombies triggers abort
 
@@ -457,15 +457,58 @@ class WerewolfEngine(BaseGame):
         """
         Execute default action for a timed-out player.
         
+        UPDATED: Zombies now perform random legal actions instead of just passing
+        to prevent game stalling.
+        
         Default actions by phase:
-        - Night (Wolf): Skip (no kill vote)
-        - Night (Seer): Skip (no check)
-        - Night (Witch): Skip (no potion use)
-        - Voting: Skip (abstain from vote)
+        - Night (Wolf): Random kill vote on alive non-wolf
+        - Night (Seer): Random check on alive player
+        - Night (Witch): Skip (to preserve strategic potion use)
+        - Voting: Random vote on alive player
         """
-        # Default action is essentially "pass" - we just don't record any action
-        # The game logic will handle missing actions appropriately
-        pass
+        import random
+        
+        if not player.is_zombie():
+            # Non-zombie timeout: just skip (original behavior)
+            return
+        
+        # Zombie timeout: perform random legal action
+        # Apply zombie penalty (deduct reputation/tokens)
+        # TODO: Implement actual penalty logic with economy system
+        # For now, we just log the penalty
+        print(f"Zombie penalty applied to {player.nickname} (timeout count: {player.consecutive_timeouts})")
+        
+        # Get list of alive players for random selection
+        alive_players = [p for p in self.players.values() if p.is_alive and p.sid != player.sid]
+        
+        if not alive_players:
+            return  # No valid targets
+        
+        # Execute random action based on role and phase
+        if self.phase == GamePhase.NIGHT:
+            # Night phase: role-specific actions
+            if isinstance(player.role, Wolf):
+                # Random wolf kill vote
+                non_wolf_targets = [p for p in alive_players if not isinstance(p.role, Wolf)]
+                if non_wolf_targets:
+                    target = random.choice(non_wolf_targets)
+                    self.wolf_votes[player.sid] = target.sid
+                    print(f"Zombie wolf {player.nickname} auto-voted to kill {target.nickname}")
+            
+            elif isinstance(player.role, Seer):
+                # Random seer check
+                target = random.choice(alive_players)
+                player.role.check_player(target.sid, target.role.team)
+                self.seer_check = target.sid
+                print(f"Zombie seer {player.nickname} auto-checked {target.nickname}")
+            
+            # Note: Witch potions are not used automatically to preserve strategic value
+        
+        elif self.phase == GamePhase.VOTING:
+            # Random vote during day voting
+            target = random.choice(alive_players)
+            self.day_votes[player.sid] = target.sid
+            print(f"Zombie {player.nickname} auto-voted for {target.nickname}")
     
     # ========================================================================
     # ACTION PROCESSING
@@ -580,6 +623,10 @@ class WerewolfEngine(BaseGame):
         if not isinstance(player.role, Witch):
             return {'success': False, 'error': 'Not a witch'}
         
+        # Prevent using both potions in the same night
+        if self.witch_action.get('poison'):
+            return {'success': False, 'error': 'Cannot use both potions in the same night'}
+        
         if not player.role.use_antidote():
             return {'success': False, 'error': 'Antidote already used'}
         
@@ -593,6 +640,10 @@ class WerewolfEngine(BaseGame):
         
         if not isinstance(player.role, Witch):
             return {'success': False, 'error': 'Not a witch'}
+        
+        # Prevent using both potions in the same night
+        if self.witch_action.get('save'):
+            return {'success': False, 'error': 'Cannot use both potions in the same night'}
         
         target_sid = kwargs.get('target_sid')
         if not target_sid:

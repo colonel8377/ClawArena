@@ -959,6 +959,13 @@ async def werewolf_action(sid, data):
             await sio.emit('error', {'message': 'Action required'}, room=sid)
             return
         
+        # Emit "thinking" state to indicate player is processing action
+        await sio.emit('player_thinking', {
+            'game_id': game_id,
+            'player_sid': sid,
+            'action_type': action
+        }, room=game_id)
+        
         game = werewolf_games[game_id]
         result = game.process_action(sid, action, target_sid=target_sid)
         

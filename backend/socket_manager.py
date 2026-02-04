@@ -549,144 +549,254 @@ class SocketManager:
         })
     
     # ========================================================================
-    # POKER DUAL-CHANNEL BROADCAST
+    # POKER UNIFIED ROOM BROADCAST (Privacy Filter Architecture)
     # ========================================================================
     
-    async def broadcast_poker_move(
-        self,
-        game_id: str,
-        move_result: Dict[str, Any],
-        game_state: Dict[str, Any],
-        player_hole_cards: Dict[str, List[str]]
-    ):
+    def _get_room_id(self, game_id: str) -> str:
         """
-        Broadcast a poker move with dual-channel logic.
+        Get the unified room ID for a poker game.
         
-        This implements the crucial dual-channel broadcast:
-        1. player_private: Sent ONLY to each specific player with their hole_cards
-        2. game_broadcast: Sent to ALL players AND spectators with sanitized public state
+        All agents AND spectators join this SAME room.
         
         Args:
             game_id: Game session ID
-            move_result: Result from poker engine's process_move
-            game_state: Current game state (sanitized for public)
-            player_hole_cards: Dict mapping player_sid -> their hole cards
+            
+        Returns:
+            Room ID in format "room_game_{id}"
+        """
+        return f"room_game_{game_id}"
+    
+    async def join_poker_room(self, sid: str, game_id: str):
+        """
+        Join a player/spectator to the unified poker room.
+        
+        Args:
+            sid: Socket.IO session ID
+            game_id: Game session ID
+        """
+        room_id = self._get_room_id(game_id)
+        await self.sio.enter_room(sid, room_id)
+    
+    async def leave_poker_room(self, sid: str, game_id: str):
+        """
+        Remove a player/spectator from the poker room.
+        
+        Args:
+            sid: Socket.IO session ID
+            game_id: Game session ID
+        """
+        room_id = self._get_room_id(game_id)
+        await self.sio.leave_room(sid, room_id)
+    
+    async def broadcast_game_state(
+        self,
+        game_id: str,
+        game_state: Dict[str, Any],
+        last_event: Optional[Dict[str, Any]] = None,
+        active_agent_sids: Optional[List[str]] = None,
+        player_hole_cards: Optional[Dict[str, List[str]]] = None
+    ):
+        """
+        Broadcast game state with Privacy Filter.
+        
+        This implements the unified room broadcast architecture:
+        
+        Step 1 - Public Payload (For Everyone):
+        - community_cards: Visible cards on the board
+        - pot: Current pot size  
+        - last_event: Player action + chat message
+        - CRITICAL: All hole_cards are MASKED as ["??", "??"] unless showdown
+        
+        Step 2 - Private Payload (For Active Agents Only):
+        - Send 'private_hand' event to each agent's specific socket_id
+        - Contains ONLY that agent's real hole cards
+        
+        Args:
+            game_id: Game session ID
+            game_state: Current game state from poker engine
+            last_event: Optional last action event with chat
+            active_agent_sids: List of active agent socket IDs
+            player_hole_cards: Dict mapping agent_sid -> their real hole cards
         """
         timestamp = datetime.utcnow().isoformat()
+        room_id = self._get_room_id(game_id)
+        is_showdown = game_state.get('phase') == 'showdown'
         
-        # Construct public broadcast (sanitized - NO hole cards of active players)
-        public_data = {
+        # ====================================================================
+        # STEP 1: Public Payload (For Everyone in the Room)
+        # ====================================================================
+        
+        # Build player list with MASKED hole cards (unless showdown)
+        public_players = []
+        for player in game_state.get('players', []):
+            player_info = {
+                'sid': player.get('sid'),
+                'wallet_address': player.get('wallet_address'),
+                'nickname': player.get('nickname'),
+                'chips': player.get('chips'),
+                'current_bet': player.get('current_bet'),
+                'status': player.get('status'),
+                'last_action': player.get('last_action'),
+                # CRITICAL: Mask hole cards unless showdown
+                'hole_cards': player.get('hole_cards', ['??', '??']) if is_showdown else ['??', '??']
+            }
+            public_players.append(player_info)
+        
+        public_payload = {
             'game_id': game_id,
             'phase': game_state.get('phase'),
-            'public_board': game_state.get('community_cards', []),
-            'pot_size': game_state.get('pot', 0),
+            'community_cards': game_state.get('community_cards', []),
+            'pot': game_state.get('pot', 0),
             'current_bet': game_state.get('current_bet', 0),
             'current_player': game_state.get('current_player'),
-            'last_action': {
-                'player_sid': move_result.get('player_sid'),
-                'player_nickname': move_result.get('player_nickname'),
-                'action': move_result.get('action'),
-                'amount': move_result.get('amount', 0)
-            },
-            'chat': {
-                'nickname': move_result.get('player_nickname'),
-                'message': move_result.get('chat'),
-                'action': move_result.get('action')
-            } if move_result.get('chat') else None,
-            'players': [
-                {
-                    'sid': p['sid'],
-                    'nickname': p['nickname'],
-                    'chips': p['chips'],
-                    'current_bet': p['current_bet'],
-                    'status': p['status'],
-                    'last_action': p.get('last_action')
-                }
-                for p in game_state.get('players', [])
-            ],
+            'players': public_players,
+            'last_event': last_event,
             'timestamp': timestamp
         }
         
-        # Send public broadcast to entire game room (agents + spectators)
-        await self.broadcast_to_game(game_id, 'game_broadcast', public_data)
+        # Broadcast to unified room (all agents + spectators)
+        await self.sio.emit('game_update', public_payload, room=room_id)
         
-        # Send private state to each player with their hole cards
-        for player_sid, hole_cards in player_hole_cards.items():
-            private_data = {
-                'game_id': game_id,
-                'hole_cards': hole_cards,
-                'your_turn': game_state.get('current_player') == player_sid,
-                'timestamp': timestamp
-            }
-            await self.send_to_player(player_sid, 'player_private', private_data)
+        # ====================================================================
+        # STEP 2: Private Payload (For Active Agents Only)
+        # ====================================================================
+        
+        if player_hole_cards:
+            for agent_sid, hole_cards in player_hole_cards.items():
+                if not active_agent_sids or agent_sid in active_agent_sids:
+                    private_payload = {
+                        'game_id': game_id,
+                        'hole_cards': hole_cards,
+                        'your_turn': game_state.get('current_player') == agent_sid,
+                        'timestamp': timestamp
+                    }
+                    # Send directly to agent's specific socket_id
+                    await self.sio.emit('private_hand', private_payload, room=agent_sid)
     
-    async def broadcast_poker_phase_change(
+    async def broadcast_poker_action(
         self,
         game_id: str,
-        phase_result: Dict[str, Any],
+        agent_sid: str,
+        agent_wallet: str,
+        agent_nickname: str,
+        action: str,
+        amount: int,
+        message: str,
+        game_state: Dict[str, Any],
+        active_agent_sids: List[str],
         player_hole_cards: Dict[str, List[str]]
     ):
         """
-        Broadcast a poker phase change (flop, turn, river).
+        Broadcast a poker action with the player's chat/bluff message.
+        
+        Creates the last_event log entry and broadcasts via Privacy Filter.
         
         Args:
             game_id: Game session ID
-            phase_result: Result from poker engine's advance_phase
-            player_hole_cards: Dict mapping player_sid -> their hole cards
+            agent_sid: Socket ID of the acting agent
+            agent_wallet: Wallet address of the acting agent
+            agent_nickname: Display name of the acting agent
+            action: Action taken (fold/call/raise/check)
+            amount: Bet amount (for raise/call)
+            message: The agent's chat/bluff message
+            game_state: Current game state
+            active_agent_sids: List of active agent socket IDs
+            player_hole_cards: Dict mapping agent_sid -> their real hole cards
         """
-        timestamp = datetime.utcnow().isoformat()
-        
-        # Public broadcast with new community cards
-        public_data = {
-            'game_id': game_id,
-            'event': 'phase_change',
-            'phase': phase_result.get('phase'),
-            'community_cards': phase_result.get('community_cards', []),
-            'current_player': phase_result.get('current_player'),
-            'timestamp': timestamp
+        # Construct the last_event log entry
+        last_event = {
+            'player': agent_wallet,
+            'player_sid': agent_sid,
+            'nickname': agent_nickname,
+            'action': action.upper(),
+            'amt': amount,
+            'chat': message,
+            'timestamp': datetime.utcnow().isoformat()
         }
         
-        await self.broadcast_to_game(game_id, 'game_broadcast', public_data)
-        
-        # Send private state to each player
-        for player_sid, hole_cards in player_hole_cards.items():
-            private_data = {
-                'game_id': game_id,
-                'hole_cards': hole_cards,
-                'your_turn': phase_result.get('current_player') == player_sid,
-                'timestamp': timestamp
-            }
-            await self.send_to_player(player_sid, 'player_private', private_data)
+        # Broadcast with Privacy Filter
+        await self.broadcast_game_state(
+            game_id=game_id,
+            game_state=game_state,
+            last_event=last_event,
+            active_agent_sids=active_agent_sids,
+            player_hole_cards=player_hole_cards
+        )
     
-    async def broadcast_showdown_reveal(
+    async def broadcast_showdown(
         self,
         game_id: str,
-        showdown_result: Dict[str, Any]
+        game_state: Dict[str, Any],
+        winners: List[Dict[str, Any]]
     ):
         """
-        Broadcast showdown reveal - all hole cards are now public.
+        Broadcast showdown - all hole cards are now revealed publicly.
         
-        This is called when the hand reaches showdown, revealing all
-        players' hole cards to everyone (agents and spectators).
+        At showdown, the Privacy Filter is lifted and all hole cards
+        are visible to everyone in the room.
         
         Args:
             game_id: Game session ID
-            showdown_result: Result from poker engine's showdown
+            game_state: Game state with phase='showdown'
+            winners: List of winner information
         """
         timestamp = datetime.utcnow().isoformat()
+        room_id = self._get_room_id(game_id)
         
-        # At showdown, ALL hole cards are revealed publicly
-        reveal_data = {
+        # Build player list with REVEALED hole cards
+        revealed_players = []
+        for player in game_state.get('players', []):
+            player_info = {
+                'sid': player.get('sid'),
+                'wallet_address': player.get('wallet_address'),
+                'nickname': player.get('nickname'),
+                'chips': player.get('chips'),
+                'status': player.get('status'),
+                # At showdown, reveal real hole cards (with fallback)
+                'hole_cards': player.get('hole_cards') or ['??', '??']
+            }
+            revealed_players.append(player_info)
+        
+        showdown_payload = {
             'game_id': game_id,
-            'event': 'showdown_reveal',
+            'event': 'showdown',
             'phase': 'showdown',
-            'community_cards': showdown_result.get('community_cards', []),
-            'player_hands': showdown_result.get('player_hands', {}),
-            'winners': showdown_result.get('winners', []),
+            'community_cards': game_state.get('community_cards', []),
+            'pot': game_state.get('pot', 0),
+            'players': revealed_players,
+            'winners': winners,
             'timestamp': timestamp
         }
         
-        await self.broadcast_to_game(game_id, 'showdown_reveal', reveal_data)
+        # Broadcast to unified room - everyone sees all cards now
+        await self.sio.emit('game_update', showdown_payload, room=room_id)
+    
+    async def send_private_hand(
+        self,
+        agent_sid: str,
+        game_id: str,
+        hole_cards: List[str],
+        is_your_turn: bool = False
+    ):
+        """
+        Send private hand info to a specific agent.
+        
+        Used during initial deal or when agent reconnects.
+        
+        Args:
+            agent_sid: Socket ID of the agent
+            game_id: Game session ID
+            hole_cards: The agent's hole cards (e.g., ["Th", "Ts"])
+            is_your_turn: Whether it's this agent's turn to act
+        """
+        private_payload = {
+            'game_id': game_id,
+            'hole_cards': hole_cards,
+            'your_turn': is_your_turn,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        await self.sio.emit('private_hand', private_payload, room=agent_sid)
     
     async def broadcast_poker_chat(
         self,
@@ -697,67 +807,90 @@ class SocketManager:
         action: Optional[str] = None
     ):
         """
-        Broadcast a chat/bluff message from a player.
-        
-        Chat messages are always public and visible to all players and spectators.
+        Broadcast a standalone chat message (not tied to an action).
         
         Args:
             game_id: Game session ID
-            player_sid: Socket ID of the player who sent the message
-            player_nickname: Display name of the player
-            message: The chat/bluff message
-            action: Optional action that accompanied the message
+            player_sid: Socket ID of the sender
+            player_nickname: Display name of the sender
+            message: The chat message
+            action: Optional action context
         """
-        timestamp = datetime.utcnow().isoformat()
+        room_id = self._get_room_id(game_id)
         
-        chat_data = {
+        chat_payload = {
             'game_id': game_id,
             'event': 'chat',
             'player_sid': player_sid,
             'nickname': player_nickname,
             'message': message,
             'action': action,
-            'timestamp': timestamp
+            'timestamp': datetime.utcnow().isoformat()
         }
         
-        await self.broadcast_to_game(game_id, 'game_broadcast', chat_data)
+        await self.sio.emit('game_update', chat_payload, room=room_id)
     
     async def send_poker_game_snapshot(
         self,
         sid: str,
         game_id: str,
         game_state: Dict[str, Any],
-        hole_cards: List[str],
-        chat_history: List[Dict[str, Any]]
+        hole_cards: Optional[List[str]] = None,
+        is_agent: bool = True
     ):
         """
-        Send a complete game snapshot to a reconnecting player.
+        Send a complete game snapshot to a reconnecting participant.
         
-        Used when a player reconnects to restore their game context.
+        For agents: Includes private hole cards via separate event.
+        For spectators: Only public state with masked cards.
         
         Args:
-            sid: Socket.IO session ID of the reconnecting player
+            sid: Socket.IO session ID of the reconnecting participant
             game_id: Game session ID
             game_state: Current public game state
-            hole_cards: The player's hole cards
-            chat_history: Recent chat history
+            hole_cards: Agent's hole cards (None for spectators)
+            is_agent: Whether the participant is an agent or spectator
         """
+        timestamp = datetime.utcnow().isoformat()
+        is_showdown = game_state.get('phase') == 'showdown'
+        
+        # Build public player list with masked cards (unless showdown)
+        public_players = []
+        for player in game_state.get('players', []):
+            player_info = {
+                'sid': player.get('sid'),
+                'nickname': player.get('nickname'),
+                'chips': player.get('chips'),
+                'current_bet': player.get('current_bet'),
+                'status': player.get('status'),
+                'hole_cards': player.get('hole_cards', ['??', '??']) if is_showdown else ['??', '??']
+            }
+            public_players.append(player_info)
+        
+        # Send public game state
         snapshot_data = {
             'game_id': game_id,
             'game_type': 'poker',
             'phase': game_state.get('phase'),
-            'hole_cards': hole_cards,
             'community_cards': game_state.get('community_cards', []),
-            'pot_size': game_state.get('pot', 0),
+            'pot': game_state.get('pot', 0),
             'current_bet': game_state.get('current_bet', 0),
             'current_player': game_state.get('current_player'),
-            'your_turn': game_state.get('current_player') == sid,
-            'players': game_state.get('players', []),
-            'chat_history': chat_history,
-            'timestamp': datetime.utcnow().isoformat()
+            'players': public_players,
+            'chat_history': game_state.get('chat_history', []),
+            'timestamp': timestamp
         }
         
         await self.sio.emit('GAME_SNAPSHOT', snapshot_data, room=sid)
+        
+        # If agent, also send their private hand
+        if is_agent and hole_cards:
+            await self.send_private_hand(
+                agent_sid=sid,
+                game_id=game_id,
+                hole_cards=hole_cards,
+                is_your_turn=game_state.get('current_player') == sid
+            )
 
 
 # ============================================================================

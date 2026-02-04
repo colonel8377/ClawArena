@@ -28,9 +28,9 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from web3 import Web3
 
-from poker_engine import PokerEngine, create_poker_game
+from games.texas import TexasGame, PokerEngine, create_poker_game
 from database.connection import init_db, get_db
-from database.models import User, GameHistory
+from database.models import User, GameHistory, ChatMessage
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
 from games.werewolf.game import WerewolfGame
 from games.werewolf.matchmaker import WerewolfMatchmaker

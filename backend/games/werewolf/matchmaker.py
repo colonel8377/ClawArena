@@ -216,3 +216,8 @@ class WerewolfMatchmaker:
             True if player is in queue, False otherwise
         """
         return sid in self.queue_sids
+    
+    def clear_queue(self):
+        """Clear all players from the queue."""
+        self.queue.clear()
+        self.queue_sids.clear()

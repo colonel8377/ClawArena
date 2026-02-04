@@ -142,23 +142,23 @@ async def startup_event():
     try:
         persisted_game_ids = await redis_manager.list_persisted_games()
         if persisted_game_ids:
-            print(f"Restoring {len(persisted_game_ids)} persisted games...")
+            print(f"Found {len(persisted_game_ids)} persisted games")
+            # Note: Full game restoration requires implementing from_dict method
+            # For now, we just log the persisted games and clear old state
             for game_id in persisted_game_ids:
                 try:
                     state_with_meta = await redis_manager.restore_game_state(game_id)
-                    if state_with_meta and state_with_meta.get('game_type') == 'werewolf':
-                        # Restore werewolf game
-                        game_state = state_with_meta.get('state', {})
-                        restored_game = WerewolfGame.from_dict(game_id, game_state)
-                        werewolf_games[game_id] = restored_game
-                        print(f"  ✓ Restored werewolf game: {game_id}")
+                    if state_with_meta:
+                        # Clean up old persisted states
+                        # TODO: Implement WerewolfGame.from_dict for full restoration
+                        await redis_manager.delete_game_state(game_id)
+                        print(f"  ⚠ Cleaned up persisted state for: {game_id} (restoration not yet implemented)")
                 except Exception as e:
-                    print(f"  ⚠ Failed to restore game {game_id}: {e}")
-            print(f"✓ Game restoration complete")
+                    print(f"  ⚠ Error processing game {game_id}: {e}")
         else:
-            print("No persisted games to restore")
+            print("No persisted games found")
     except Exception as e:
-        print(f"⚠ Game restoration failed: {e}")
+        print(f"⚠ Game restoration check failed: {e}")
 
 
 # ============================================================================
@@ -976,6 +976,9 @@ async def werewolf_action(sid, data):
         # Send action confirmation
         await sio.emit('werewolf_action_result', result, room=sid)
         
+        # Persist game state after action
+        await redis_manager.save_game_state(game_id, game.to_dict(), game_type="werewolf")
+        
         # Broadcast updated state (masked appropriately)
         await broadcast_werewolf_state(game_id)
         
@@ -999,6 +1002,9 @@ async def advance_werewolf_phase(sid, data):
         
         game = werewolf_games[game_id]
         result = game.advance_phase()
+        
+        # Persist game state after phase change
+        await redis_manager.save_game_state(game_id, game.to_dict(), game_type="werewolf")
         
         # Emit phase change to all players
         await sio.emit('werewolf_phase_change', result, room=game_id)

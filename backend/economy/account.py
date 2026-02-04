@@ -6,6 +6,7 @@ This module handles:
 - Daily login rewards (UTC-based)
 - Balance management
 - Transactional operations
+- Local debug mode support (unlimited funds)
 """
 
 from datetime import datetime, date
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..database.models import User
 from ..database.connection import get_db_session
+from ..config import is_local_debug_mode, get_debug_balance
 
 
 # Configuration
@@ -24,6 +26,8 @@ DAILY_LOGIN_REWARD = Decimal("100.0")  # 100 tokens per day
 def register_user(wallet_address: str) -> Dict:
     """
     Register a new user in the database.
+    
+    In local debug mode, users get unlimited funds (configured via LOCAL_DEBUG_BALANCE).
     
     Args:
         wallet_address: Ethereum wallet address (should be checksummed)
@@ -37,11 +41,20 @@ def register_user(wallet_address: str) -> Dict:
     if not wallet_address or len(wallet_address) != 42 or not wallet_address.startswith('0x'):
         raise ValueError("Invalid wallet address format")
     
+    # Use debug balance in local debug mode
+    initial_balance = get_debug_balance() if is_local_debug_mode() else DAILY_LOGIN_REWARD
+    
     with get_db_session() as db:
         # Check if user already exists
         existing_user = db.query(User).filter_by(wallet_address=wallet_address).first()
         
         if existing_user:
+            # In local debug mode, always ensure user has unlimited funds
+            if is_local_debug_mode() and existing_user.balance < get_debug_balance():
+                existing_user.balance = get_debug_balance()
+                db.commit()
+                db.refresh(existing_user)
+            
             return {
                 'status': 'already_registered',
                 'user': {
@@ -54,7 +67,7 @@ def register_user(wallet_address: str) -> Dict:
         # Create new user with initial balance
         new_user = User(
             wallet_address=wallet_address,
-            balance=DAILY_LOGIN_REWARD,  # Initial reward
+            balance=initial_balance,
             last_login_date=datetime.utcnow(),
             created_at=datetime.utcnow()
         )
@@ -69,13 +82,16 @@ def register_user(wallet_address: str) -> Dict:
                 'wallet_address': new_user.wallet_address,
                 'balance': float(new_user.balance),
                 'created_at': new_user.created_at.isoformat()
-            }
+            },
+            'local_debug_mode': is_local_debug_mode()
         }
 
 
 def handle_login(wallet_address: str) -> Dict:
     """
     Handle user login with daily reward check.
+    
+    In local debug mode, always ensures user has unlimited funds.
     
     Checks if it's a new UTC day since last login. If yes, adds tokens
     to virtual balance and updates last_login_date.
@@ -97,6 +113,26 @@ def handle_login(wallet_address: str) -> Dict:
         
         now_utc = datetime.utcnow()
         today_utc = now_utc.date()
+        
+        # In local debug mode, always ensure user has unlimited funds
+        if is_local_debug_mode():
+            if user.balance < get_debug_balance():
+                user.balance = get_debug_balance()
+            user.last_login_date = now_utc
+            db.commit()
+            db.refresh(user)
+            
+            return {
+                'status': 'success',
+                'reward_granted': True,
+                'reward_amount': float(get_debug_balance()),
+                'local_debug_mode': True,
+                'user': {
+                    'wallet_address': user.wallet_address,
+                    'balance': float(user.balance),
+                    'last_login_date': user.last_login_date.isoformat() if user.last_login_date else None
+                }
+            }
         
         # Check if last login was on a different day
         reward_granted = False
@@ -124,6 +160,8 @@ def deduct_balance(wallet_address: str, amount: Decimal) -> Dict:
     """
     Deduct balance from user account (e.g., for game entry fee).
     
+    In local debug mode, skips balance checks and always succeeds.
+    
     This is a transactional operation - either succeeds completely or fails.
     
     Args:
@@ -144,6 +182,16 @@ def deduct_balance(wallet_address: str, amount: Decimal) -> Dict:
         
         if not user:
             raise ValueError(f"User not found: {wallet_address}")
+        
+        # In local debug mode, skip balance check and keep balance high
+        if is_local_debug_mode():
+            # Don't actually deduct, keep unlimited funds
+            return {
+                'status': 'success',
+                'deducted': float(amount),
+                'new_balance': float(user.balance),
+                'local_debug_mode': True
+            }
         
         if user.balance < amount:
             raise ValueError(
@@ -201,6 +249,8 @@ def get_balance(wallet_address: str) -> Decimal:
     """
     Get current balance for a user.
     
+    In local debug mode, returns the debug balance (unlimited funds).
+    
     Args:
         wallet_address: Ethereum wallet address
         
@@ -210,6 +260,10 @@ def get_balance(wallet_address: str) -> Decimal:
     Raises:
         ValueError: If user not found
     """
+    # In local debug mode, always return unlimited funds
+    if is_local_debug_mode():
+        return get_debug_balance()
+    
     with get_db_session() as db:
         user = db.query(User).filter_by(wallet_address=wallet_address).first()
         

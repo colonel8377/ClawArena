@@ -10,6 +10,7 @@ Security improvements:
 - Blockchain as source of truth for nonces
 - Redis persistence configuration
 - Graceful shutdown handling
+- Local debug mode for development
 """
 
 import os
@@ -28,6 +29,14 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from web3 import Web3
 
+from config import (
+    is_local_debug_mode, 
+    LOCAL_DEBUG_MODE, 
+    SERVER_PRIVATE_KEY, 
+    ARENA_VAULT_ADDRESS,
+    WEB3_PROVIDER_URL,
+    ALLOWED_ORIGINS
+)
 from games.texas import TexasGame, TexasEngine, create_poker_game, create_texas_game
 from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
@@ -42,28 +51,20 @@ from decimal import Decimal
 # ENVIRONMENT CONFIGURATION
 # ============================================================================
 
-SERVER_PRIVATE_KEY = os.getenv(
-    'SERVER_PRIVATE_KEY', 
-    '0x0000000000000000000000000000000000000000000000000000000000000001'
-)
-
-# Validate private key is set in production
-if SERVER_PRIVATE_KEY == '0x0000000000000000000000000000000000000000000000000000000000000001':
+# Validate private key is set in production (not in local debug mode)
+if not LOCAL_DEBUG_MODE and SERVER_PRIVATE_KEY == '0x0000000000000000000000000000000000000000000000000000000000000001':
     import warnings
     warnings.warn(
         "WARNING: Using default private key! Set SERVER_PRIVATE_KEY environment variable in production!",
         RuntimeWarning
     )
 
-# Contract configuration
-ARENA_VAULT_ADDRESS = os.getenv('ARENA_VAULT_ADDRESS', '')
-WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL', 'https://mainnet.base.org')
-
-# CORS configuration - whitelist specific origins in production
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*').split(',')
-
-# Initialize Web3 connection
-w3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER_URL)) if WEB3_PROVIDER_URL else Web3()
+# Initialize Web3 connection (skip in local debug mode)
+if LOCAL_DEBUG_MODE:
+    w3 = None
+    print("⚠️  LOCAL DEBUG MODE: Web3 connection disabled")
+else:
+    w3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER_URL)) if WEB3_PROVIDER_URL else Web3()
 
 # Initialize server account for signing
 server_account = Account.from_key(SERVER_PRIVATE_KEY)
@@ -116,13 +117,9 @@ werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
 # DATABASE INITIALIZATION
 # ============================================================================
 
-# Initialize database on startup
-try:
-    init_db()
-    print("✓ Database initialized")
-except Exception as e:
-    print(f"⚠ Database initialization failed: {e}")
-    print("  Make sure MySQL is running and credentials are correct")
+# Note: Database initialization with retry logic is performed in the async startup handler
+# to properly wait for MySQL to be ready in Docker environments.
+# The init_db() function now includes retry logic for container startup scenarios.
 
 
 # ============================================================================
@@ -133,7 +130,21 @@ except Exception as e:
 async def startup_event():
     """
     Initialize services and restore persisted game states on server startup.
+    
+    This handler runs after the app is created and properly waits for:
+    - MySQL database to be ready (with retry logic)
+    - Redis connection
+    - Game state restoration
     """
+    # Initialize database with retry logic (waits for MySQL to be ready)
+    print("Initializing database...")
+    db_success = init_db(retry=True)
+    if db_success:
+        print("✓ Database initialized and tables created")
+    else:
+        print("⚠ Database initialization failed - some features may not work")
+        print("  Make sure MySQL is running and credentials are correct")
+    
     # Connect to Redis
     await redis_manager.connect()
     print("✓ RedisManager connected")
@@ -248,6 +259,9 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     """
     Generate a withdrawal signature for on-chain claiming.
     
+    In local debug mode, returns a mock signature that won't work on-chain
+    but allows testing the flow.
+    
     SECURITY UPDATE: Nonce is now synchronized via RedisManager to prevent
     race conditions during concurrent withdrawal requests.
     
@@ -261,6 +275,21 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     Returns:
         Dict containing the signature, message hash, nonce, and parameters
     """
+    # Local debug mode: return mock signature
+    if LOCAL_DEBUG_MODE:
+        return {
+            'user_address': user_address,
+            'amount': amount,
+            'nonce': 0,
+            # Mock signature: 65 bytes in hex (r: 32 + s: 32 + v: 1 = 65 bytes)
+            'signature': '0x' + '00' * 65,
+            # Mock hash: 32 bytes in hex (Keccak-256 hash)
+            'message_hash': '0x' + '00' * 32,
+            'signer': server_account.address,
+            'local_debug_mode': True,
+            'note': 'Mock signature for local debug mode - not valid on-chain'
+        }
+    
     # Get and increment nonce atomically via RedisManager (prevents race conditions)
     nonce = await redis_manager.get_and_increment_nonce(user_address)
     
@@ -302,7 +331,8 @@ async def root(request: Request):
         "version": "2.1.0",
         "status": "running",
         "server_address": server_account.address,
-        "security": "enhanced"
+        "security": "enhanced",
+        "local_debug_mode": LOCAL_DEBUG_MODE
     }
 
 
@@ -313,7 +343,8 @@ async def health(request: Request):
     return {
         "status": "healthy",
         "active_tables": len(poker_tables),
-        "web3_connected": w3.is_connected() if w3 else False
+        "web3_connected": w3.is_connected() if w3 else False,
+        "local_debug_mode": LOCAL_DEBUG_MODE
     }
 
 
@@ -491,12 +522,42 @@ async def authenticate(sid, data):
     """
     Authenticate a client with SIWE.
     
+    In local debug mode, skips signature verification and accepts any valid address.
+    
     Expected data: {'address': str, 'signature': str}
     """
     try:
         address = data.get('address')
         signature = data.get('signature')
         
+        # Local debug mode: simplified authentication (no signature verification)
+        if LOCAL_DEBUG_MODE:
+            if not address:
+                await sio.emit('error', {'message': 'Missing address'}, room=sid)
+                return
+            
+            # Validate address format
+            if len(address) != 42 or not address.startswith('0x'):
+                await sio.emit('error', {'message': 'Invalid address format'}, room=sid)
+                return
+            
+            # Mark as authenticated (no signature verification needed)
+            player_sessions[sid]['address'] = address
+            player_sessions[sid]['authenticated'] = True
+            
+            # Auto-register/update user with debug balance
+            try:
+                register_user(address)
+            except Exception:
+                pass  # User may already exist
+            
+            await sio.emit('authenticated', {
+                'address': address,
+                'local_debug_mode': True
+            }, room=sid)
+            return
+        
+        # Normal mode: full SIWE authentication
         if not address or not signature:
             await sio.emit('error', {'message': 'Missing address or signature'}, room=sid)
             return
@@ -1320,20 +1381,35 @@ if __name__ == "__main__":
     import uvicorn
     
     print("=" * 70)
-    print("Arena Poker Server - Enhanced Security Edition")
+    if LOCAL_DEBUG_MODE:
+        print("Arena Poker Server - LOCAL DEBUG MODE")
+        print("⚠️  WARNING: Security features are DISABLED ⚠️")
+    else:
+        print("Arena Poker Server - Enhanced Security Edition")
     print("=" * 70)
     print(f"Server account address: {server_account.address}")
     print(f"Web3 connected: {w3.is_connected() if w3 else False}")
     print(f"Arena Vault address: {ARENA_VAULT_ADDRESS or 'Not configured'}")
     print(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+    print(f"Local Debug Mode: {LOCAL_DEBUG_MODE}")
     print("=" * 70)
-    print("\nSecurity features enabled:")
-    print("  ✓ Rate limiting on all endpoints")
-    print("  ✓ Blockchain nonce synchronization")
-    print("  ✓ Configurable CORS whitelist")
-    print("  ✓ Graceful shutdown handling")
-    print("  ✓ Daily withdrawal limits (contract)")
-    print("  ✓ Emergency pause mechanism (contract)")
+    
+    if LOCAL_DEBUG_MODE:
+        print("\n⚠️  LOCAL DEBUG MODE FEATURES:")
+        print("  ✓ Simplified authentication (no SIWE signature required)")
+        print("  ✓ Unlimited funds for all accounts")
+        print("  ✓ Mock withdrawal signatures")
+        print("  ✓ Web3/Blockchain connections disabled")
+        print("\n  ⚠️  DO NOT USE IN PRODUCTION!")
+    else:
+        print("\nSecurity features enabled:")
+        print("  ✓ Rate limiting on all endpoints")
+        print("  ✓ Blockchain nonce synchronization")
+        print("  ✓ Configurable CORS whitelist")
+        print("  ✓ Graceful shutdown handling")
+        print("  ✓ Daily withdrawal limits (contract)")
+        print("  ✓ Emergency pause mechanism (contract)")
+    
     print("=" * 70)
     print("\nStarting server on http://0.0.0.0:8000")
     print("API docs available at: http://0.0.0.0:8000/docs")

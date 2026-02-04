@@ -1,0 +1,134 @@
+# Docker Compose for Local Development
+#
+# This configuration provides:
+# - Backend service with hot reloading
+# - MySQL database
+# - Redis for caching and session management
+#
+# Usage:
+#   Start all services:     docker compose -f docker-compose.dev.yml up
+#   Start in background:    docker compose -f docker-compose.dev.yml up -d
+#   View logs:              docker compose -f docker-compose.dev.yml logs -f
+#   Stop all services:      docker compose -f docker-compose.dev.yml down
+#   Stop and remove data:   docker compose -f docker-compose.dev.yml down -v
+
+services:
+  # ==========================================================================
+  # Backend Service (FastAPI + Socket.IO)
+  # ==========================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    container_name: arena_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source code for hot reloading
+      - ./backend:/app
+      # Mount requirements.txt from root
+      - ./requirements.txt:/app/requirements.txt:ro
+      # Prevent container's cache from being overwritten
+      - /app/__pycache__
+    environment:
+      # Server Configuration
+      - HOST=0.0.0.0
+      - PORT=8000
+      
+      # Local Debug Mode (enables unlimited funds, simplified auth)
+      - LOCAL_DEBUG_MODE=true
+      - LOCAL_DEBUG_BALANCE=999999999
+      - DEV_MODE=true
+      
+      # Database Configuration (connects to mysql service)
+      - DB_USER=root
+      - DB_PASSWORD=arena_dev_password
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=agent_arena
+      
+      # Redis Configuration (connects to redis service)
+      - REDIS_URL=redis://redis:6379/0
+      
+      # CORS (allow all origins in dev)
+      - ALLOWED_ORIGINS=*
+      
+      # Game Settings
+      - DEFAULT_SMALL_BLIND=10
+      - DEFAULT_BIG_BLIND=20
+      - DEFAULT_STARTING_CHIPS=1000
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - arena_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ==========================================================================
+  # MySQL Database
+  # ==========================================================================
+  mysql:
+    image: mysql:8.0
+    container_name: arena_mysql
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=arena_dev_password
+      - MYSQL_DATABASE=agent_arena
+      - MYSQL_CHARACTER_SET_SERVER=utf8mb4
+      - MYSQL_COLLATION_SERVER=utf8mb4_unicode_ci
+    volumes:
+      # Persist database data
+      - mysql_data:/var/lib/mysql
+      # Initialize database with schema (optional)
+      - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      - arena_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-parena_dev_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: --default-authentication-plugin=mysql_native_password
+
+  # ==========================================================================
+  # Redis (Session & State Management)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: arena_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      # Persist Redis data
+      - redis_data:/data
+    networks:
+      - arena_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  arena_network:
+    driver: bridge
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local

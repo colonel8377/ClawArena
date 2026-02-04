@@ -28,7 +28,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from web3 import Web3
 
-from games.texas import TexasGame, PokerEngine, create_poker_game
+from games.texas import TexasGame, PokerEngine, create_poker_game, create_texas_game
 from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
@@ -101,7 +101,7 @@ app.add_middleware(
 )
 
 # Game state management
-poker_tables: Dict[str, PokerEngine] = {}
+poker_tables: Dict[str, TexasGame] = {}  # Using unified TexasGame architecture
 werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
 player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
 nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
@@ -514,7 +514,7 @@ async def join_game(sid, data):
         
         # Create table if it doesn't exist
         if table_id not in poker_tables:
-            poker_tables[table_id] = create_poker_game(table_id)
+            poker_tables[table_id] = create_texas_game(table_id)
         
         table = poker_tables[table_id]
         address = player_sessions[sid]['address']
@@ -752,7 +752,10 @@ async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount:
 
 
 async def broadcast_game_state(table_id: str):
-    """Broadcast game state to all players at the table."""
+    """
+    Broadcast game state to all players at the table.
+    Also saves state to Redis for persistence.
+    """
     if table_id not in poker_tables:
         return
     
@@ -762,6 +765,9 @@ async def broadcast_game_state(table_id: str):
     for player_sid, player in table.players.items():
         state = table.get_game_state(player_sid)
         await sio.emit('game_state', state, room=player_sid)
+    
+    # Save state to Redis for hot storage (non-blocking)
+    asyncio.create_task(table.save_state_to_redis())
 
 
 # ============================================================================
@@ -991,7 +997,10 @@ async def get_werewolf_state(sid, data):
 
 
 async def broadcast_werewolf_state(game_id: str):
-    """Broadcast Werewolf game state to all players."""
+    """
+    Broadcast Werewolf game state to all players.
+    Also saves state to Redis for persistence.
+    """
     if game_id not in werewolf_games:
         return
     
@@ -1001,6 +1010,9 @@ async def broadcast_werewolf_state(game_id: str):
     for player in game.players:
         state = game.get_game_state(player['sid'])
         await sio.emit('werewolf_state', state, room=player['sid'])
+    
+    # Save state to Redis for hot storage (non-blocking)
+    asyncio.create_task(game.save_state_to_redis())
 
 
 # ============================================================================
@@ -1164,8 +1176,23 @@ async def graceful_shutdown():
         'timestamp': datetime.utcnow().isoformat()
     })
     
-    # Save active game states (if Redis persistence is configured)
-    # TODO: Implement game state persistence to Redis
+    # Save active game states to Redis for persistence
+    print("Saving game states to Redis...")
+    save_tasks = []
+    
+    # Save poker game states
+    for game_id, game in poker_tables.items():
+        save_tasks.append(game.save_state_to_redis())
+        save_tasks.append(game.close_redis())
+    
+    # Save werewolf game states
+    for game_id, game in werewolf_games.items():
+        save_tasks.append(game.save_state_to_redis())
+        save_tasks.append(game.close_redis())
+    
+    # Execute all save operations concurrently
+    if save_tasks:
+        await asyncio.gather(*save_tasks, return_exceptions=True)
     
     # Wait for ongoing operations to complete
     await asyncio.sleep(2)

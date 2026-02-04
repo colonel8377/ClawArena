@@ -236,3 +236,55 @@ class TexasGame(BaseGame):
         # TODO: Implement MySQL persistence via database module
         # This would save to GameSession.state_snapshot
         pass
+    
+    # ========================================================================
+    # BACKWARD COMPATIBILITY METHODS (PokerEngine interface)
+    # ========================================================================
+    
+    def start_hand(self) -> Dict:
+        """
+        Start a new hand (backward compatible with PokerEngine).
+        
+        Returns:
+            Dict with success status
+        """
+        return self.engine.start_hand()
+    
+    def process_move(self, sid: str, action: str, amount: int = 0, 
+                    chat_message: Optional[str] = None) -> Dict:
+        """
+        Process a player move (backward compatible with PokerEngine).
+        
+        Args:
+            sid: Socket.IO session ID
+            action: Action type (fold, check, call, raise)
+            amount: Bet amount for raise
+            chat_message: Optional chat/bluff message
+            
+        Returns:
+            Dict with action result
+        """
+        # Update last action time for zombie tracking
+        self.update_player_action_time(sid)
+        
+        # Reset consecutive timeouts on successful action
+        player = self._get_player_by_sid(sid)
+        if player:
+            player['consecutive_timeouts'] = 0
+            if player.get('status') == 'zombie':
+                player['status'] = 'active'
+        
+        # Delegate to engine
+        return self.engine.process_move(sid, action, amount, chat_message)
+    
+    def can_start(self) -> bool:
+        """Check if game can start (backward compatible)."""
+        return len(self.players) >= self.MIN_PLAYERS and self.engine.can_start()
+    
+    def is_hand_over(self) -> bool:
+        """Check if current hand is over (backward compatible)."""
+        return self.engine.is_hand_over()
+    
+    def showdown(self) -> Dict:
+        """Get showdown results (backward compatible)."""
+        return self.engine.showdown()

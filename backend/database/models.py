@@ -9,7 +9,6 @@ This module defines the database schema for:
 """
 
 from datetime import datetime
-from enum import Enum as PyEnum
 from decimal import Decimal
 from sqlalchemy import (
     Column, Integer, String, DECIMAL, DateTime, Boolean, 

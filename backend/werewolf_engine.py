@@ -954,7 +954,14 @@ class WerewolfEngine(BaseGame):
         - Current game state
         - Chat history
         - Phase information
+        
+        Args:
+            game_id: Game ID to verify (must match self.game_id)
+            player_sid: Player socket ID
         """
+        if game_id != self.game_id:
+            raise ValueError(f"Game ID mismatch: expected {self.game_id}, got {game_id}")
+        
         player = self.get_player(player_sid)
         state = self.get_game_state(player_sid)
         

@@ -42,10 +42,14 @@ engine = create_engine(
 )
 
 # Create async engine
+# Note: Using NullPool for async connections because:
+# 1. Async SQLAlchemy connections cannot be safely shared across event loop iterations
+# 2. Connection pooling with async can cause "connection is closed" errors during idle periods
+# 3. NullPool creates fresh connections for each operation, avoiding stale connection issues
 try:
     async_engine = create_async_engine(
         ASYNC_DATABASE_URL,
-        poolclass=NullPool,  # Use NullPool for async to avoid connection issues
+        poolclass=NullPool,
         echo=False
     )
 except Exception:

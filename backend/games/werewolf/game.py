@@ -160,10 +160,20 @@ class WerewolfGame(BaseGame):
         - witch_poison: Witch uses poison (target_sid)
         - vote: Vote to eliminate someone (target_sid)
         - hunter_shoot: Hunter shoots someone when dying (target_sid)
+        - chat: Send a chat message (message in kwargs)
         """
         player = self._get_player_by_sid(sid)
         if not player or not player['is_alive']:
+            # Allow dead players to chat
+            if action == 'chat':
+                message = kwargs.get('message', '')
+                return {'success': True, 'chat': self.add_chat_message(sid, message)}
             return {'success': False, 'error': 'Player not found or dead'}
+        
+        # Handle chat action
+        if action == 'chat':
+            message = kwargs.get('message', '')
+            return {'success': True, 'chat': self.add_chat_message(sid, message)}
         
         # Route to appropriate handler
         if action == 'night_kill':
@@ -425,7 +435,8 @@ class WerewolfGame(BaseGame):
             'game_id': self.game_id,
             'phase': self.phase.value,
             'day_count': self.day_count,
-            'players': []
+            'players': [],
+            'chat_messages': self.get_chat_history(limit=50)  # Include recent chat
         }
         
         # Add player information

@@ -29,6 +29,11 @@ from eth_account.messages import encode_defunct
 from web3 import Web3
 
 from poker_logic import TexasHoldemTable
+from database.connection import init_db, get_db
+from database.models import User, GameHistory
+from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
+from games.werewolf.game import WerewolfGame
+from decimal import Decimal
 
 
 # ============================================================================
@@ -96,9 +101,23 @@ app.add_middleware(
 
 # Game state management
 tables: Dict[str, TexasHoldemTable] = {}
-player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, authenticated}
+werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
+player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
 nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
 # NOTE: withdrawal_nonces removed - now queried from blockchain
+
+
+# ============================================================================
+# DATABASE INITIALIZATION
+# ============================================================================
+
+# Initialize database on startup
+try:
+    init_db()
+    print("✓ Database initialized")
+except Exception as e:
+    print(f"⚠ Database initialization failed: {e}")
+    print("  Make sure MySQL is running and credentials are correct")
 
 
 # ============================================================================
@@ -331,6 +350,60 @@ async def get_withdrawal_nonce(request: Request, address: str):
 
 
 # ============================================================================
+# ECONOMY SYSTEM ENDPOINTS
+# ============================================================================
+
+@app.post("/api/register")
+@limiter.limit("5/minute")
+async def api_register(request: Request, wallet_address: str):
+    """
+    Register a new user account.
+    
+    Creates a user account in the database with initial balance.
+    """
+    try:
+        result = register_user(wallet_address)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+
+
+@app.post("/api/login")
+@limiter.limit("10/minute")
+async def api_login(request: Request, wallet_address: str):
+    """
+    Handle user login with daily reward check.
+    
+    Checks if it's a new UTC day and grants daily login reward if applicable.
+    """
+    try:
+        result = handle_login(wallet_address)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+
+@app.get("/api/balance/{wallet_address}")
+@limiter.limit("20/minute")
+async def api_get_balance(request: Request, wallet_address: str):
+    """Get user's current balance."""
+    try:
+        balance = get_balance(wallet_address)
+        return {
+            "wallet_address": wallet_address,
+            "balance": float(balance)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get balance: {str(e)}")
+
+
+# ============================================================================
 # SOCKET.IO EVENT HANDLERS
 # ============================================================================
 
@@ -341,6 +414,7 @@ async def connect(sid, environ):
     player_sessions[sid] = {
         'address': None,
         'table_id': None,
+        'game_id': None,
         'authenticated': False
     }
     await sio.emit('connected', {'sid': sid}, room=sid)
@@ -648,6 +722,245 @@ async def broadcast_game_state(table_id: str):
     for player in table.players:
         state = table.get_game_state(player['sid'])
         await sio.emit('game_state', state, room=player['sid'])
+
+
+# ============================================================================
+# WEREWOLF GAME SOCKET.IO HANDLERS
+# ============================================================================
+
+@sio.event
+async def create_werewolf_game(sid, data):
+    """
+    Create a new Werewolf game.
+    
+    Expected data: {'game_id': str}
+    """
+    try:
+        # Check authentication
+        if sid not in player_sessions or not player_sessions[sid]['authenticated']:
+            await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
+            return
+        
+        game_id = data.get('game_id')
+        if not game_id:
+            await sio.emit('error', {'message': 'game_id required'}, room=sid)
+            return
+        
+        # Create game if doesn't exist
+        if game_id in werewolf_games:
+            await sio.emit('error', {'message': 'Game already exists'}, room=sid)
+            return
+        
+        werewolf_games[game_id] = WerewolfGame(game_id)
+        
+        await sio.emit('werewolf_game_created', {'game_id': game_id}, room=sid)
+        
+    except Exception as e:
+        await sio.emit('error', {'message': f'Create game failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def join_werewolf_game(sid, data):
+    """
+    Join a Werewolf game.
+    
+    Expected data: {'game_id': str, 'nickname': str (optional)}
+    """
+    try:
+        # Check authentication
+        if sid not in player_sessions or not player_sessions[sid]['authenticated']:
+            await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
+            return
+        
+        game_id = data.get('game_id')
+        nickname = data.get('nickname', 'Player')
+        
+        if not game_id or game_id not in werewolf_games:
+            await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
+            return
+        
+        game = werewolf_games[game_id]
+        address = player_sessions[sid]['address']
+        
+        # Add player to game
+        if not game.add_player(sid, address, nickname=nickname):
+            await sio.emit('error', {'message': 'Could not join game'}, room=sid)
+            return
+        
+        # Update session
+        player_sessions[sid]['game_id'] = game_id
+        
+        # Join Socket.IO room
+        await sio.enter_room(sid, game_id)
+        
+        # Notify player
+        await sio.emit('werewolf_joined', {
+            'game_id': game_id,
+            'address': address
+        }, room=sid)
+        
+        # Broadcast updated state to all players in game
+        await broadcast_werewolf_state(game_id)
+        
+    except Exception as e:
+        await sio.emit('error', {'message': f'Join werewolf game failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def start_werewolf_game(sid, data):
+    """
+    Start a Werewolf game.
+    
+    Expected data: {'game_id': str}
+    """
+    try:
+        game_id = data.get('game_id')
+        
+        if not game_id or game_id not in werewolf_games:
+            await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
+            return
+        
+        game = werewolf_games[game_id]
+        
+        if not game.start_game():
+            await sio.emit('error', {'message': 'Cannot start game (need more players)'}, room=sid)
+            return
+        
+        # Broadcast updated state
+        await broadcast_werewolf_state(game_id)
+        
+    except Exception as e:
+        await sio.emit('error', {'message': f'Start werewolf game failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def werewolf_action(sid, data):
+    """
+    Process a Werewolf game action.
+    
+    Expected data: {
+        'game_id': str,
+        'action': str,  # 'night_kill', 'seer_check', 'witch_save', 'witch_poison', 'vote', 'hunter_shoot'
+        'target_sid': str (optional, depends on action)
+    }
+    """
+    try:
+        game_id = data.get('game_id')
+        action = data.get('action')
+        target_sid = data.get('target_sid')
+        
+        if not game_id or game_id not in werewolf_games:
+            await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
+            return
+        
+        if not action:
+            await sio.emit('error', {'message': 'Action required'}, room=sid)
+            return
+        
+        game = werewolf_games[game_id]
+        result = game.process_action(sid, action, target_sid=target_sid)
+        
+        if not result['success']:
+            await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
+            return
+        
+        # Send action confirmation
+        await sio.emit('werewolf_action_result', result, room=sid)
+        
+        # Broadcast updated state (masked appropriately)
+        await broadcast_werewolf_state(game_id)
+        
+    except Exception as e:
+        await sio.emit('error', {'message': f'Werewolf action failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def advance_werewolf_phase(sid, data):
+    """
+    Advance to the next phase in Werewolf game.
+    
+    Expected data: {'game_id': str}
+    """
+    try:
+        game_id = data.get('game_id')
+        
+        if not game_id or game_id not in werewolf_games:
+            await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
+            return
+        
+        game = werewolf_games[game_id]
+        result = game.advance_phase()
+        
+        # Emit phase change to all players
+        await sio.emit('werewolf_phase_change', result, room=game_id)
+        
+        # Check if game ended
+        if game.is_game_over():
+            winners = game.get_winners()
+            
+            # Record game in database
+            try:
+                from database.connection import get_db_session
+                with get_db_session() as db:
+                    for winner_address in winners:
+                        game_record = GameHistory(
+                            game_type='werewolf',
+                            winner_wallet=winner_address,
+                            timestamp=datetime.utcnow()
+                        )
+                        db.add(game_record)
+                    db.commit()
+            except Exception as e:
+                print(f"Failed to record game result: {e}")
+            
+            # Award winnings (example: 50 tokens per winner)
+            try:
+                for winner_address in winners:
+                    add_balance(winner_address, Decimal("50.0"))
+            except Exception as e:
+                print(f"Failed to award winnings: {e}")
+        
+        # Broadcast updated state
+        await broadcast_werewolf_state(game_id)
+        
+    except Exception as e:
+        await sio.emit('error', {'message': f'Advance phase failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def get_werewolf_state(sid, data):
+    """
+    Get current Werewolf game state.
+    
+    Expected data: {'game_id': str}
+    """
+    try:
+        game_id = data.get('game_id')
+        
+        if not game_id or game_id not in werewolf_games:
+            await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
+            return
+        
+        game = werewolf_games[game_id]
+        state = game.get_game_state(sid)
+        
+        await sio.emit('werewolf_state', state, room=sid)
+        
+    except Exception as e:
+        await sio.emit('error', {'message': f'Get werewolf state failed: {str(e)}'}, room=sid)
+
+
+async def broadcast_werewolf_state(game_id: str):
+    """Broadcast Werewolf game state to all players."""
+    if game_id not in werewolf_games:
+        return
+    
+    game = werewolf_games[game_id]
+    
+    # Send personalized state to each player (with proper masking)
+    for player in game.players:
+        state = game.get_game_state(player['sid'])
+        await sio.emit('werewolf_state', state, room=player['sid'])
 
 
 # ============================================================================

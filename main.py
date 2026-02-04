@@ -204,6 +204,9 @@ def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     # Get current nonce from blockchain (SINGLE SOURCE OF TRUTH)
     nonce = get_nonce_from_blockchain(user_address)
     
+    # Ensure address is checksummed
+    user_address = Web3.to_checksum_address(user_address)
+    
     # Create the message to sign (matching smart contract's expected format)
     # This must match: keccak256(abi.encodePacked(address, amount, nonce))
     

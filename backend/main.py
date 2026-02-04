@@ -33,6 +33,7 @@ from database.connection import init_db, get_db
 from database.models import User, GameHistory
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
 from games.werewolf.game import WerewolfGame
+from games.werewolf.matchmaker import WerewolfMatchmaker
 from decimal import Decimal
 
 
@@ -105,6 +106,9 @@ werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
 player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
 nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
 # NOTE: withdrawal_nonces removed - now queried from blockchain
+
+# Matchmaker for Werewolf games
+werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
 
 
 # ============================================================================
@@ -423,6 +427,8 @@ async def connect(sid, environ):
 @sio.event
 async def disconnect(sid):
     """Handle client disconnection."""
+    global werewolf_matchmaker
+    
     print(f"Client disconnected: {sid}")
     
     if sid in player_sessions:
@@ -435,6 +441,10 @@ async def disconnect(sid):
             
             # Broadcast updated state
             await broadcast_game_state(session['table_id'])
+        
+        # Remove from matchmaking queue if in one
+        if werewolf_matchmaker:
+            werewolf_matchmaker.remove_player(sid)
         
         del player_sessions[sid]
 
@@ -964,6 +974,141 @@ async def broadcast_werewolf_state(game_id: str):
 
 
 # ============================================================================
+# MATCHMAKING
+# ============================================================================
+
+async def on_game_matched(players, game_size: int):
+    """
+    Callback when matchmaker creates a game.
+    
+    Args:
+        players: List of QueuedPlayer objects
+        game_size: Number of players in this game
+    """
+    import uuid
+    
+    # Generate unique game ID
+    game_id = f"werewolf_auto_{uuid.uuid4().hex[:8]}"
+    
+    # Create game
+    game = WerewolfGame(game_id)
+    werewolf_games[game_id] = game
+    
+    # Add all players to game
+    for player in players:
+        # Add player to game
+        game.add_player(player.sid, player.wallet_address, nickname=player.nickname)
+        
+        # Update session
+        if player.sid in player_sessions:
+            player_sessions[player.sid]['game_id'] = game_id
+        
+        # Join Socket.IO room
+        await sio.enter_room(player.sid, game_id)
+    
+    # Start the game
+    game.start_game()
+    
+    # Notify all players
+    for player in players:
+        await sio.emit('matchmaking_game_started', {
+            'game_id': game_id,
+            'player_count': game_size
+        }, room=player.sid)
+    
+    # Broadcast initial game state
+    await broadcast_werewolf_state(game_id)
+
+
+@sio.event
+async def join_matchmaking(sid, data):
+    """
+    Join the Werewolf matchmaking queue.
+    
+    Expected data: {'nickname': str (optional)}
+    """
+    global werewolf_matchmaker
+    
+    try:
+        # Check authentication
+        if sid not in player_sessions or not player_sessions[sid]['authenticated']:
+            await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
+            return
+        
+        nickname = data.get('nickname', 'Player')
+        address = player_sessions[sid]['address']
+        
+        # Initialize matchmaker if needed
+        if werewolf_matchmaker is None:
+            werewolf_matchmaker = WerewolfMatchmaker(game_start_callback=on_game_matched)
+            werewolf_matchmaker.start()
+        
+        # Add to queue
+        if werewolf_matchmaker.add_player(sid, address, nickname):
+            queue_info = werewolf_matchmaker.get_queue_info()
+            await sio.emit('matchmaking_joined', {
+                'queue_size': queue_info['size'],
+                'message': 'Joined matchmaking queue'
+            }, room=sid)
+        else:
+            await sio.emit('error', {'message': 'Already in matchmaking queue'}, room=sid)
+    
+    except Exception as e:
+        await sio.emit('error', {'message': f'Join matchmaking failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def leave_matchmaking(sid, data):
+    """Leave the Werewolf matchmaking queue."""
+    global werewolf_matchmaker
+    
+    try:
+        if werewolf_matchmaker is None:
+            await sio.emit('error', {'message': 'Matchmaker not initialized'}, room=sid)
+            return
+        
+        # Remove from queue
+        if werewolf_matchmaker.remove_player(sid):
+            await sio.emit('matchmaking_left', {
+                'message': 'Left matchmaking queue'
+            }, room=sid)
+        else:
+            await sio.emit('error', {'message': 'Not in matchmaking queue'}, room=sid)
+    
+    except Exception as e:
+        await sio.emit('error', {'message': f'Leave matchmaking failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def get_matchmaking_status(sid, data):
+    """Get current matchmaking queue status."""
+    global werewolf_matchmaker
+    
+    try:
+        if werewolf_matchmaker is None:
+            await sio.emit('matchmaking_status', {
+                'queue_size': 0,
+                'in_queue': False,
+                'is_running': False
+            }, room=sid)
+            return
+        
+        queue_info = werewolf_matchmaker.get_queue_info()
+        in_queue = werewolf_matchmaker.is_player_in_queue(sid)
+        
+        await sio.emit('matchmaking_status', {
+            'queue_size': queue_info['size'],
+            'oldest_wait_time': queue_info['oldest_wait_time'],
+            'average_wait_time': queue_info['average_wait_time'],
+            'in_queue': in_queue,
+            'is_running': werewolf_matchmaker.is_running()
+        }, room=sid)
+    
+    except Exception as e:
+        await sio.emit('error', {'message': f'Get matchmaking status failed: {str(e)}'}, room=sid)
+
+
+# ============================================================================
 # GRACEFUL SHUTDOWN HANDLING
 # ============================================================================
 
@@ -975,7 +1120,13 @@ async def graceful_shutdown():
     
     Security improvement: Save active game states before shutdown.
     """
+    global werewolf_matchmaker
+    
     print("\nGraceful shutdown initiated...")
+    
+    # Stop matchmaker
+    if werewolf_matchmaker:
+        werewolf_matchmaker.stop()
     
     # Notify all connected clients
     await sio.emit('server_shutdown', {

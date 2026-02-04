@@ -46,6 +46,7 @@ class WerewolfMatchmaker:
                                  Should accept (players: List[QueuedPlayer], game_size: int)
         """
         self.queue: List[QueuedPlayer] = []
+        self.queue_sids: set = set()  # For O(1) lookup
         self.game_start_callback = game_start_callback
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -62,8 +63,8 @@ class WerewolfMatchmaker:
         Returns:
             True if added successfully, False if already in queue
         """
-        # Check if player already in queue
-        if any(p.sid == sid for p in self.queue):
+        # Check if player already in queue (O(1) lookup)
+        if sid in self.queue_sids:
             return False
         
         player = QueuedPlayer(
@@ -72,6 +73,7 @@ class WerewolfMatchmaker:
             nickname=nickname
         )
         self.queue.append(player)
+        self.queue_sids.add(sid)
         return True
     
     def remove_player(self, sid: str) -> bool:
@@ -84,9 +86,12 @@ class WerewolfMatchmaker:
         Returns:
             True if removed successfully, False if not in queue
         """
-        initial_length = len(self.queue)
+        if sid not in self.queue_sids:
+            return False
+        
         self.queue = [p for p in self.queue if p.sid != sid]
-        return len(self.queue) < initial_length
+        self.queue_sids.discard(sid)
+        return True
     
     def get_queue_size(self) -> int:
         """Get current queue size."""
@@ -143,6 +148,9 @@ class WerewolfMatchmaker:
         if queue_size >= self.STANDARD_GAME_SIZE:
             players = self.queue[:self.STANDARD_GAME_SIZE]
             self.queue = self.queue[self.STANDARD_GAME_SIZE:]
+            # Update set
+            for p in players:
+                self.queue_sids.discard(p.sid)
             await self._start_game(players, self.STANDARD_GAME_SIZE)
             return
         
@@ -156,6 +164,8 @@ class WerewolfMatchmaker:
                 # Start game with current queue size
                 players = self.queue[:queue_size]
                 self.queue = []
+                # Clear set
+                self.queue_sids.clear()
                 await self._start_game(players, queue_size)
     
     async def _start_game(self, players: List[QueuedPlayer], game_size: int):
@@ -170,9 +180,12 @@ class WerewolfMatchmaker:
             try:
                 await self.game_start_callback(players, game_size)
             except Exception as e:
-                # If game start fails, add players back to queue
+                # If game start fails, add players back to end of queue to avoid infinite retry
                 print(f"Error starting game: {e}")
-                self.queue = players + self.queue
+                self.queue.extend(players)
+                # Update set
+                for p in players:
+                    self.queue_sids.add(p.sid)
     
     def start(self):
         """Start the matchmaker background task."""
@@ -185,14 +198,21 @@ class WerewolfMatchmaker:
     def stop(self):
         """Stop the matchmaker background task."""
         self._running = False
-        if self._task:
+        if self._task and not self._task.done():
             self._task.cancel()
-            self._task = None
     
     def is_running(self) -> bool:
         """Check if matchmaker is running."""
         return self._running
     
-    def clear_queue(self):
-        """Clear all players from the queue."""
-        self.queue.clear()
+    def is_player_in_queue(self, sid: str) -> bool:
+        """
+        Check if a player is in the queue (O(1) lookup).
+        
+        Args:
+            sid: Socket.IO session ID
+            
+        Returns:
+            True if player is in queue, False otherwise
+        """
+        return sid in self.queue_sids

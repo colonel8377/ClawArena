@@ -1094,7 +1094,7 @@ async def get_matchmaking_status(sid, data):
             return
         
         queue_info = werewolf_matchmaker.get_queue_info()
-        in_queue = any(p.sid == sid for p in werewolf_matchmaker.queue)
+        in_queue = werewolf_matchmaker.is_player_in_queue(sid)
         
         await sio.emit('matchmaking_status', {
             'queue_size': queue_info['size'],

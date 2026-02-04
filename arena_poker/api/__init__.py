@@ -14,6 +14,7 @@ from arena_poker.models import (
 )
 from arena_poker.auth import SIWEAuth
 from arena_poker.game import PokerGame
+from arena_poker.config import settings
 
 
 class GameManager:
@@ -23,6 +24,9 @@ class GameManager:
         self.games: Dict[str, PokerGame] = {}
         self.nonces: Dict[str, str] = {}
         self.withdrawal_nonces: Dict[str, int] = {}
+        
+        # Initialize server account for signing withdrawals
+        self.server_account = Account.from_key(settings.SERVER_PRIVATE_KEY)
 
     def create_game(self, game_id: str, small_blind: int = 10, big_blind: int = 20) -> PokerGame:
         """Create a new game."""
@@ -59,7 +63,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -192,14 +196,9 @@ async def create_withdrawal(request: WithdrawalRequest):
         f"Timestamp: {timestamp}"
     )
     
-    # In production, this would be signed by a secure server key
-    # For demo purposes, we create a deterministic signature
+    # Sign with server private key
     message_hash = encode_defunct(text=message)
-    
-    # You would use a server private key here
-    # For now, we'll create a mock signature
-    server_account = Account.create()
-    signed_message = server_account.sign_message(message_hash)
+    signed_message = game_manager.server_account.sign_message(message_hash)
     
     payload = WithdrawalPayload(
         wallet_address=request.wallet_address,
@@ -229,10 +228,13 @@ async def verify_withdrawal(payload: WithdrawalPayload):
             signature=payload.signature
         )
         
-        # In production, verify against known server address
+        # Verify against server's address
+        is_valid = recovered_address.lower() == game_manager.server_account.address.lower()
+        
         return {
-            "valid": True,
-            "signer": recovered_address
+            "valid": is_valid,
+            "signer": recovered_address,
+            "expected_signer": game_manager.server_account.address
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid signature: {str(e)}")
@@ -242,3 +244,4 @@ async def verify_withdrawal(payload: WithdrawalPayload):
 def get_game_manager() -> GameManager:
     """Get the global game manager instance."""
     return game_manager
+

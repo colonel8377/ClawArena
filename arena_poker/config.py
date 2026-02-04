@@ -23,9 +23,17 @@ class Settings(BaseSettings):
     # Blockchain settings
     CHAIN_ID: int = 1
     
+    # Server private key for signing withdrawals
+    # In production, load this from secure environment variable
+    SERVER_PRIVATE_KEY: str = "0x0000000000000000000000000000000000000000000000000000000000000001"
+    
+    # CORS settings
+    CORS_ORIGINS: list = ["*"]  # In production, restrict to specific origins
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
 
 
 settings = Settings()
+

@@ -308,10 +308,30 @@ sio.emit('player_action', {
 
 ## Security Considerations
 
-- SIWE authentication prevents wallet spoofing
-- Withdrawal payloads are cryptographically signed
-- Game state validation prevents cheating
-- Server-side game logic ensures fairness
+### Production Deployment
+
+**⚠️ IMPORTANT: Before deploying to production:**
+
+1. **Server Private Key**: 
+   - Generate a new secure private key: `python -c "from eth_account import Account; print(Account.create().key.hex())"`
+   - Store it securely in environment variables (never commit to version control)
+   - Set `SERVER_PRIVATE_KEY` in your `.env` file
+
+2. **CORS Configuration**:
+   - Update `CORS_ORIGINS` in `.env` to only allow your frontend domain(s)
+   - Example: `CORS_ORIGINS=["https://yourdomain.com"]`
+
+3. **Additional Security Measures**:
+   - SIWE authentication prevents wallet spoofing
+   - Withdrawal payloads are cryptographically signed with a consistent server key
+   - Game state validation prevents cheating
+   - Server-side game logic ensures fairness
+   - Cryptographically secure card shuffling using Python's `secrets` module
+   - Proper pot distribution with remainder handling
+
+4. **Environment Variables**:
+   - Copy `.env.example` to `.env` and update with production values
+   - Never commit `.env` file to version control (already in `.gitignore`)
 
 ## Future Enhancements
 

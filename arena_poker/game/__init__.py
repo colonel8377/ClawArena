@@ -26,8 +26,12 @@ class Deck:
         self.shuffle()
 
     def shuffle(self):
-        """Shuffle the deck."""
-        random.shuffle(self.cards)
+        """Shuffle the deck using cryptographically secure random."""
+        import secrets
+        # Use cryptographically secure shuffle
+        for i in range(len(self.cards) - 1, 0, -1):
+            j = secrets.randbelow(i + 1)
+            self.cards[i], self.cards[j] = self.cards[j], self.cards[i]
 
     def deal(self, count: int = 1) -> List[Card]:
         """Deal cards from the deck."""
@@ -274,7 +278,7 @@ class PokerGame:
     def process_action(self, wallet_address: str, action: PlayerAction, 
                       amount: Optional[int] = None) -> bool:
         """Process a player action."""
-        player = self._get_player(wallet_address)
+        player = self.get_player(wallet_address)
         if not player or player.folded or player.all_in:
             return False
 
@@ -451,12 +455,17 @@ class PokerGame:
 
         # Distribute pot
         share = self.game_state.pot // len(winners)
-        for winner in winners:
+        remainder = self.game_state.pot % len(winners)
+        
+        for i, winner in enumerate(winners):
             winner.chips += share
+            # Give remainder to first winner(s) in position order
+            if i < remainder:
+                winner.chips += 1
         
         self.game_state.pot = 0
 
-    def _get_player(self, wallet_address: str) -> Optional[Player]:
+    def get_player(self, wallet_address: str) -> Optional[Player]:
         """Get player by wallet address."""
         for player in self.game_state.players:
             if player.wallet_address == wallet_address:

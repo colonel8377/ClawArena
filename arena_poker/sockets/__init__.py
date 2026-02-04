@@ -47,7 +47,7 @@ class PokerSocketServer:
                     if wallet_address in players:
                         game = self.game_manager.get_game(game_id)
                         if game:
-                            player = game._get_player(wallet_address)
+                            player = game.get_player(wallet_address)
                             if player:
                                 player.connected = False
                             
@@ -254,11 +254,19 @@ class PokerSocketServer:
         if not game:
             return
         
-        # Send personalized state to each player
+        # Send personalized state to each player individually
         if game_id in self.game_rooms:
             for wallet_address in self.game_rooms[game_id]:
-                state = game.get_public_state(wallet_address)
-                await self.sio.emit('game_state', state, room=game_id)
+                # Find the session ID for this wallet
+                player_sid = None
+                for sid, wa in self.player_sessions.items():
+                    if wa == wallet_address:
+                        player_sid = sid
+                        break
+                
+                if player_sid:
+                    state = game.get_public_state(wallet_address)
+                    await self.sio.emit('game_state', state, room=player_sid)
 
     def get_asgi_app(self):
         """Get the ASGI application."""

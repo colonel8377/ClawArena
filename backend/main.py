@@ -28,7 +28,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from web3 import Web3
 
-from games.texas import TexasGame, PokerEngine, create_poker_game, create_texas_game
+from games.texas import TexasGame, TexasEngine, create_poker_game, create_texas_game
 from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
 from database.redis_manager import redis_manager

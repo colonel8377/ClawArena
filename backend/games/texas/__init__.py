@@ -1,5 +1,5 @@
 from .texas_game import TexasGame
-from .poker_engine import PokerEngine, create_poker_game
+from .texas_engine import TexasEngine, create_poker_game
 
 
 def create_texas_game(game_id: str = None, small_blind: int = 25, big_blind: int = 50) -> TexasGame:
@@ -25,4 +25,4 @@ def create_texas_game(game_id: str = None, small_blind: int = 25, big_blind: int
     )
 
 
-__all__ = ['TexasGame', 'PokerEngine', 'create_poker_game', 'create_texas_game']
+__all__ = ['TexasGame', 'TexasEngine', 'create_poker_game', 'create_texas_game']

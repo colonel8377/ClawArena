@@ -145,7 +145,7 @@ class ChatMessage:
 # POKER ENGINE CLASS
 # ============================================================================
 
-class PokerEngine:
+class TexasEngine:
     """
     No-Limit Texas Hold'em game engine.
     
@@ -1133,7 +1133,7 @@ def create_poker_game(
     game_id: Optional[str] = None,
     small_blind: int = DEFAULT_SMALL_BLIND,
     big_blind: int = DEFAULT_BIG_BLIND
-) -> PokerEngine:
+) -> TexasEngine:
     """
     Create a new poker game instance.
     
@@ -1148,7 +1148,7 @@ def create_poker_game(
     if game_id is None:
         game_id = f"poker_{uuid.uuid4().hex[:12]}"
     
-    return PokerEngine(
+    return TexasEngine(
         game_id=game_id,
         small_blind=small_blind,
         big_blind=big_blind

@@ -7,7 +7,7 @@ the poker_engine.PokerEngine for core game logic.
 
 from typing import Dict, List, Optional, Any
 from ..base import BaseGame, GamePhase
-from .poker_engine import PokerEngine, PokerPhase
+from .texas_engine import TexasEngine, PokerPhase
 
 
 class TexasGame(BaseGame):
@@ -34,7 +34,7 @@ class TexasGame(BaseGame):
         super().__init__(game_id, game_type="texas", timeout_seconds=20)
         
         # Use PokerEngine as the game logic engine
-        self.engine = PokerEngine(
+        self.engine = TexasEngine(
             game_id=game_id,
             small_blind=small_blind,
             big_blind=big_blind

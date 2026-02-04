@@ -12,8 +12,8 @@ import random
 from typing import Dict, List, Optional, Any
 from enum import Enum
 
-from backend.games.base import BaseGame, GamePhase
-from backend.games.werewolf.roles import (
+from ..base import BaseGame, GamePhase
+from .roles import (
     Role, RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
 )

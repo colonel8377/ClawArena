@@ -13,8 +13,8 @@ from decimal import Decimal
 from typing import Optional, Dict
 from sqlalchemy.orm import Session
 
-from backend.database.models import User
-from backend.database.connection import get_db_session
+from ..database.models import User
+from ..database.connection import get_db_session
 
 
 # Configuration

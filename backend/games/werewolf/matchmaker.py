@@ -36,17 +36,24 @@ class WerewolfMatchmaker:
     ADAPTIVE_WAIT_TIME = 30.0  # seconds
     CHECK_INTERVAL = 2.0  # seconds
     
-    def __init__(self, game_start_callback: Optional[Callable] = None):
+    def __init__(
+        self, 
+        game_start_callback: Optional[Callable] = None,
+        fallback_warning_callback: Optional[Callable] = None
+    ):
         """
         Initialize the matchmaker.
         
         Args:
             game_start_callback: Async function to call when starting a game.
                                  Should accept (players: List[QueuedPlayer], game_size: int)
+            fallback_warning_callback: Async function to call before downgrading from 9 to 6-8 player game.
+                                       Should accept (players: List[QueuedPlayer], target_size: int)
         """
         self.queue: List[QueuedPlayer] = []
         self.queue_sids: set = set()  # For O(1) lookup
         self.game_start_callback = game_start_callback
+        self.fallback_warning_callback = fallback_warning_callback
         self._task: Optional[asyncio.Task] = None
         self._running = False
     
@@ -160,6 +167,13 @@ class WerewolfMatchmaker:
             oldest_wait = current_time - self.queue[0].join_time
             
             if oldest_wait >= self.ADAPTIVE_WAIT_TIME:
+                # Emit fallback warning before downgrading
+                if self.fallback_warning_callback:
+                    try:
+                        await self.fallback_warning_callback(self.queue[:queue_size], queue_size)
+                    except Exception as e:
+                        print(f"Error in fallback warning callback: {e}")
+                
                 # Start game with current queue size
                 players = self.queue[:queue_size]
                 self.queue = []

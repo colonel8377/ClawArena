@@ -12,8 +12,10 @@ The platform now includes:
 5. **Economic System** - MySQL-based virtual currency and user management
 6. **Smart Contracts** - Solidity contracts for treasury management
 7. **Extensible Architecture** - Base classes for easy game integration
+8. **Unified Zombie/Timeout Handling** - Automatic timeout detection and handling
+9. **Redis + MySQL Hybrid Storage** - Hot state in Redis, persistence in MySQL
 
-## Recent Updates (Unified Architecture)
+## Recent Updates (Unified Architecture with Redis Integration)
 
 ### Unified Game Structure
 
@@ -23,23 +25,108 @@ All games now follow a consistent architecture:
 - **BaseEngine**: Optional abstraction for separating game logic from management
 - **Unified Chat System**: Built-in chat functionality inherited by all games
 - **ChatMessage Model**: Database persistence for chat across sessions
+- **Unified Timeout Handling**: Automatic timeout detection and zombie player management
+- **Redis Integration**: Hot state storage for fast recovery and persistence
 
 **Benefits**:
 - Consistent interface across all game types
 - Easy to add new games
-- Shared features (chat, player management) work the same everywhere
+- Shared features (chat, player management, timeout handling) work the same everywhere
 - Better maintainability and testing
+- Automatic state persistence to Redis
+- Graceful handling of player timeouts
 
 See [UNIFIED_ARCHITECTURE.md](docs/UNIFIED_ARCHITECTURE.md) for detailed documentation.
+
+### Unified Zombie/Timeout Mechanism
+
+All games now include standardized timeout handling:
+
+- **Automatic Timeout Detection**: `check_timeouts()` method scans for timed-out players
+- **Configurable Timeouts**: Each game sets its own timeout (20s for Poker, 30s for Werewolf)
+- **Default Actions**: Game-specific default actions executed on timeout:
+  - Texas Hold'em: Check if possible, otherwise Fold
+  - Werewolf: Skip/No vote
+- **Zombie Tracking**: Players marked as "zombie" after 2 consecutive timeouts
+- **Recovery**: Zombie status cleared when player takes valid action
+- **Thread-Safe**: Uses `asyncio.Lock` to prevent race conditions
+
+**Implementation in BaseGame**:
+```python
+# Track player timeouts
+self.last_action_time: Dict[str, datetime] = {}
+self.timeout_seconds: int = 30  # Configurable per game
+
+# Check for timeouts
+timed_out = await game.check_timeouts()
+
+# Handle timeout with game-specific default action
+await game.handle_timeout(player_sid)
+
+# Update last action time on player action
+game.update_player_action_time(player_sid)
+```
+
+### Redis + MySQL Hybrid Storage
+
+Implements a two-tier storage strategy for optimal performance and reliability:
+
+**Redis (Hot State)**:
+- Real-time game state stored in Redis for fast read/write
+- Key pattern: `game:{game_id}:state`
+- 1-hour TTL (automatically refreshed on updates)
+- Graceful fallback if Redis unavailable
+- Used for game state recovery and reconnection
+
+**MySQL (Persistence)**:
+- Critical checkpoints saved to `game_sessions.state_snapshot`
+- Triggered on important events:
+  - Game Start
+  - Phase Changes
+  - Game End
+- Provides long-term audit trail and analytics
+
+**Implementation in BaseGame**:
+```python
+# Save to Redis (hot state)
+await game.save_state_to_redis()
+
+# Load from Redis
+state = await game.load_state_from_redis()
+
+# Save checkpoint to MySQL
+await game.save_checkpoint(event_type="phase_change")
+
+# Graceful shutdown with state persistence
+await game.close_redis()
+```
+
+**Integration Points**:
+- State automatically saved on every game state broadcast
+- Games persist state during graceful shutdown
+- Lazy Redis connection initialization (only when needed)
+- Error handling prevents Redis failures from breaking gameplay
 
 ### Texas Hold'em Refactoring
 
 Texas Hold'em poker has been refactored to follow the unified structure:
 
-- **TexasGame**: New class extending BaseGame
+- **TexasGame**: New class extending BaseGame with unified features
 - **PokerEngine**: Core poker logic (backward compatible)
 - **Unified Chat**: Players can chat during games
 - **Consistent Interface**: Same methods as other games
+- **Backward Compatibility**: Maintains PokerEngine interface for existing code
+- **Timeout Handling**: 20-second timeout with auto-check or fold
+- **Redis Integration**: Automatic state persistence
+
+**Backward Compatible Methods**:
+```python
+# Old PokerEngine interface still works
+table.start_hand()
+table.process_move(sid, action, amount, chat_message)
+table.is_hand_over()
+table.showdown()
+```
 
 ### Werewolf Enhancements
 
@@ -48,6 +135,8 @@ Werewolf game updated to use unified features:
 - **Chat Integration**: Built-in chat through BaseGame
 - **Consistent Interface**: Same patterns as other games
 - **Better Organization**: Clear separation of concerns
+- **Timeout Handling**: 30-second timeout with auto-skip
+- **Redis Integration**: Automatic state persistence
 
 
 ## Directory Structure

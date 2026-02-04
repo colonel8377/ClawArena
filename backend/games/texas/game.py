@@ -112,6 +112,21 @@ class TexasGame(BaseGame):
         
         return False
     
+    def _reset_timeout_tracking(self, sid: str):
+        """
+        Reset timeout tracking for a player.
+        
+        Clears consecutive timeout count and zombie status on successful action.
+        
+        Args:
+            sid: Socket.IO session ID
+        """
+        player = self._get_player_by_sid(sid)
+        if player:
+            player['consecutive_timeouts'] = 0
+            if player.get('status') == 'zombie':
+                player['status'] = 'active'
+    
     def process_action(self, sid: str, action: str, **kwargs) -> Dict:
         """
         Process a player action.
@@ -128,11 +143,7 @@ class TexasGame(BaseGame):
         self.update_player_action_time(sid)
         
         # Reset consecutive timeouts on successful action
-        player = self._get_player_by_sid(sid)
-        if player:
-            player['consecutive_timeouts'] = 0
-            if player.get('status') == 'zombie':
-                player['status'] = 'active'
+        self._reset_timeout_tracking(sid)
         
         if action == 'chat':
             # Handle chat through BaseGame
@@ -268,11 +279,7 @@ class TexasGame(BaseGame):
         self.update_player_action_time(sid)
         
         # Reset consecutive timeouts on successful action
-        player = self._get_player_by_sid(sid)
-        if player:
-            player['consecutive_timeouts'] = 0
-            if player.get('status') == 'zombie':
-                player['status'] = 'active'
+        self._reset_timeout_tracking(sid)
         
         # Delegate to engine
         return self.engine.process_move(sid, action, amount, chat_message)

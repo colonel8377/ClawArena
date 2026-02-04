@@ -483,6 +483,6 @@ class BaseGame(ABC):
         if self._redis_client:
             try:
                 await self._redis_client.close()
-            except:
+            except Exception:
                 pass
             self._redis_client = None

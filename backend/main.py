@@ -1181,12 +1181,12 @@ async def graceful_shutdown():
     save_tasks = []
     
     # Save poker game states
-    for game_id, game in poker_tables.items():
+    for table_id, game in poker_tables.items():
         save_tasks.append(game.save_state_to_redis())
         save_tasks.append(game.close_redis())
     
     # Save werewolf game states
-    for game_id, game in werewolf_games.items():
+    for ww_game_id, game in werewolf_games.items():
         save_tasks.append(game.save_state_to_redis())
         save_tasks.append(game.close_redis())
     

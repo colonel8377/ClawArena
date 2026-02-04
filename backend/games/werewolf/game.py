@@ -52,7 +52,8 @@ class WerewolfGame(BaseGame):
         Args:
             game_id: Unique identifier for this game
         """
-        super().__init__(game_id, game_type="werewolf")
+        # Initialize with 30 second timeout for werewolf actions
+        super().__init__(game_id, game_type="werewolf", timeout_seconds=30)
         self.phase = WerewolfPhase.WAITING
         self.players: List[Dict] = []
         self.day_count = 0
@@ -522,3 +523,44 @@ class WerewolfGame(BaseGame):
             if player['sid'] == sid:
                 return player
         return None
+    
+    async def execute_default_action(self, sid: str) -> Dict:
+        """
+        Execute default action for timed-out werewolf player.
+        
+        In werewolf, the default action is:
+        - Skip/No vote (don't participate in current action)
+        
+        Args:
+            sid: Socket.IO session ID
+            
+        Returns:
+            Dict with action result
+        """
+        # Default action is to skip/abstain
+        # This means the player doesn't vote or take any night action
+        return {
+            'success': True,
+            'action': 'skip',
+            'message': 'Player timed out and skipped their action'
+        }
+    
+    async def save_checkpoint(self, event_type: str = "manual"):
+        """
+        Save game state checkpoint to MySQL.
+        
+        Called on:
+        - Game start
+        - Phase change (Night -> Day -> Voting)
+        - Player death
+        - Game end
+        
+        Args:
+            event_type: Type of checkpoint event
+        """
+        # Save to Redis for hot state
+        await self.save_state_to_redis()
+        
+        # TODO: Implement MySQL persistence via database module
+        # This would save to GameSession.state_snapshot
+        pass

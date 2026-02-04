@@ -17,6 +17,7 @@ from .roles import (
     Role, RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
 )
+from .game_config import get_setup
 
 
 class WerewolfPhase(Enum):
@@ -41,8 +42,8 @@ class WerewolfGame(BaseGame):
     6. FINISHED: Game over
     """
     
-    MIN_PLAYERS = 4
-    MAX_PLAYERS = 12
+    MIN_PLAYERS = 6
+    MAX_PLAYERS = 9
     
     def __init__(self, game_id: str):
         """
@@ -64,6 +65,24 @@ class WerewolfGame(BaseGame):
         
         # Day/voting tracking
         self.votes: Dict[str, str] = {}  # voter_sid -> target_sid
+        
+        # Track initial role counts for win condition calculation
+        self.initial_role_counts: Dict[RoleType, int] = {}
+    
+    def _has_role(self, role_type: RoleType) -> bool:
+        """
+        Check if a specific role exists in the current game.
+        
+        Args:
+            role_type: The role type to check for
+            
+        Returns:
+            True if at least one player has this role, False otherwise
+        """
+        return any(
+            player.get('role') and player['role'].role_type == role_type 
+            for player in self.players
+        )
         
     def add_player(self, sid: str, wallet_address: str, **kwargs) -> bool:
         """Add a player to the game."""
@@ -115,30 +134,18 @@ class WerewolfGame(BaseGame):
         return True
     
     def _assign_roles(self):
-        """Assign roles to players based on player count."""
+        """Assign roles to players based on player count using dynamic role factory."""
         num_players = len(self.players)
         
-        # Role distribution based on player count
-        if num_players <= 5:
-            num_wolves = 1
-            special_roles = [RoleType.SEER]
-        elif num_players <= 8:
-            num_wolves = 2
-            special_roles = [RoleType.SEER, RoleType.WITCH]
-        else:
-            num_wolves = 2
-            special_roles = [RoleType.SEER, RoleType.WITCH, RoleType.HUNTER]
+        # Get shuffled role setup from game_config
+        roles = get_setup(num_players)
         
-        # Create role list
-        roles = [RoleType.WOLF] * num_wolves
-        roles.extend(special_roles)
+        # Track initial role counts for win condition calculation
+        self.initial_role_counts.clear()
+        for role_type in roles:
+            self.initial_role_counts[role_type] = self.initial_role_counts.get(role_type, 0) + 1
         
-        # Fill remaining with villagers
-        while len(roles) < num_players:
-            roles.append(RoleType.VILLAGER)
-        
-        # Shuffle and assign
-        random.shuffle(roles)
+        # Assign roles to players
         for player, role_type in zip(self.players, roles):
             player['role'] = create_role(role_type)
     
@@ -318,8 +325,10 @@ class WerewolfGame(BaseGame):
         else:
             wolf_target = None
         
-        # Check if witch saves
-        saved = self.witch_action.get('save', False)
+        # Check if witch saves (only if witch exists in this setup)
+        saved = False
+        if self._has_role(RoleType.WITCH):
+            saved = self.witch_action.get('save', False)
         
         # Apply wolf kill (unless saved)
         if wolf_target and not saved:
@@ -331,16 +340,17 @@ class WerewolfGame(BaseGame):
                     'cause': 'wolf_kill'
                 })
         
-        # Apply witch poison
-        poison_target = self.witch_action.get('poison')
-        if poison_target:
-            target = self._get_player_by_sid(poison_target)
-            if target:
-                target['is_alive'] = False
-                results['deaths'].append({
-                    'sid': poison_target,
-                    'cause': 'poison'
-                })
+        # Apply witch poison (only if witch exists in this setup)
+        if self._has_role(RoleType.WITCH):
+            poison_target = self.witch_action.get('poison')
+            if poison_target:
+                target = self._get_player_by_sid(poison_target)
+                if target:
+                    target['is_alive'] = False
+                    results['deaths'].append({
+                        'sid': poison_target,
+                        'cause': 'poison'
+                    })
         
         # Clear night actions
         self.wolf_vote.clear()

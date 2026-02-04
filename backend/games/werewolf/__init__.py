@@ -1,5 +1,5 @@
 """Werewolf game package initialization."""
 
-from .game import WerewolfGame
+from .werewolf_game import WerewolfGame
 
 __all__ = ['WerewolfGame']

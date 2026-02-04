@@ -1,4 +1,4 @@
-from .game import TexasGame
+from .texas_game import TexasGame
 from .poker_engine import PokerEngine, create_poker_game
 
 

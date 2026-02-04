@@ -4,9 +4,10 @@ Game Channel - Enhanced communication channel with event bus.
 Provides structured, isolated communication for each game instance.
 """
 
-from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
-from events.event_bus import EventBus, GameEvent, EventType
+from typing import List, Dict, Any, Optional
+
+from backend.events.event_bus import EventBus, GameEvent, EventType
 
 
 class GameChannel:

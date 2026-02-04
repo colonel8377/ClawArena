@@ -32,7 +32,7 @@ from games.texas import TexasGame, PokerEngine, create_poker_game, create_texas_
 from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
-from games.werewolf.game import WerewolfGame
+from games.werewolf.werewolf_game import WerewolfGame
 from games.werewolf.matchmaker import WerewolfMatchmaker
 from decimal import Decimal
 

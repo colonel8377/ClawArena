@@ -7,9 +7,8 @@ It manages a queue of players and starts games when conditions are met.
 
 import asyncio
 import time
-from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from typing import Dict, List, Optional, Callable
 
 
 @dataclass

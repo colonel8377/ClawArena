@@ -7,8 +7,8 @@ It implements balanced role distributions to support adaptive matchmaking.
 
 import random
 from typing import List
-from .roles import RoleType
 
+from .roles import RoleType
 
 # Static configuration dictionary defining roles for each player count
 ROLE_CONFIGURATIONS = {

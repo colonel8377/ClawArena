@@ -10,7 +10,7 @@ This module defines all player roles in the Werewolf game:
 """
 
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict
 
 
 class RoleType(Enum):

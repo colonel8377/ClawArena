@@ -28,7 +28,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from web3 import Web3
 
-from poker_logic import TexasHoldemTable
+from poker_engine import PokerEngine, create_poker_game
 from database.connection import init_db, get_db
 from database.models import User, GameHistory
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
@@ -101,7 +101,7 @@ app.add_middleware(
 )
 
 # Game state management
-tables: Dict[str, TexasHoldemTable] = {}
+poker_tables: Dict[str, PokerEngine] = {}
 werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
 player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
 nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
@@ -275,7 +275,7 @@ async def health(request: Request):
     """Health check."""
     return {
         "status": "healthy",
-        "active_tables": len(tables),
+        "active_tables": len(poker_tables),
         "web3_connected": w3.is_connected() if w3 else False
     }
 
@@ -435,8 +435,8 @@ async def disconnect(sid):
         session = player_sessions[sid]
         
         # Remove from table if in one
-        if session['table_id'] and session['table_id'] in tables:
-            table = tables[session['table_id']]
+        if session['table_id'] and session['table_id'] in poker_tables:
+            table = poker_tables[session['table_id']]
             table.remove_player(sid)
             
             # Broadcast updated state
@@ -513,14 +513,14 @@ async def join_game(sid, data):
             return
         
         # Create table if it doesn't exist
-        if table_id not in tables:
-            tables[table_id] = TexasHoldemTable(table_id)
+        if table_id not in poker_tables:
+            poker_tables[table_id] = create_poker_game(table_id)
         
-        table = tables[table_id]
+        table = poker_tables[table_id]
         address = player_sessions[sid]['address']
         
         # Add player to table
-        if not table.add_player(sid, address, chips):
+        if not table.add_player(sid, address, nickname=address[:8], buy_in=chips):
             await sio.emit('error', {'message': 'Could not join table'}, room=sid)
             return
         
@@ -553,14 +553,15 @@ async def start_hand(sid, data):
     try:
         table_id = data.get('table_id')
         
-        if not table_id or table_id not in tables:
+        if not table_id or table_id not in poker_tables:
             await sio.emit('error', {'message': 'Invalid table_id'}, room=sid)
             return
         
-        table = tables[table_id]
+        table = poker_tables[table_id]
         
-        if not table.deal_hands():
-            await sio.emit('error', {'message': 'Not enough players to start'}, room=sid)
+        result = table.start_hand()
+        if not result['success']:
+            await sio.emit('error', {'message': result.get('error', 'Not enough players to start')}, room=sid)
             return
         
         # Broadcast updated state
@@ -577,16 +578,18 @@ async def player_move(sid, data):
     
     Expected data: {
         'table_id': str,
-        'action': str ('fold', 'check', 'call', 'raise', 'bet', 'all_in'),
-        'amount': int (optional, for raise/bet)
+        'action': str ('fold', 'check', 'call', 'raise'),
+        'amount': int (optional, for raise),
+        'message': str (optional, for chat/bluff)
     }
     """
     try:
         table_id = data.get('table_id')
         action = data.get('action')
         amount = data.get('amount', 0)
+        chat_message = data.get('message')
         
-        if not table_id or table_id not in tables:
+        if not table_id or table_id not in poker_tables:
             await sio.emit('error', {'message': 'Invalid table_id'}, room=sid)
             return
         
@@ -594,8 +597,8 @@ async def player_move(sid, data):
             await sio.emit('error', {'message': 'Action required'}, room=sid)
             return
         
-        table = tables[table_id]
-        result = table.apply_action(sid, action, amount)
+        table = poker_tables[table_id]
+        result = table.process_move(sid, action, amount, chat_message)
         
         if not result['success']:
             await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
@@ -604,22 +607,53 @@ async def player_move(sid, data):
         # Broadcast updated state
         await broadcast_game_state(table_id)
         
-        # Check if game ended (showdown complete)
-        if table.stage == 'showdown':
-            # Determine winners
-            winners = table.determine_winner()
+        # Check if round complete and advance phase
+        if result.get('advance_phase'):
+            phase_result = table.advance_phase()
+            await broadcast_game_state(table_id)
             
-            # Generate withdrawal signatures for winners
-            for winner in winners:
-                if winner['chips_won'] > 0:
-                    await generate_and_emit_withdrawal(
-                        table_id,
-                        winner['address'],
-                        winner['chips_won']
-                    )
+            # Check for showdown
+            if table.phase.value == 'showdown':
+                showdown_result = table.get_game_state()
+                # Broadcast showdown reveal
+                await sio.emit('showdown_reveal', {
+                    'player_hands': table.get_all_hole_cards(),
+                    'community_cards': table.cards_to_strings(table.community_cards),
+                    'winners': showdown_result.get('winners', [])
+                }, room=table_id)
+                
+                # Generate withdrawal signatures for winners
+                for winner in showdown_result.get('winners', []):
+                    if winner.get('amount', 0) > 0:
+                        player = table.players.get(winner['sid'])
+                        if player:
+                            await generate_and_emit_withdrawal(
+                                table_id,
+                                player.wallet_address,
+                                winner['amount']
+                            )
         
     except Exception as e:
         await sio.emit('error', {'message': f'Player move failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def poker_action(sid, data):
+    """
+    Alternative handler for poker actions (used in agent_rules.md).
+    
+    This is an alias for player_move that matches the protocol in agent_rules.md.
+    
+    Expected data: {
+        'game_id': str,
+        'action': str ('fold', 'check', 'call', 'raise'),
+        'amount': int (optional, for raise),
+        'message': str (optional, for chat/bluff)
+    }
+    """
+    # Convert game_id to table_id for compatibility
+    data['table_id'] = data.get('game_id', data.get('table_id'))
+    await player_move(sid, data)
 
 
 @sio.event
@@ -632,11 +666,11 @@ async def get_state(sid, data):
     try:
         table_id = data.get('table_id')
         
-        if not table_id or table_id not in tables:
+        if not table_id or table_id not in poker_tables:
             await sio.emit('error', {'message': 'Invalid table_id'}, room=sid)
             return
         
-        table = tables[table_id]
+        table = poker_tables[table_id]
         state = table.get_game_state(sid)
         
         await sio.emit('game_state', state, room=sid)
@@ -655,18 +689,14 @@ async def leave_game(sid, data):
     try:
         table_id = data.get('table_id')
         
-        if not table_id or table_id not in tables:
+        if not table_id or table_id not in poker_tables:
             await sio.emit('error', {'message': 'Invalid table_id'}, room=sid)
             return
         
-        table = tables[table_id]
+        table = poker_tables[table_id]
         
         # Get player's remaining chips before leaving
-        player = None
-        for p in table.players:
-            if p['sid'] == sid:
-                player = p
-                break
+        player = table.players.get(sid)
         
         # Remove from table
         table.remove_player(sid)
@@ -679,11 +709,11 @@ async def leave_game(sid, data):
             player_sessions[sid]['table_id'] = None
         
         # If player had chips, generate withdrawal signature
-        if player and player['chips'] > 0:
+        if player and player.chips > 0:
             await generate_and_emit_withdrawal(
                 table_id,
-                player['address'],
-                player['chips']
+                player.wallet_address,
+                player.chips
             )
         
         # Notify player
@@ -723,15 +753,15 @@ async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount:
 
 async def broadcast_game_state(table_id: str):
     """Broadcast game state to all players at the table."""
-    if table_id not in tables:
+    if table_id not in poker_tables:
         return
     
-    table = tables[table_id]
+    table = poker_tables[table_id]
     
     # Send personalized state to each player
-    for player in table.players:
-        state = table.get_game_state(player['sid'])
-        await sio.emit('game_state', state, room=player['sid'])
+    for player_sid, player in table.players.items():
+        state = table.get_game_state(player_sid)
+        await sio.emit('game_state', state, room=player_sid)
 
 
 # ============================================================================

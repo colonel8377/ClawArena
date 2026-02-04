@@ -599,19 +599,24 @@ class PokerEngine:
         if additional_chips == player.chips:
             player.status = PlayerStatus.ALL_IN
         
-        # Update last raise amount for min-raise calculation
+        # Calculate if this is a full raise (meets minimum raise requirement)
         raise_amount = raise_to - self.current_bet
-        if raise_amount > 0:
+        is_full_raise = raise_amount >= self.last_raise_amount
+        
+        # Update last raise amount only for full raises
+        if is_full_raise and raise_amount > 0:
             self.last_raise_amount = raise_amount
         
         # Place the bet
         self._place_bet(sid, additional_chips)
         self.current_bet = raise_to
         
-        # Reset has_acted for other players (they need to act again)
-        for other_sid, other_player in self.players.items():
-            if other_sid != sid and other_player.can_act():
-                other_player.has_acted = False
+        # Reset has_acted for other players only if this is a full raise
+        # Incomplete raises (all-in < min raise) don't reopen betting
+        if is_full_raise:
+            for other_sid, other_player in self.players.items():
+                if other_sid != sid and other_player.can_act():
+                    other_player.has_acted = False
         
         return {
             'success': True,

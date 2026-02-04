@@ -540,8 +540,11 @@ class WerewolfEngine(BaseGame):
         if not player:
             return {'success': False, 'error': 'Player not found'}
         
+        # Allow hunter_shoot and chat actions for dead players
+        # Hunter can only use their skill after death
         if not player.is_alive:
-            return {'success': False, 'error': 'Player is dead'}
+            if action not in ['hunter_shoot', 'chat']:
+                return {'success': False, 'error': 'Player is dead'}
         
         # If player was zombie and sends valid action, recover them
         if player.is_zombie():
@@ -772,7 +775,11 @@ class WerewolfEngine(BaseGame):
             for target in self.wolf_votes.values():
                 target_counts[target] = target_counts.get(target, 0) + 1
             if target_counts:
-                wolf_target = max(target_counts, key=target_counts.get)
+                # Find all targets with maximum votes
+                max_votes = max(target_counts.values())
+                top_targets = [t for t, c in target_counts.items() if c == max_votes]
+                # Random tie-breaking if multiple targets have same max votes
+                wolf_target = random.choice(top_targets)
         
         # Check if witch saves
         saved = self.witch_action.get('save', False)

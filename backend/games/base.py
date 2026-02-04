@@ -13,6 +13,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 from enum import Enum
 from datetime import datetime, timezone
+import asyncio
+import json
+import os
 from .channel import GameChannel
 
 
@@ -99,15 +102,17 @@ class BaseGame(ABC):
     
     Handles room management, player lifecycle, and networking.
     Uses GameChannel for communication and event bus for events.
+    Enhanced with unified zombie/timeout handling and Redis integration.
     """
     
-    def __init__(self, game_id: str, game_type: str = "unknown"):
+    def __init__(self, game_id: str, game_type: str = "unknown", timeout_seconds: int = 30):
         """
         Initialize a game instance.
         
         Args:
             game_id: Unique identifier for this game instance
             game_type: Type of game (texas, werewolf, etc.)
+            timeout_seconds: Default timeout for player actions (in seconds)
         """
         self.game_id = game_id
         self.game_type = game_type
@@ -117,6 +122,15 @@ class BaseGame(ABC):
         # Enhanced communication channel with event bus
         self.channel = GameChannel(channel_id=game_id, game_type=game_type)
         self.engine: Optional[BaseEngine] = None  # Game logic engine
+        
+        # Unified timeout and zombie handling
+        self.timeout_seconds = timeout_seconds
+        self.last_action_time: Dict[str, datetime] = {}  # sid -> last action timestamp
+        self._action_lock = asyncio.Lock()  # Prevent race conditions
+        
+        # Redis connection (lazy-initialized)
+        self._redis_client = None
+        self._redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
     
     def get_channel_id(self) -> str:
         """
@@ -277,3 +291,198 @@ class BaseGame(ABC):
             EventBus instance for subscribing to game events
         """
         return self.channel.event_bus
+    
+    # ========================================================================
+    # UNIFIED TIMEOUT & ZOMBIE HANDLING
+    # ========================================================================
+    
+    def update_player_action_time(self, sid: str):
+        """
+        Update the last action time for a player.
+        
+        Args:
+            sid: Socket.IO session ID
+        """
+        self.last_action_time[sid] = datetime.now(timezone.utc)
+    
+    async def check_timeouts(self) -> List[str]:
+        """
+        Check for players who have timed out.
+        
+        Returns:
+            List of socket IDs (sids) of players who timed out
+        """
+        timed_out_players = []
+        current_time = datetime.now(timezone.utc)
+        
+        for player in self.players:
+            sid = player.get('sid')
+            if not sid:
+                continue
+            
+            last_action = self.last_action_time.get(sid)
+            if last_action:
+                time_since_action = (current_time - last_action).total_seconds()
+                if time_since_action > self.timeout_seconds:
+                    timed_out_players.append(sid)
+        
+        return timed_out_players
+    
+    async def handle_timeout(self, sid: str) -> Dict:
+        """
+        Handle a player timeout by executing default action.
+        
+        Args:
+            sid: Socket.IO session ID of the timed-out player
+            
+        Returns:
+            Dict with result of default action execution
+        """
+        async with self._action_lock:
+            # Execute game-specific default action
+            result = await self.execute_default_action(sid)
+            
+            # Update zombie tracking if needed
+            player = self._get_player_by_sid(sid)
+            if player:
+                player.setdefault('consecutive_timeouts', 0)
+                player['consecutive_timeouts'] += 1
+                
+                # Mark as zombie after 2 consecutive timeouts
+                if player['consecutive_timeouts'] >= 2:
+                    player['status'] = 'zombie'
+            
+            return result
+    
+    @abstractmethod
+    async def execute_default_action(self, sid: str) -> Dict:
+        """
+        Execute the default action for a timed-out player.
+        
+        Game-specific implementation:
+        - Texas Hold'em: Fold
+        - Werewolf: Skip/No vote
+        
+        Args:
+            sid: Socket.IO session ID
+            
+        Returns:
+            Dict with 'success' bool and optional 'error' message
+        """
+        pass
+    
+    def _get_player_by_sid(self, sid: str) -> Optional[Dict]:
+        """
+        Get player dict by socket ID.
+        
+        Args:
+            sid: Socket.IO session ID
+            
+        Returns:
+            Player dict or None if not found
+        """
+        for player in self.players:
+            if player.get('sid') == sid:
+                return player
+        return None
+    
+    # ========================================================================
+    # REDIS + MYSQL HYBRID STORAGE
+    # ========================================================================
+    
+    async def _init_redis(self):
+        """Initialize Redis connection if not already connected."""
+        if self._redis_client is None:
+            try:
+                import redis.asyncio as redis
+                self._redis_client = redis.from_url(
+                    self._redis_url,
+                    encoding='utf-8',
+                    decode_responses=True
+                )
+                await self._redis_client.ping()
+            except Exception as e:
+                print(f"⚠ Redis init failed for game {self.game_id}: {e}")
+                self._redis_client = None
+    
+    async def save_state_to_redis(self, state: Optional[Dict] = None):
+        """
+        Save current game state to Redis for hot storage.
+        
+        Args:
+            state: Optional state dict. If not provided, calls get_game_state()
+        """
+        await self._init_redis()
+        
+        if self._redis_client is None:
+            return  # Redis not available, skip
+        
+        try:
+            if state is None:
+                state = self.get_game_state()
+            
+            # Add metadata
+            state_with_meta = {
+                'game_id': self.game_id,
+                'game_type': self.game_type,
+                'phase': self.phase.value if isinstance(self.phase, Enum) else str(self.phase),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+                'state': state
+            }
+            
+            redis_key = f"game:{self.game_id}:state"
+            await self._redis_client.set(
+                redis_key,
+                json.dumps(state_with_meta),
+                ex=3600  # 1 hour expiry
+            )
+        except Exception as e:
+            print(f"⚠ Failed to save state to Redis for game {self.game_id}: {e}")
+    
+    async def load_state_from_redis(self) -> Optional[Dict]:
+        """
+        Load game state from Redis.
+        
+        Returns:
+            State dict or None if not found or Redis unavailable
+        """
+        await self._init_redis()
+        
+        if self._redis_client is None:
+            return None
+        
+        try:
+            redis_key = f"game:{self.game_id}:state"
+            data = await self._redis_client.get(redis_key)
+            
+            if data:
+                return json.loads(data)
+            return None
+        except Exception as e:
+            print(f"⚠ Failed to load state from Redis for game {self.game_id}: {e}")
+            return None
+    
+    async def save_checkpoint(self, event_type: str = "manual"):
+        """
+        Save a checkpoint to MySQL for persistence.
+        
+        Called on critical events:
+        - Game Start
+        - Phase Change
+        - Game End
+        
+        Args:
+            event_type: Type of checkpoint event
+        """
+        # This is a hook for subclasses to implement MySQL persistence
+        # Default implementation does nothing
+        pass
+    
+    async def close_redis(self):
+        """Close Redis connection."""
+        if self._redis_client:
+            try:
+                await self._redis_client.close()
+            except:
+                pass
+            self._redis_client = None

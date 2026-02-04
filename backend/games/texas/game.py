@@ -30,7 +30,8 @@ class TexasGame(BaseGame):
             small_blind: Small blind amount
             big_blind: Big blind amount
         """
-        super().__init__(game_id, game_type="texas")
+        # Initialize with 20 second timeout for poker actions
+        super().__init__(game_id, game_type="texas", timeout_seconds=20)
         
         # Use PokerEngine as the game logic engine
         self.engine = PokerEngine(
@@ -123,6 +124,16 @@ class TexasGame(BaseGame):
         - all_in: Go all-in
         - chat: Send a chat message (message in kwargs)
         """
+        # Update last action time for zombie tracking
+        self.update_player_action_time(sid)
+        
+        # Reset consecutive timeouts on successful action
+        player = self._get_player_by_sid(sid)
+        if player:
+            player['consecutive_timeouts'] = 0
+            if player.get('status') == 'zombie':
+                player['status'] = 'active'
+        
         if action == 'chat':
             # Handle chat through BaseGame
             message = kwargs.get('message', '')
@@ -183,3 +194,45 @@ class TexasGame(BaseGame):
                     break
         
         return winner_wallets
+    
+    async def execute_default_action(self, sid: str) -> Dict:
+        """
+        Execute default action for timed-out poker player.
+        
+        In poker, the default action is:
+        - Check if possible (no bet to call)
+        - Fold otherwise
+        
+        Args:
+            sid: Socket.IO session ID
+            
+        Returns:
+            Dict with action result
+        """
+        # Try to check first (auto-check if no bet to call)
+        result = self.engine.process_move(sid, 'check')
+        
+        if result.get('success'):
+            return result
+        
+        # If check failed, fold
+        return self.engine.process_move(sid, 'fold')
+    
+    async def save_checkpoint(self, event_type: str = "manual"):
+        """
+        Save game state checkpoint to MySQL.
+        
+        Called on:
+        - Game start (hand start)
+        - Phase change (flop, turn, river)
+        - Hand end
+        
+        Args:
+            event_type: Type of checkpoint event
+        """
+        # Save to Redis for hot state
+        await self.save_state_to_redis()
+        
+        # TODO: Implement MySQL persistence via database module
+        # This would save to GameSession.state_snapshot
+        pass

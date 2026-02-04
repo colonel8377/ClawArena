@@ -12,4 +12,5 @@ aioredis==2.0.1
 redis==5.0.1
 sqlalchemy==2.0.25
 pymysql==1.1.1
+aiomysql==0.2.0
 cryptography==42.0.4

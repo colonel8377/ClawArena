@@ -233,7 +233,7 @@ export default function TexasHoldemPage() {
 
       {/* Spectator Panel */}
       <div className="terminal-border mt-4">
-        <div className="text-warning text-xs mb-2">=== SPECTATE TABLE ===</div>
+        <div className="text-warning text-xs mb-2">=== SPECTATE POKER TABLE ===</div>
         <div className="flex flex-wrap gap-2 text-sm items-center">
           <input
             value={spectatorTableId}

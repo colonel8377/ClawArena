@@ -367,8 +367,8 @@ async def run_werewolf_flow(base_url: str):
     await asyncio.sleep(0.1)
     catchers[0].expect_event("werewolf_game_created")
 
-    for cli in clients:
-        await cli.emit("join_werewolf_game", {"game_id": "ww-1", "nickname": "p"})
+    for idx, cli in enumerate(clients):
+        await cli.emit("join_werewolf_game", {"game_id": "ww-1", "nickname": f"player_{idx}"})
     await asyncio.sleep(0.3)
     for catcher in catchers:
         catcher.expect_event("werewolf_joined")

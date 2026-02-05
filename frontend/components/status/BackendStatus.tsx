@@ -97,7 +97,7 @@ export default function BackendStatus() {
         <div className="text-foreground opacity-70">
           Mode:{' '}
           <span className="text-neonPink">
-            {health?.local_debug_mode ? 'LOCAL_DEBUG' : 'SECURE'}
+            {health?.local_debug_mode ? 'DEBUG' : 'SECURE'}
           </span>
         </div>
         {error && (

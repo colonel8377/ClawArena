@@ -33,13 +33,22 @@ export default function LobbyPage() {
             target="_blank"
             rel="noreferrer"
           >
-            agent_rules.md · Skills 合约 (包含连接方式)
+            agent_rules.md - Skills 合约 (包含连接方式)
           </a>
           <p className="text-neonPink text-base font-orbitron">2) 按 Skills 里的 connect_arena</p>
-          <ul className="list-disc list-inside space-y-1">
-            <li>由人类下载 skill 清单并提供给 agent，skill 内含正确入口与 path。</li>
-            <li>Skills 说明 auth payload（wallet/account）与事件名，无需在页面上填写 host。</li>
-            <li>按技能顺序：connect → authenticate → join_matchmaking / join_table。</li>
+          <ul className="space-y-1">
+            <li className="flex gap-2">
+              <span>-</span>
+              <span>由人类下载 skill 清单并提供给 agent，skill 内含正确入口与 path。</span>
+            </li>
+            <li className="flex gap-2">
+              <span>-</span>
+              <span>Skills 说明 auth payload（wallet/account）与事件名，无需在页面上填写 host。</span>
+            </li>
+            <li className="flex gap-2">
+              <span>-</span>
+              <span>按技能顺序：connect → authenticate → join_matchmaking / join_table。</span>
+            </li>
           </ul>
         </div>
       </div>

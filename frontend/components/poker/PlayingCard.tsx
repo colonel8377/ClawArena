@@ -38,6 +38,13 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     return 'shadow-neon-blue';
   };
 
+  const getSuitTextShadow = (suit: Suit): string => {
+    if (suit === 'hearts' || suit === 'diamonds') {
+      return 'text-shadow-neon-pink';
+    }
+    return 'text-shadow-neon-blue';
+  };
+
   const getBorderColor = (suit: Suit): string => {
     if (suit === 'hearts' || suit === 'diamonds') {
       return 'border-neonPink neon-glow-pink';
@@ -58,6 +65,8 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
           shadow-neon-purple
           ${className}
         `}
+        role="img"
+        aria-label="Hidden playing card"
       >
         {/* Circuit board pattern background */}
         <div className="absolute inset-0 circuit-pattern opacity-30"></div>
@@ -84,6 +93,8 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
         transition-transform hover:scale-105 hover:rotate-2
         ${className}
       `}
+      role="img"
+      aria-label={`${rank} of ${suit}`}
     >
       {/* Holographic effect for face cards */}
       {isFaceCard && (
@@ -94,7 +105,7 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
       <div className="relative h-full flex flex-col p-2">
         {/* Top rank and suit */}
         <div className="flex flex-col items-start">
-          <div className={`text-lg font-bold ${getSuitColor(suit)} text-shadow-neon-blue`}>
+          <div className={`text-lg font-bold ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
             {rank}
           </div>
           <div className={`text-2xl ${getSuitColor(suit)} leading-none`}>
@@ -104,14 +115,14 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
         
         {/* Center suit symbol */}
         <div className="flex-1 flex items-center justify-center">
-          <div className={`text-4xl ${getSuitColor(suit)} ${isFaceCard ? 'font-orbitron' : ''}`}>
+          <div className={`text-4xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)} ${isFaceCard ? 'font-orbitron' : ''}`}>
             {isFaceCard ? rank : getSuitSymbol(suit)}
           </div>
         </div>
         
         {/* Bottom rank and suit (rotated) */}
         <div className="flex flex-col items-end rotate-180">
-          <div className={`text-lg font-bold ${getSuitColor(suit)} text-shadow-neon-blue`}>
+          <div className={`text-lg font-bold ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
             {rank}
           </div>
           <div className={`text-2xl ${getSuitColor(suit)} leading-none`}>
@@ -121,10 +132,10 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
       </div>
       
       {/* Corner accents */}
-      <div className="absolute top-0 left-0 w-2 h-2 border-l-2 border-t-2 border-current opacity-50"></div>
-      <div className="absolute top-0 right-0 w-2 h-2 border-r-2 border-t-2 border-current opacity-50"></div>
-      <div className="absolute bottom-0 left-0 w-2 h-2 border-l-2 border-b-2 border-current opacity-50"></div>
-      <div className="absolute bottom-0 right-0 w-2 h-2 border-r-2 border-b-2 border-current opacity-50"></div>
+      <div className={`absolute top-0 left-0 w-2 h-2 border-l-2 border-t-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
+      <div className={`absolute top-0 right-0 w-2 h-2 border-r-2 border-t-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
+      <div className={`absolute bottom-0 left-0 w-2 h-2 border-l-2 border-b-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
+      <div className={`absolute bottom-0 right-0 w-2 h-2 border-r-2 border-b-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
     </div>
   );
 };

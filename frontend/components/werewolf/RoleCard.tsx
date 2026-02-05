@@ -37,7 +37,7 @@ const RoleCard: React.FC<RoleCardProps> = ({
       case 'Seer': return 'border-electricPurple neon-glow-purple';
       case 'Villager': return 'border-cyberBlue neon-glow-blue';
       case 'Witch': return 'border-acidGreen neon-glow-green';
-      case 'Hunter': return 'border-warning';
+      case 'Hunter': return 'border-warning shadow-[0_0_5px_#ffaa00,0_0_10px_#ffaa00,0_0_20px_#ffaa00]';
     }
   };
 
@@ -98,6 +98,16 @@ const RoleCard: React.FC<RoleCardProps> = ({
     }
   };
 
+  const getRoleTextShadow = (role: Role): string => {
+    switch (role) {
+      case 'Werewolf': return 'text-shadow-neon-pink';
+      case 'Seer': return 'text-shadow-neon-purple';
+      case 'Villager': return 'text-shadow-neon-blue';
+      case 'Witch': return 'text-shadow-neon-green';
+      case 'Hunter': return '';
+    }
+  };
+
   // If not revealed, show hidden state
   if (!revealed) {
     return (
@@ -108,6 +118,8 @@ const RoleCard: React.FC<RoleCardProps> = ({
           rounded-lg overflow-hidden
           ${className}
         `}
+        role="img"
+        aria-label={`Unrevealed role card${playerName ? ` for ${playerName}` : ''}`}
       >
         <div className="absolute inset-0 circuit-pattern opacity-20"></div>
         <div className="relative h-full flex flex-col items-center justify-center p-4">
@@ -138,6 +150,8 @@ const RoleCard: React.FC<RoleCardProps> = ({
         ${isDead ? 'terminated' : ''}
         ${className}
       `}
+      role="img"
+      aria-label={`${role} role card${playerName ? ` - ${playerName}` : ''} - ${status}`}
     >
       {/* Background pattern based on role */}
       <div className="absolute inset-0 opacity-10">
@@ -169,10 +183,10 @@ const RoleCard: React.FC<RoleCardProps> = ({
       {/* Card content */}
       <div className="relative h-full flex flex-col p-4">
         {/* Role name header */}
-        <div className={`text-xs font-mono ${getRoleColor(role)} text-shadow-neon-blue mb-2`}>
+        <div className={`text-xs font-mono ${getRoleColor(role)} ${getRoleTextShadow(role)} mb-2`}>
           &gt; ROLE.ID
         </div>
-        <div className={`text-lg font-bold ${getRoleColor(role)} mb-4 font-orbitron`}>
+        <div className={`text-lg font-bold ${getRoleColor(role)} ${getRoleTextShadow(role)} mb-4 font-orbitron`}>
           {role.toUpperCase()}
         </div>
 

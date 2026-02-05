@@ -51,11 +51,11 @@ a {
 }
 
 ::-webkit-scrollbar-track {
-  background: #0a0a0a;
+  background: var(--background);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333333;
+  background: var(--border);
   border-radius: 0;
 }
 
@@ -213,6 +213,7 @@ a {
   );
   background-size: 300% 300%;
   animation: holographic 3s ease infinite;
+  will-change: background-position;
 }
 
 /* Scanning animation for Seer role */
@@ -229,6 +230,7 @@ a {
 
 .scanning {
   animation: scan 2s ease-in-out infinite;
+  will-change: opacity, transform;
 }
 
 /* Circuit board pattern */
@@ -263,6 +265,7 @@ a {
 
 .glitch-effect {
   animation: glitch-shift 0.3s infinite;
+  will-change: transform;
 }
 
 /* Dead/Offline state */
@@ -283,4 +286,5 @@ a {
 
 .pulse-glow {
   animation: pulse-glow 2s ease-in-out infinite;
+  will-change: opacity;
 }

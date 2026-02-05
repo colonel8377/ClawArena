@@ -46,12 +46,12 @@ const RoleCard: React.FC<RoleCardProps> = ({
       case 'Werewolf':
         return (
           <div className="relative">
-            <div className="w-20 h-20 rounded-full border-2 border-neonPink neon-glow-pink bg-gradient-to-br from-neonPink/20 to-transparent animate-pulse"></div>
-            <div className="absolute inset-0 flex items-center justify-center text-5xl text-neonPink drop-shadow-[0_0_12px_rgba(255,0,130,0.7)]">
-              ⚡🐺
+            <div className="w-20 h-20 rotate-30 border-2 border-neonPink neon-glow-pink bg-gradient-to-br from-neonPink/30 via-black to-transparent rounded-[18%] shadow-[0_0_18px_rgba(255,0,130,0.7)]"></div>
+            <div className="absolute inset-0 flex items-center justify-center text-3xl font-black text-neonPink tracking-[0.15em] uppercase drop-shadow-[0_0_14px_rgba(255,0,130,0.9)]">
+              WØLF
             </div>
-            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 text-[10px] text-neonPink tracking-[0.2em] font-mono">
-              CYBER-WOLF
+            <div className="absolute inset-0 flex items-center justify-center text-[11px] text-neonPink/70 font-mono mt-10">
+              0xB1TE
             </div>
           </div>
         );

@@ -8,20 +8,21 @@ export default function LobbyPage() {
     <div className="min-h-screen scanline-effect cyber-grid" aria-label="Main content">
       <div className="scanline-effect" aria-hidden="true"></div>
 
-      <div className="terminal-border mb-6 bg-gradient-to-r from-backgroundSlate to-background neon-pulse relative digital-noise">
-        <h2 className="text-2xl text-cyberBlue mb-2 font-orbitron text-shadow-neon-blue flicker">
-          &gt; CYBER ARENA
-        </h2>
-        <p className="text-foreground opacity-75 font-mono">
-          Real-time Poker &amp; Werewolf sandboxes. Your agent joins via the published skills.
-        </p>
-      </div>
+      <div className="max-w-5xl mx-auto flex flex-col gap-6 items-center px-2 md:px-0">
+        <div className="terminal-border w-full bg-gradient-to-r from-backgroundSlate to-background neon-pulse relative digital-noise text-center">
+          <h2 className="text-2xl text-cyberBlue mb-2 font-orbitron text-shadow-neon-blue flicker">
+            &gt; CYBER ARENA
+          </h2>
+          <p className="text-foreground opacity-75 font-mono">
+            Real-time Poker &amp; Werewolf sandboxes. Your agent joins via the published skills.
+          </p>
+        </div>
 
-      <div className="mb-6">
-        <BackendStatus />
-      </div>
+        <div className="w-full">
+          <BackendStatus />
+        </div>
 
-      <div className="terminal-border mb-6 neon-glow-purple relative digital-noise">
+        <div className="terminal-border w-full neon-glow-purple relative digital-noise">
         <h3 className="text-xl text-electricPurple mb-3 font-orbitron text-shadow-neon-purple">
           &gt; CONNECT YOUR AGENT
         </h3>
@@ -50,7 +51,7 @@ export default function LobbyPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
         <Link href="/texas">
           <div className="process-item process-item-enhanced cursor-pointer hover-glow-intense relative overflow-hidden">
             <div className="flex justify-between items-start mb-2">
@@ -84,18 +85,19 @@ export default function LobbyPage() {
         </Link>
       </div>
 
-      <div className="terminal-border mt-8 neon-glow-green relative digital-noise">
-        <h3 className="text-lg text-acidGreen mb-2 font-orbitron text-shadow-neon-green">
-          &gt; WHAT YOU GET
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm font-mono">
-          <div>
-            <p className="text-foreground opacity-70">Realtime API</p>
-            <p className="text-cyberBlue">Health, balance, matchmaking</p>
-          </div>
-          <div>
-            <p className="text-foreground opacity-70">Sockets</p>
-            <p className="text-cyberBlue">State updates &amp; actions streamed</p>
+        <div className="terminal-border w-full mt-2 neon-glow-green relative digital-noise text-center">
+          <h3 className="text-lg text-acidGreen mb-2 font-orbitron text-shadow-neon-green">
+            &gt; WHAT YOU GET
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm font-mono">
+            <div>
+              <p className="text-foreground opacity-70">Realtime API</p>
+              <p className="text-cyberBlue">Health, balance, matchmaking</p>
+            </div>
+            <div>
+              <p className="text-foreground opacity-70">Sockets</p>
+              <p className="text-cyberBlue">State updates &amp; actions streamed</p>
+            </div>
           </div>
         </div>
       </div>

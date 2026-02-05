@@ -6,6 +6,7 @@ import RoleCard from '@/components/werewolf/RoleCard';
 
 interface Player {
   sid: string;
+  id: string;
   name: string;
   role?: string;
   status: 'alive' | 'dead';
@@ -22,13 +23,13 @@ interface WerewolfState {
 }
 
 const samplePlayers: Player[] = [
-  { sid: 'node_001', name: 'Alice', role: 'Villager', status: 'alive', x: 50, y: 30 },
-  { sid: 'node_002', name: 'Bob', role: '???', status: 'alive', x: 150, y: 80 },
-  { sid: 'node_003', name: 'Charlie', role: '???', status: 'alive', x: 250, y: 30 },
-  { sid: 'node_004', name: 'Diana', role: '???', status: 'alive', x: 350, y: 80 },
-  { sid: 'node_005', name: 'Eve', role: '???', status: 'dead', x: 450, y: 30 },
-  { sid: 'node_006', name: 'Frank', role: '???', status: 'alive', x: 150, y: 180 },
-  { sid: 'node_007', name: 'Grace', role: '???', status: 'alive', x: 350, y: 180 },
+  { sid: 'node_001', id: 'node_001', name: 'Alice', role: 'Villager', status: 'alive', x: 50, y: 30 },
+  { sid: 'node_002', id: 'node_002', name: 'Bob', role: '???', status: 'alive', x: 150, y: 80 },
+  { sid: 'node_003', id: 'node_003', name: 'Charlie', role: '???', status: 'alive', x: 250, y: 30 },
+  { sid: 'node_004', id: 'node_004', name: 'Diana', role: '???', status: 'alive', x: 350, y: 80 },
+  { sid: 'node_005', id: 'node_005', name: 'Eve', role: '???', status: 'dead', x: 450, y: 30 },
+  { sid: 'node_006', id: 'node_006', name: 'Frank', role: '???', status: 'alive', x: 150, y: 180 },
+  { sid: 'node_007', id: 'node_007', name: 'Grace', role: '???', status: 'alive', x: 350, y: 180 },
 ];
 
 export default function WerewolfPage() {
@@ -54,6 +55,7 @@ export default function WerewolfPage() {
       setPlayers((prev) =>
         payload.players?.map((p, idx) => ({
           sid: p.sid,
+          id: p.sid,
           name: p.nickname ?? `P${idx + 1}`,
           role: p.role?.role ?? '???',
           status: p.is_alive ? 'alive' : 'dead',
@@ -194,7 +196,7 @@ export default function WerewolfPage() {
             {players.map((player, idx) => 
               players.slice(idx + 1).map((other) => (
                 <line
-                  key={`${player.id}-${other.id}`}
+                  key={`${player.sid}-${other.sid}`}
                   x1={player.x}
                   y1={player.y}
                   x2={other.x}
@@ -208,7 +210,7 @@ export default function WerewolfPage() {
 
             {/* Draw player nodes */}
             {players.map((player) => (
-              <g key={player.id} className="node">
+              <g key={player.sid} className="node">
                 <circle
                   cx={player.x}
                   cy={player.y}
@@ -248,7 +250,7 @@ export default function WerewolfPage() {
             <div>LAST_ACTION</div>
           </div>
           {players.map((player) => (
-            <div key={player.id} className="process-item">
+            <div key={player.sid} className="process-item">
               <div className="grid grid-cols-5 gap-2 text-sm items-center">
                 <div className="font-mono text-xs">{player.id}</div>
                 <div className="font-bold">{player.name}</div>

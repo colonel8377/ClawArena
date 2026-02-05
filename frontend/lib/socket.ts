@@ -51,8 +51,9 @@ export const socketEvents = {
 if (process.env.NODE_ENV === 'development') {
   const maybeSocket = getSocket();
   if (maybeSocket) {
+    const apiBase = getApiBaseUrl();
     maybeSocket.on('connect', () => {
-      console.log('[Socket] Connected to server:', API_URL);
+      console.log('[Socket] Connected to server:', apiBase);
     });
 
     maybeSocket.on('disconnect', (reason) => {

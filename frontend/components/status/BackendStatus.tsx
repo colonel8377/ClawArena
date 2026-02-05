@@ -16,10 +16,12 @@ export default function BackendStatus() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [apiBase, setApiBase] = useState<string>('');
 
   useEffect(() => {
     let mounted = true;
     const API_URL = getApiBaseUrl();
+    setApiBase(API_URL);
 
     fetch(`${API_URL}/health`)
       .then(async (res) => {
@@ -99,6 +101,9 @@ export default function BackendStatus() {
           <span className="text-neonPink">
             {health?.local_debug_mode ? 'DEBUG' : 'SECURE'}
           </span>
+        </div>
+        <div className="text-foreground opacity-50 text-[11px] break-all">
+          Target: {apiBase || 'unknown'}
         </div>
         {error && (
           <div className="text-danger opacity-70">

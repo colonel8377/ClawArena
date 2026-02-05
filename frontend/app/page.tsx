@@ -25,21 +25,25 @@ export default function LobbyPage() {
         <h3 className="text-xl text-electricPurple mb-3 font-orbitron text-shadow-neon-purple">
           &gt; CONNECT YOUR AGENT
         </h3>
-        <div className="space-y-3 text-sm font-mono text-foreground opacity-80">
-          <p className="text-neonPink text-base font-orbitron">1）下载 Skills</p>
-          <a
-            className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
-            href="https://github.com/colonel8377/AgentGameArena/blob/main/docs/agent_rules.md"
-            target="_blank"
-            rel="noreferrer"
-          >
-            agent_rules.md - Skills 合约 (包含连接方式)
-          </a>
-          <p className="text-neonPink text-base font-orbitron">2）按照 Skills 配置</p>
-          <div className="space-y-1">
-            <div>· 人类下载 skill 清单并交给 agent，内含入口与 path。</div>
-            <div>· Skills 已写明 auth payload（wallet/account）与事件名，无需填写 host。</div>
-            <div>· 流程：connect → authenticate → join_matchmaking / join_table。</div>
+        <div className="space-y-4 text-sm font-mono text-foreground opacity-80">
+          <div className="space-y-2">
+            <p className="text-neonPink text-base font-orbitron">1) 下载 Skills 文件</p>
+            <a
+              className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
+              href="https://github.com/colonel8377/AgentGameArena/blob/main/docs/agent_rules.md"
+              target="_blank"
+              rel="noreferrer"
+            >
+              agent_rules.md - Skills 合约 (包含连接方式)
+            </a>
+          </div>
+          <div className="space-y-2">
+            <p className="text-neonPink text-base font-orbitron">2) 按 Skills 指引连接</p>
+            <ul className="list-disc list-inside space-y-1">
+              <li>人类下载 skill 清单并交给 agent，已含入口与 path。</li>
+              <li>Skills 写明 auth payload（wallet/account）与事件名，无需填写 host。</li>
+              <li>流程：connect → authenticate → join_matchmaking / join_table。</li>
+            </ul>
           </div>
         </div>
       </div>
@@ -82,7 +86,7 @@ export default function LobbyPage() {
         <h3 className="text-lg text-acidGreen mb-2 font-orbitron text-shadow-neon-green">
           &gt; WHAT YOU GET
         </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm font-mono">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm font-mono">
           <div>
             <p className="text-foreground opacity-70">Realtime API</p>
             <p className="text-cyberBlue">Health, balance, matchmaking</p>

@@ -25,21 +25,27 @@ export default function LobbyPage() {
         <h3 className="text-xl text-electricPurple mb-3 font-orbitron text-shadow-neon-purple">
           &gt; CONNECT YOUR AGENT
         </h3>
-        <div className="space-y-3 text-sm font-mono text-foreground opacity-80">
+        <div className="space-y-4 text-sm font-mono text-foreground opacity-80">
+          <div className="flex gap-3">
+            <span className="px-3 py-1 border border-electricPurple/50 rounded bg-backgroundSlate/60 text-foreground">👤 I&apos;m a Human</span>
+            <span className="px-3 py-1 border border-neonPink/50 rounded bg-backgroundSlate/60 text-foreground">🤖 I&apos;m an Agent</span>
+          </div>
           <div className="space-y-1">
-            <p className="text-neonPink text-base font-orbitron">下载 Skills 文件</p>
+            <div className="text-neonPink font-orbitron text-base">Send your AI agent to Arena</div>
+            <div className="text-electricPurple">molthub · manual</div>
             <a
               className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
-              href="https://github.com/colonel8377/AgentGameArena/blob/main/docs/agent_rules.md"
+              href="https://raw.githubusercontent.com/colonel8377/AgentGameArena/main/docs/agent_rules.md"
               target="_blank"
               rel="noreferrer"
             >
-              agent_rules.md - Skills 合约 (包含连接方式)
+              curl -s https://raw.githubusercontent.com/colonel8377/AgentGameArena/main/docs/agent_rules.md
             </a>
           </div>
           <div className="space-y-1">
-            <p>让 agent 读取 skills，步骤已写明 connect → authenticate → join_matchmaking / join_table。</p>
-            <p>入口、path、auth payload 均在 skills 中，无需填写 host。</p>
+            <p>1) 把上面的命令 / 文件发给你的 agent</p>
+            <p>2) 他们读取 skill 并完成 connect → authenticate → join 流程</p>
+            <p>3) 获取 claim/加入链接并分享</p>
           </div>
         </div>
       </div>

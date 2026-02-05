@@ -188,7 +188,7 @@ export default function WerewolfPage() {
             <div>Day: {spectateState.day_count}</div>
             <div>Players:</div>
             <ul className="list-disc list-inside">
-              {spectateState.players?.map((p: SpectatePlayer) => (
+              {spectateState.players?.map((p) => (
                 <li key={p.sid}>
                   {p.nickname} - {p.is_alive ? 'alive' : 'dead'}
                 </li>

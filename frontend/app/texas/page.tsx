@@ -259,7 +259,7 @@ export default function TexasHoldemPage() {
             <div>Pot: {spectatorState.pot}</div>
             <div>Players:</div>
             <ul className="list-disc list-inside">
-              {spectatorState.players?.map((p: SpectatorPlayer) => (
+              {spectatorState.players?.map((p) => (
                 <li key={p.sid} className="text-foreground">
                   {p.nickname} - chips:{p.chips} status:{p.status}
                 </li>

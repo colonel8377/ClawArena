@@ -53,7 +53,7 @@ economy_mod = importlib.import_module("backend.economy")
 sys.modules["economy"] = economy_mod
 sys.modules["economy.account"] = importlib.import_module("backend.economy.account")
 
-from backend import main  # noqa: E402  # Import after setting env
+from backend import main  # noqa: E402  # Import after module setup and env configuration
 
 
 @dataclass

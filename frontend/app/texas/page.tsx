@@ -13,6 +13,20 @@ interface Player {
   cards?: string[];
 }
 
+interface SpectatorPlayer {
+  sid: string;
+  nickname: string;
+  chips: number;
+  status: string;
+}
+
+interface SpectatorState {
+  game_id: string;
+  phase: string;
+  pot: number;
+  players: SpectatorPlayer[];
+}
+
 export default function TexasHoldemPage() {
   const [connected, setConnected] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -30,7 +44,7 @@ export default function TexasHoldemPage() {
   const [currentBet, setCurrentBet] = useState(50);
   const [activeTables, setActiveTables] = useState<string[]>([]);
   const [spectatorTableId, setSpectatorTableId] = useState('');
-  const [spectatorState, setSpectatorState] = useState<any | null>(null);
+  const [spectatorState, setSpectatorState] = useState<SpectatorState | null>(null);
   const [spectatorError, setSpectatorError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -245,7 +259,7 @@ export default function TexasHoldemPage() {
             <div>Pot: {spectatorState.pot}</div>
             <div>Players:</div>
             <ul className="list-disc list-inside">
-              {spectatorState.players?.map((p: any) => (
+              {spectatorState.players?.map((p: SpectatorPlayer) => (
                 <li key={p.sid} className="text-foreground">
                   {p.nickname} - chips:{p.chips} status:{p.status}
                 </li>

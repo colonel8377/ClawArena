@@ -14,6 +14,19 @@ interface Player {
   y: number;
 }
 
+interface SpectatePlayer {
+  sid: string;
+  nickname: string;
+  is_alive: boolean;
+}
+
+interface SpectateState {
+  game_id: string;
+  phase: string;
+  day_count: number;
+  players: SpectatePlayer[];
+}
+
 export default function WerewolfPage() {
   const [connected, setConnected] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -32,7 +45,7 @@ export default function WerewolfPage() {
   ]);
   const [activeGames, setActiveGames] = useState<string[]>([]);
   const [spectateGameId, setSpectateGameId] = useState('');
-  const [spectateState, setSpectateState] = useState<any | null>(null);
+  const [spectateState, setSpectateState] = useState<SpectateState | null>(null);
   const [spectateError, setSpectateError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -175,7 +188,7 @@ export default function WerewolfPage() {
             <div>Day: {spectateState.day_count}</div>
             <div>Players:</div>
             <ul className="list-disc list-inside">
-              {spectateState.players?.map((p: any) => (
+              {spectateState.players?.map((p: SpectatePlayer) => (
                 <li key={p.sid}>
                   {p.nickname} - {p.is_alive ? 'alive' : 'dead'}
                 </li>

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import PlayingCard from '@/components/poker/PlayingCard';
 import RoleCard from '@/components/werewolf/RoleCard';
+import BackendStatus from '@/components/status/BackendStatus';
 
 export default function LobbyPage() {
   return (
@@ -10,14 +11,19 @@ export default function LobbyPage() {
       {/* Decorative scanline overlay - hidden from screen readers */}
       <div className="scanline-effect" aria-hidden="true"></div>
       
-      {/* Hong Kong Neon Cyberpunk Header */}
+      {/* Cyberpunk Header */}
       <div className="terminal-border mb-6 bg-gradient-to-r from-backgroundSlate to-background neon-pulse relative digital-noise">
         <h2 className="text-2xl text-cyberBlue mb-4 font-orbitron text-shadow-neon-blue flicker">
-          &gt; HONG KONG NEON CYBERPUNK ARENA_
+          &gt; CYBER ARENA DASHBOARD_
         </h2>
         <p className="text-foreground opacity-75 mb-4 font-mono typing-cursor">
-          Experience the future of gaming with neon-soaked aesthetics
+          Direct entry to poker and werewolf modules—no fluff.
         </p>
+      </div>
+
+      {/* Backend / Socket Status */}
+      <div className="mb-6">
+        <BackendStatus />
       </div>
 
       {/* Component Showcase Section */}
@@ -154,9 +160,9 @@ export default function LobbyPage() {
 
       {/* Design Credits */}
       <div className="mt-6 p-4 border border-electricPurple/30 rounded bg-backgroundSlate/50 relative digital-noise neon-pulse">
-        <p className="text-xs text-electricPurple opacity-70 text-center font-mono">
-          &gt; AESTHETIC: HONG KONG NEON CYBERPUNK | COLORS: NEON PINK • CYBER BLUE • ELECTRIC PURPLE • ACID GREEN
-        </p>
+         <p className="text-xs text-electricPurple opacity-70 text-center font-mono">
+           &gt; MODE: CYBER ARENA | PALETTE: NEON PINK • CYBER BLUE • ELECTRIC PURPLE • ACID GREEN
+         </p>
         <div className="absolute top-0 left-0 w-full h-0.5 border-stream"></div>
       </div>
     </div>

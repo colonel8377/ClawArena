@@ -38,6 +38,7 @@ npm run dev
 ```
 
 The application will be available at http://localhost:3000
+The frontend expects the backend at `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000` for local dev; Docker Compose dev sets it to `http://backend:8000`).
 
 ### Build for Production
 

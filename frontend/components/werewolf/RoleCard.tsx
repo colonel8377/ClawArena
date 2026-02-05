@@ -49,8 +49,8 @@ const RoleCard: React.FC<RoleCardProps> = ({
             {/* Wolf head shape using CSS */}
             <div className="text-6xl glitch-effect">
               <div className="relative">
-                <div className="absolute inset-0 text-neonPink opacity-70">🐺</div>
-                <div className="relative text-neonPink">🐺</div>
+                <div className="absolute inset-0 text-neonPink opacity-50">⛓</div>
+                <div className="relative text-neonPink tracking-widest">狼</div>
               </div>
             </div>
           </div>

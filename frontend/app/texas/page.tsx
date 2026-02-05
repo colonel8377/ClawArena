@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getSocket } from '@/lib/socket';
 import PlayingCard from '@/components/poker/PlayingCard';
+import getApiBaseUrl from '@/lib/api';
 
 interface Player {
   id: string;
@@ -10,6 +11,20 @@ interface Player {
   chips: number;
   status: 'active' | 'folded' | 'allin';
   cards?: string[];
+}
+
+interface SpectatorPlayer {
+  sid: string;
+  nickname: string;
+  chips: number;
+  status: string;
+}
+
+interface SpectatorState {
+  game_id: string;
+  phase: string;
+  pot: number;
+  players: SpectatorPlayer[];
 }
 
 export default function TexasHoldemPage() {
@@ -27,6 +42,10 @@ export default function TexasHoldemPage() {
   const [pot, setPot] = useState(350);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [currentBet, setCurrentBet] = useState(50);
+  const [activeTables, setActiveTables] = useState<string[]>([]);
+  const [spectatorTableId, setSpectatorTableId] = useState('');
+  const [spectatorState, setSpectatorState] = useState<SpectatorState | null>(null);
+  const [spectatorError, setSpectatorError] = useState<string | null>(null);
 
   useEffect(() => {
     const socket = getSocket();
@@ -43,6 +62,18 @@ export default function TexasHoldemPage() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
 
+    const fetchGames = async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/api/games/active`);
+        const data = await res.json();
+        setActiveTables(data.poker_tables || []);
+      } catch (err) {
+        console.error('Failed to load active games', err);
+      }
+    };
+
+    fetchGames();
+
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
@@ -55,6 +86,24 @@ export default function TexasHoldemPage() {
       case 'folded': return 'status-inactive';
       case 'allin': return 'status-warning';
       default: return '';
+    }
+  };
+
+  const handleSpectate = async () => {
+    if (!spectatorTableId) return;
+    setSpectatorError(null);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/spectate/poker/${spectatorTableId}`);
+      if (!res.ok) {
+        setSpectatorError('Table not found');
+        setSpectatorState(null);
+        return;
+      }
+      const data = await res.json();
+      setSpectatorState(data);
+    } catch (err) {
+      setSpectatorError('Failed to load table');
+      setSpectatorState(null);
     }
   };
 
@@ -180,6 +229,44 @@ export default function TexasHoldemPage() {
             CHECK
           </button>
         </div>
+      </div>
+
+      {/* Spectator Panel */}
+      <div className="terminal-border mt-4">
+        <div className="text-warning text-xs mb-2">=== SPECTATE POKER TABLE ===</div>
+        <div className="flex flex-wrap gap-2 text-sm items-center">
+          <input
+            value={spectatorTableId}
+            onChange={(e) => setSpectatorTableId(e.target.value)}
+            placeholder="Enter table_id"
+            className="px-2 py-1 bg-background border border-border rounded text-foreground"
+          />
+          <button
+            onClick={handleSpectate}
+            className="px-3 py-1 border border-primary text-primary rounded hover:bg-primary/10"
+          >
+            Load
+          </button>
+          <div className="text-xs opacity-70">
+            Active: {activeTables.length === 0 ? 'None' : activeTables.join(', ')}
+          </div>
+        </div>
+        {spectatorError && <div className="text-warning text-xs mt-2">{spectatorError}</div>}
+        {spectatorState && (
+          <div className="mt-3 text-xs font-mono space-y-1">
+            <div className="text-primary">Table: {spectatorState.game_id}</div>
+            <div>Phase: {spectatorState.phase}</div>
+            <div>Pot: {spectatorState.pot}</div>
+            <div>Players:</div>
+            <ul className="list-disc list-inside">
+              {spectatorState.players?.map((p) => (
+                <li key={p.sid} className="text-foreground">
+                  {p.nickname} - chips:{p.chips} status:{p.status}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );

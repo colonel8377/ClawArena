@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getSocket } from '@/lib/socket';
 import RoleCard from '@/components/werewolf/RoleCard';
+import getApiBaseUrl from '@/lib/api';
 
 interface Player {
   id: string;
@@ -11,6 +12,19 @@ interface Player {
   status: 'alive' | 'dead';
   x: number;
   y: number;
+}
+
+interface SpectatePlayer {
+  sid: string;
+  nickname: string;
+  is_alive: boolean;
+}
+
+interface SpectateState {
+  game_id: string;
+  phase: string;
+  day_count: number;
+  players: SpectatePlayer[];
 }
 
 export default function WerewolfPage() {
@@ -29,6 +43,10 @@ export default function WerewolfPage() {
     { id: 'node_006', name: 'Frank', role: '???', status: 'alive', x: 150, y: 180 },
     { id: 'node_007', name: 'Grace', role: '???', status: 'alive', x: 350, y: 180 },
   ]);
+  const [activeGames, setActiveGames] = useState<string[]>([]);
+  const [spectateGameId, setSpectateGameId] = useState('');
+  const [spectateState, setSpectateState] = useState<SpectateState | null>(null);
+  const [spectateError, setSpectateError] = useState<string | null>(null);
 
   useEffect(() => {
     const socket = getSocket();
@@ -45,6 +63,18 @@ export default function WerewolfPage() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
 
+    const fetchGames = async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/api/games/active`);
+        const data = await res.json();
+        setActiveGames(data.werewolf_games || []);
+      } catch (err) {
+        console.error('Failed to load active games', err);
+      }
+    };
+
+    fetchGames();
+
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
@@ -56,6 +86,24 @@ export default function WerewolfPage() {
     if (player.role === 'Villager') return '#00ff00';
     if (player.role === 'Werewolf') return '#ff0000';
     return '#ffaa00';
+  };
+
+  const handleSpectate = async () => {
+    if (!spectateGameId) return;
+    setSpectateError(null);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/spectate/werewolf/${spectateGameId}`);
+      if (!res.ok) {
+        setSpectateError('Game not found');
+        setSpectateState(null);
+        return;
+      }
+      const data = await res.json();
+      setSpectateState(data);
+    } catch (err) {
+      setSpectateError('Failed to load game');
+      setSpectateState(null);
+    }
   };
 
   return (
@@ -112,55 +160,42 @@ export default function WerewolfPage() {
         </div>
       </div>
 
-      {/* Network Graph */}
+      {/* Spectator Panel */}
       <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-4">=== NETWORK_GRAPH: PLAYER_NODES ===</div>
-        <div className="relative w-full h-96 border border-border bg-black">
-          <svg width="100%" height="100%">
-            {/* Draw connections between nodes */}
-            {players.map((player, idx) => 
-              players.slice(idx + 1).map((other) => (
-                <line
-                  key={`${player.id}-${other.id}`}
-                  x1={player.x}
-                  y1={player.y}
-                  x2={other.x}
-                  y2={other.y}
-                  stroke="#333333"
-                  strokeWidth="1"
-                  opacity="0.3"
-                />
-              ))
-            )}
-
-            {/* Draw player nodes */}
-            {players.map((player) => (
-              <g key={player.id} className="node">
-                <circle
-                  cx={player.x}
-                  cy={player.y}
-                  r="20"
-                  fill={getNodeColor(player)}
-                  stroke={player.status === 'alive' ? '#00ff00' : '#ff0000'}
-                  strokeWidth="2"
-                  opacity={player.status === 'alive' ? '1' : '0.3'}
-                />
-                <text
-                  x={player.x}
-                  y={player.y}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fill="#0a0a0a"
-                  fontSize="10"
-                  fontWeight="bold"
-                  fontFamily="monospace"
-                >
-                  {player.name.charAt(0)}
-                </text>
-              </g>
-            ))}
-          </svg>
+        <div className="text-warning text-xs mb-2">=== SPECTATE WEREWOLF GAME ===</div>
+        <div className="flex flex-wrap gap-2 text-sm items-center">
+          <input
+            value={spectateGameId}
+            onChange={(e) => setSpectateGameId(e.target.value)}
+            placeholder="Enter game_id"
+            className="px-2 py-1 bg-background border border-border rounded text-foreground"
+          />
+          <button
+            onClick={handleSpectate}
+            className="px-3 py-1 border border-primary text-primary rounded hover:bg-primary/10"
+          >
+            Load
+          </button>
+          <div className="text-xs opacity-70">
+            Active: {activeGames.length === 0 ? 'None' : activeGames.join(', ')}
+          </div>
         </div>
+        {spectateError && <div className="text-warning text-xs mt-2">{spectateError}</div>}
+        {spectateState && (
+          <div className="mt-3 text-xs font-mono space-y-1">
+            <div className="text-primary">Game: {spectateState.game_id}</div>
+            <div>Phase: {spectateState.phase}</div>
+            <div>Day: {spectateState.day_count}</div>
+            <div>Players:</div>
+            <ul className="list-disc list-inside">
+              {spectateState.players?.map((p) => (
+                <li key={p.sid}>
+                  {p.nickname} - {p.is_alive ? 'alive' : 'dead'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Player List */}

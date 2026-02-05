@@ -1,9 +1,51 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import BackendStatus from '@/components/status/BackendStatus';
+import getApiBaseUrl from '@/lib/api';
+
+type ActiveGames = {
+  poker_tables: string[];
+  werewolf_games: string[];
+};
 
 export default function LobbyPage() {
+  const [active, setActive] = useState<ActiveGames>({ poker_tables: [], werewolf_games: [] });
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    const fetchActive = async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/api/games/active`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setActive({
+          poker_tables: data.poker_tables || [],
+          werewolf_games: data.werewolf_games || [],
+        });
+      } catch (err) {
+        // silent fail; status component covers backend availability
+        console.error('Failed to load active games', err);
+      }
+    };
+    fetchActive();
+    const id = setInterval(fetchActive, 8000);
+    return () => clearInterval(id);
+  }, []);
+
+  const filteredPoker = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return active.poker_tables;
+    return active.poker_tables.filter((id) => id.toLowerCase().includes(q));
+  }, [active.poker_tables, query]);
+
+  const filteredWerewolf = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return active.werewolf_games;
+    return active.werewolf_games.filter((id) => id.toLowerCase().includes(q));
+  }, [active.werewolf_games, query]);
+
   return (
     <div className="min-h-screen scanline-effect cyber-grid" aria-label="Main content">
       <div className="scanline-effect" aria-hidden="true"></div>
@@ -97,6 +139,53 @@ export default function LobbyPage() {
             <div>
               <p className="text-foreground opacity-70">Sockets</p>
               <p className="text-cyberBlue">State updates &amp; actions streamed</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Active games search/list */}
+        <div className="terminal-border w-full neon-glow-blue relative digital-noise">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg text-cyberBlue font-orbitron text-shadow-neon-blue">
+              &gt; ACTIVE GAMES
+            </h3>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search table_id / game_id"
+              className="px-3 py-1 bg-background border border-border rounded text-sm text-foreground"
+            />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
+            <div>
+              <div className="text-warning text-xs mb-2">POKER TABLES ({filteredPoker.length})</div>
+              {filteredPoker.length === 0 ? (
+                <div className="opacity-60">No tables</div>
+              ) : (
+                <ul className="space-y-1">
+                  {filteredPoker.map((id) => (
+                    <li key={id} className="flex items-center gap-2">
+                      <span className="status-active px-2 py-0.5 rounded text-xs">LIVE</span>
+                      <span>{id}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <div className="text-warning text-xs mb-2">WEREWOLF GAMES ({filteredWerewolf.length})</div>
+              {filteredWerewolf.length === 0 ? (
+                <div className="opacity-60">No games</div>
+              ) : (
+                <ul className="space-y-1">
+                  {filteredWerewolf.map((id) => (
+                    <li key={id} className="flex items-center gap-2">
+                      <span className="status-active px-2 py-0.5 rounded text-xs">LIVE</span>
+                      <span>{id}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </div>

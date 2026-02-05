@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { socket } from '@/lib/socket';
+import { getSocket } from '@/lib/socket';
+import PlayingCard from '@/components/poker/PlayingCard';
 
 interface Player {
   id: string;
@@ -28,6 +29,9 @@ export default function TexasHoldemPage() {
   const [currentBet, setCurrentBet] = useState(50);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
     function onConnect() {
       setConnected(true);
     }
@@ -55,7 +59,7 @@ export default function TexasHoldemPage() {
   };
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen max-w-5xl mx-auto px-2 md:px-0">
       {/* Header */}
       <div className="terminal-border mb-4">
         <div className="flex justify-between items-center">
@@ -66,6 +70,18 @@ export default function TexasHoldemPage() {
             </span></span>
             <span>Thread: 0x7F3C</span>
           </div>
+        </div>
+      </div>
+
+      {/* Visual Cards */}
+      <div className="terminal-border mb-4">
+        <div className="text-warning text-xs mb-2">=== SAMPLE_HAND ===</div>
+        <div className="flex flex-wrap gap-3">
+          <PlayingCard suit="hearts" rank="A" />
+          <PlayingCard suit="spades" rank="K" />
+          <PlayingCard suit="diamonds" rank="Q" />
+          <PlayingCard suit="clubs" rank="J" />
+          <PlayingCard suit="hearts" rank="10" hidden />
         </div>
       </div>
 

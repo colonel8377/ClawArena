@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { socket } from '@/lib/socket';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+import { getSocket } from '@/lib/socket';
+import getApiBaseUrl from '@/lib/api';
 
 type HealthResponse = {
   status: string;
@@ -16,10 +15,13 @@ export default function BackendStatus() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [socketConnected, setSocketConnected] = useState<boolean>(socket.connected);
+  const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [apiBase, setApiBase] = useState<string>('');
 
   useEffect(() => {
     let mounted = true;
+    const API_URL = getApiBaseUrl();
+    setApiBase(API_URL);
 
     fetch(`${API_URL}/health`)
       .then(async (res) => {
@@ -45,8 +47,13 @@ export default function BackendStatus() {
   }, []);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
     const onConnect = () => setSocketConnected(true);
     const onDisconnect = () => setSocketConnected(false);
+
+    setSocketConnected(socket.connected);
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
@@ -92,8 +99,11 @@ export default function BackendStatus() {
         <div className="text-foreground opacity-70">
           Mode:{' '}
           <span className="text-neonPink">
-            {health?.local_debug_mode ? 'LOCAL_DEBUG' : 'SECURE'}
+            {health?.local_debug_mode ? 'DEBUG' : 'SECURE'}
           </span>
+        </div>
+        <div className="text-foreground opacity-50 text-[11px] break-all">
+          Target: {apiBase || 'unknown'}
         </div>
         {error && (
           <div className="text-danger opacity-70">

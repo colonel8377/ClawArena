@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { socket } from '@/lib/socket';
+import { getSocket } from '@/lib/socket';
+import RoleCard from '@/components/werewolf/RoleCard';
 
 interface Player {
   id: string;
@@ -30,6 +31,9 @@ export default function WerewolfPage() {
   ]);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
     function onConnect() {
       setConnected(true);
     }
@@ -55,7 +59,7 @@ export default function WerewolfPage() {
   };
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen max-w-5xl mx-auto px-2 md:px-0">
       {/* Header */}
       <div className="terminal-border mb-4">
         <div className="flex justify-between items-center">
@@ -69,6 +73,17 @@ export default function WerewolfPage() {
             </span></span>
             <span>Day: {dayCount}</span>
           </div>
+        </div>
+      </div>
+
+      {/* Visual Roles */}
+      <div className="terminal-border mb-4">
+        <div className="text-warning text-xs mb-2">=== ROLE_DECK ===</div>
+        <div className="flex flex-wrap gap-3">
+          <RoleCard role="Werewolf" status="Alive" revealed playerName="ALPHA" />
+          <RoleCard role="Seer" status="Alive" revealed playerName="ORACLE" />
+          <RoleCard role="Villager" status="Alive" revealed playerName="NODE_01" />
+          <RoleCard role="Witch" status="Alive" revealed playerName="BREWER" />
         </div>
       </div>
 

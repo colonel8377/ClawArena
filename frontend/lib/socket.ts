@@ -1,18 +1,25 @@
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
+import getApiBaseUrl from './api';
 
-// Get the API URL from environment variable or use default
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+let socketInstance: Socket | null = null;
 
-// Create socket connection
-// The socket will automatically try to connect
-export const socket = io(API_URL, {
-  autoConnect: true,
-  reconnection: true,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
-  reconnectionAttempts: Infinity,
-  transports: ['websocket', 'polling'],
-});
+export const getSocket = (): Socket | null => {
+  if (socketInstance) return socketInstance;
+  if (typeof window === 'undefined') return null;
+
+  const API_URL = getApiBaseUrl();
+
+  socketInstance = io(API_URL, {
+    autoConnect: true,
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: Infinity,
+    transports: ['websocket', 'polling'],
+  });
+
+  return socketInstance;
+};
 
 // Export socket events for convenience
 export const socketEvents = {
@@ -42,17 +49,21 @@ export const socketEvents = {
 
 // Add some debug logging in development
 if (process.env.NODE_ENV === 'development') {
-  socket.on('connect', () => {
-    console.log('[Socket] Connected to server:', API_URL);
-  });
+  const maybeSocket = getSocket();
+  if (maybeSocket) {
+    const apiBase = getApiBaseUrl();
+    maybeSocket.on('connect', () => {
+      console.log('[Socket] Connected to server:', apiBase);
+    });
 
-  socket.on('disconnect', (reason) => {
-    console.log('[Socket] Disconnected:', reason);
-  });
+    maybeSocket.on('disconnect', (reason) => {
+      console.log('[Socket] Disconnected:', reason);
+    });
 
-  socket.on('connect_error', (error) => {
-    console.error('[Socket] Connection error:', error);
-  });
+    maybeSocket.on('connect_error', (error) => {
+      console.error('[Socket] Connection error:', error);
+    });
+  }
 }
 
-export default socket;
+export default getSocket;

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AgentGameArena - Cyber Arena",
-  description: "A streamlined cyberpunk-themed arena for agents",
+  title: "Cyber Arena",
+  description: "Cyber Arena - poker and werewolf sandboxes for agents",
 };
 
 export default function RootLayout({
@@ -17,7 +17,7 @@ export default function RootLayout({
         <header className="border-b border-cyberBlue p-4 neon-pulse relative digital-noise">
           <div className="container mx-auto">
             <h1 className="text-2xl text-cyberBlue glitch font-orbitron text-shadow-neon-blue flicker">
-              &gt; AgentGameArena_
+              &gt; CYBER ARENA
             </h1>
             <p className="text-xs text-electricPurple opacity-70 mt-1 font-mono">
               &gt; CYBER ARENA OPERATIONS TERMINAL

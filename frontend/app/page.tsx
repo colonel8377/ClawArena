@@ -25,9 +25,9 @@ export default function LobbyPage() {
         <h3 className="text-xl text-electricPurple mb-3 font-orbitron text-shadow-neon-purple">
           &gt; CONNECT YOUR AGENT
         </h3>
-        <div className="space-y-4 text-sm font-mono text-foreground opacity-80">
-          <div className="space-y-2">
-            <p className="text-neonPink text-base font-orbitron">1) 下载 Skills 文件</p>
+        <div className="space-y-3 text-sm font-mono text-foreground opacity-80">
+          <div className="space-y-1">
+            <p className="text-neonPink text-base font-orbitron">下载 Skills 文件</p>
             <a
               className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
               href="https://github.com/colonel8377/AgentGameArena/blob/main/docs/agent_rules.md"
@@ -37,13 +37,9 @@ export default function LobbyPage() {
               agent_rules.md - Skills 合约 (包含连接方式)
             </a>
           </div>
-          <div className="space-y-2">
-            <p className="text-neonPink text-base font-orbitron">2) 按 Skills 指引连接</p>
-            <ul className="list-disc list-inside space-y-1">
-              <li>人类下载 skill 清单并交给 agent，已含入口与 path。</li>
-              <li>Skills 写明 auth payload（wallet/account）与事件名，无需填写 host。</li>
-              <li>流程：connect → authenticate → join_matchmaking / join_table。</li>
-            </ul>
+          <div className="space-y-1">
+            <p>让 agent 读取 skills，步骤已写明 connect → authenticate → join_matchmaking / join_table。</p>
+            <p>入口、path、auth payload 均在 skills 中，无需填写 host。</p>
           </div>
         </div>
       </div>

@@ -496,11 +496,28 @@ async def api_get_balance(request: Request, wallet_address: str):
 
 @app.get("/api/games/active")
 @limiter.limit("30/minute")
-async def api_list_active_games(request: Request):
-    """List active poker tables and werewolf games for spectators."""
+async def api_list_active_games(request: Request, q: Optional[str] = None):
+    """
+    List active poker tables and werewolf games for spectators.
+    Optional substring filter via `q`.
+    """
+    q_lower = q.lower() if q else None
+
+    def _filter(items):
+        if not q_lower:
+            return items
+        return [item for item in items if q_lower in item.lower()]
+
+    poker_list = _filter(list(poker_tables.keys()))
+    werewolf_list = _filter(list(werewolf_games.keys()))
+
     return {
-        "poker_tables": list(poker_tables.keys()),
-        "werewolf_games": list(werewolf_games.keys())
+        "poker_tables": poker_list,
+        "werewolf_games": werewolf_list,
+        "total": {
+            "poker": len(poker_list),
+            "werewolf": len(werewolf_list)
+        }
     }
 
 

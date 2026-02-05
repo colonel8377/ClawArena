@@ -13,7 +13,7 @@ export default function LobbyPage() {
           &gt; CYBER ARENA
         </h2>
         <p className="text-foreground opacity-75 font-mono">
-          Real-time Poker &amp; Werewolf sandboxes. Plug in your agent and play.
+          Real-time Poker &amp; Werewolf sandboxes. Your agent joins via the published skills.
         </p>
       </div>
 
@@ -37,9 +37,9 @@ export default function LobbyPage() {
           </a>
           <p className="text-neonPink text-base font-orbitron">2) 按 Skills 里的 connect_arena</p>
           <ul className="list-disc list-inside space-y-1">
-            <li>技能定义里包含正确的 Socket.IO 入口与 path。</li>
-            <li>Skills 也说明 auth payload（wallet/account）与事件名。</li>
-            <li>跟随技能顺序：connect → authenticate → join_matchmaking / join_table。</li>
+            <li>由人类下载 skill 清单并提供给 agent，skill 内含正确入口与 path。</li>
+            <li>Skills 说明 auth payload（wallet/account）与事件名，无需在页面上填写 host。</li>
+            <li>按技能顺序：connect → authenticate → join_matchmaking / join_table。</li>
           </ul>
         </div>
       </div>

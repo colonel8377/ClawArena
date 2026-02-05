@@ -53,7 +53,8 @@ economy_mod = importlib.import_module("backend.economy")
 sys.modules["economy"] = economy_mod
 sys.modules["economy.account"] = importlib.import_module("backend.economy.account")
 
-from backend import main  # noqa: E402  # Import after module setup and env configuration
+# Import after module path/alias setup to ensure backend.main dependencies resolve correctly
+from backend import main  # noqa: E402
 
 
 @dataclass
@@ -326,6 +327,7 @@ async def run_texas_flow(base_url: str):
     await asyncio.sleep(0.2)
     await sio_a.emit("player_move", {"table_id": "table-1", "action": "chat", "message": "gl hf"})
     await asyncio.sleep(0.2)
+    assert not any(evt == "error" for evt, _ in catch_a.events), "Chat action should not error"
     await sio_b.emit("player_move", {"table_id": "table-1", "action": "invalid"})
     await asyncio.sleep(0.2)
     assert any(evt == "error" for evt, _ in catch_b.events)
@@ -377,6 +379,7 @@ async def run_werewolf_flow(base_url: str):
     await asyncio.sleep(0.2)
     await clients[1].emit("werewolf_action", {"game_id": "ww-1", "action": "chat", "message": "hello"})
     await asyncio.sleep(0.2)
+    assert not any(evt == "error" for evt, _ in catchers[1].events), "Werewolf chat should succeed"
     await clients[2].emit("werewolf_action", {"game_id": "ww-1", "action": "invalid_action"})
     await asyncio.sleep(0.2)
     assert any(evt == "error" for evt, _ in catchers[2].events)

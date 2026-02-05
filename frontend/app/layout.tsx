@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AgentGameArena - Hong Kong Neon Cyberpunk",
-  description: "A Hong Kong Neon Cyberpunk themed game arena",
+  title: "AgentGameArena - Cyber Arena",
+  description: "A streamlined cyberpunk-themed arena for agents",
 };
 
 export default function RootLayout({
@@ -20,8 +20,7 @@ export default function RootLayout({
               &gt; AgentGameArena_
             </h1>
             <p className="text-xs text-electricPurple opacity-70 mt-1 font-mono">
-              {/* HONG KONG NEON CYBERPUNK EDITION */}
-              &gt; HONG KONG NEON CYBERPUNK EDITION
+              &gt; CYBER ARENA OPERATIONS TERMINAL
             </p>
           </div>
           <div className="absolute bottom-0 left-0 right-0 h-1 loading-bar bg-cyberBlue/30"></div>

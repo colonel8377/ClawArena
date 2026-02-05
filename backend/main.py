@@ -44,6 +44,7 @@ from database.redis_manager import redis_manager
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
 from games.werewolf.werewolf_game import WerewolfGame
 from games.werewolf.matchmaker import WerewolfMatchmaker
+from indexer.worker import deposit_worker
 from decimal import Decimal
 
 
@@ -135,6 +136,7 @@ async def startup_event():
     - MySQL database to be ready (with retry logic)
     - Redis connection
     - Game state restoration
+    - Deposit event worker (if not in local debug mode)
     """
     # Initialize database with retry logic (waits for MySQL to be ready)
     print("Initializing database...")
@@ -148,6 +150,13 @@ async def startup_event():
     # Connect to Redis
     await redis_manager.connect()
     print("✓ RedisManager connected")
+    
+    # Start deposit event worker (unless in local debug mode)
+    if not is_local_debug_mode():
+        asyncio.create_task(deposit_worker.run())
+        print("✓ Deposit event worker started")
+    else:
+        print("⚠ Deposit event worker disabled (local debug mode)")
     
     # Restore persisted games from Redis
     try:
@@ -263,7 +272,8 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     but allows testing the flow.
     
     SECURITY UPDATE: Nonce is now synchronized via RedisManager to prevent
-    race conditions during concurrent withdrawal requests.
+    race conditions during concurrent withdrawal requests. Periodically syncs
+    with blockchain to ensure consistency.
     
     This creates a signature that can be verified by the smart contract
     to allow the user to withdraw their winnings.
@@ -289,6 +299,15 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
             'local_debug_mode': True,
             'note': 'Mock signature for local debug mode - not valid on-chain'
         }
+    
+    # Periodic blockchain sync: verify Redis nonce matches blockchain
+    # This prevents using stale nonces if user withdrew on-chain directly
+    try:
+        blockchain_nonce = get_nonce_from_blockchain(user_address)
+        await redis_manager.sync_nonce_from_blockchain(user_address, blockchain_nonce)
+    except Exception as e:
+        # Log but don't fail - Redis nonce is still usable
+        print(f"Warning: Could not sync nonce with blockchain: {e}")
     
     # Get and increment nonce atomically via RedisManager (prevents race conditions)
     nonce = await redis_manager.get_and_increment_nonce(user_address)
@@ -1311,10 +1330,16 @@ async def graceful_shutdown():
     Handle graceful shutdown to prevent game state loss.
     
     Security improvement: Save active game states before shutdown.
+    Also stops the deposit event worker gracefully.
     """
     global werewolf_matchmaker
     
     print("\nGraceful shutdown initiated...")
+    
+    # Stop deposit worker
+    if not is_local_debug_mode():
+        deposit_worker.stop()
+        print("✓ Deposit worker stopped")
     
     # Stop matchmaker
     if werewolf_matchmaker:

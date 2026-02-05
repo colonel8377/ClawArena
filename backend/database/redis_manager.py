@@ -243,6 +243,36 @@ class RedisManager:
         # Return previous value (new_nonce - 1)
         return new_nonce - 1
     
+    async def sync_nonce_from_blockchain(self, wallet_address: str, blockchain_nonce: int) -> bool:
+        """
+        Sync Redis nonce with blockchain nonce if blockchain is ahead.
+        
+        This ensures Redis cache stays in sync with on-chain state, preventing
+        signature generation with stale nonces.
+        
+        Args:
+            wallet_address: Ethereum wallet address
+            blockchain_nonce: Current nonce from blockchain
+            
+        Returns:
+            True if sync was performed, False otherwise
+        """
+        if not await self.ping():
+            return False
+        
+        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address.lower()}"
+        redis_nonce = await self.get_nonce(wallet_address)
+        
+        # Only update if blockchain is ahead (user may have withdrawn on-chain)
+        if blockchain_nonce > redis_nonce:
+            await self._redis.set(nonce_key, blockchain_nonce, ex=NONCE_EXPIRY)
+            logger.info(
+                f"Synced nonce for {wallet_address}: {redis_nonce} -> {blockchain_nonce}"
+            )
+            return True
+        
+        return False
+    
     async def get_nonce(self, wallet_address: str) -> int:
         """
         Get current nonce without incrementing.

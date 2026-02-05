@@ -102,7 +102,7 @@ export default function WerewolfPage() {
   return (
     <div className="min-h-screen max-w-5xl mx-auto px-2 md:px-0">
       {/* Header */}
-      <div className="terminal-border mb-4">
+      <div className="terminal-border mb-4" data-testid="ww-spectator-panel">
         <div className="flex justify-between items-center">
           <h2 className="text-xl text-primary">&gt; WEREWOLF.exe</h2>
           <div className="flex gap-4 text-xs">
@@ -127,6 +127,7 @@ export default function WerewolfPage() {
           <div className="flex gap-2 items-center">
             <input
               aria-label="Game ID"
+              data-testid="ww-game-id-input"
               value={gameId}
               onChange={(e) => setGameId(e.target.value)}
               className="bg-background border border-border px-3 py-2 text-sm rounded w-52"
@@ -135,12 +136,13 @@ export default function WerewolfPage() {
             <button
               className="border border-primary text-primary px-4 py-2 hover:bg-primary hover:text-background transition-colors"
               onClick={handleWatch}
+              data-testid="ww-watch"
             >
               WATCH
             </button>
           </div>
         </div>
-        <div className="text-xs text-foreground opacity-70 mt-2">
+        <div className="text-xs text-foreground opacity-70 mt-2" data-testid="ww-spectator-summary">
           {state ? `Watching game: ${state.game_id} | phase: ${state.phase} | day ${state.day_count}` : 'No live state yet; showing sample layout.'}
           {spectatorError && <span className="text-danger ml-2">Error: {spectatorError}</span>}
           {logLine && <span className="text-cyberBlue ml-2">{logLine}</span>}

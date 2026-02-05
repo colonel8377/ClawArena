@@ -108,7 +108,7 @@ export default function TexasHoldemPage() {
   return (
     <div className="min-h-screen max-w-5xl mx-auto px-2 md:px-0">
       {/* Header */}
-      <div className="terminal-border mb-4">
+      <div className="terminal-border mb-4" data-testid="spectator-panel">
         <div className="flex justify-between items-center">
           <h2 className="text-xl text-primary">&gt; TEXAS_HOLDEM.exe</h2>
           <div className="flex gap-4 text-xs">
@@ -130,6 +130,7 @@ export default function TexasHoldemPage() {
           <div className="flex gap-2 items-center">
             <input
               aria-label="Table ID"
+              data-testid="table-id-input"
               value={tableId}
               onChange={(e) => setTableId(e.target.value)}
               className="bg-background border border-border px-3 py-2 text-sm rounded w-52"
@@ -138,12 +139,13 @@ export default function TexasHoldemPage() {
             <button
               className="border border-primary text-primary px-4 py-2 hover:bg-primary hover:text-background transition-colors"
               onClick={handleWatch}
+              data-testid="table-watch"
             >
               WATCH
             </button>
           </div>
         </div>
-        <div className="text-xs text-foreground opacity-70 mt-2">
+        <div className="text-xs text-foreground opacity-70 mt-2" data-testid="spectator-summary">
           {state ? `Watching table: ${state.game_id} | phase: ${state.phase} | hand #${state.hand_number}` : 'No live state yet; showing sample data.'}
           {spectatorError && <span className="text-danger ml-2">Error: {spectatorError}</span>}
           {lastMessage && <span className="text-cyberBlue ml-2">{lastMessage}</span>}
@@ -169,7 +171,7 @@ export default function TexasHoldemPage() {
           <div className="grid grid-cols-4 gap-2">
             <div>
               <span className="opacity-50">0x0000:</span> POT
-              <div className="text-primary ml-8">{(state?.pot ?? sampleState.pot)} chips</div>
+              <div className="text-primary ml-8" data-testid="pot-value">{(state?.pot ?? sampleState.pot)} chips</div>
             </div>
             <div>
               <span className="opacity-50">0x0008:</span> CURRENT_BET

@@ -13,7 +13,7 @@ export default function LobbyPage() {
 
       <div className="max-w-5xl mx-auto flex flex-col gap-6 items-center px-2 md:px-0">
         <div className="terminal-border w-full bg-gradient-to-r from-backgroundSlate to-background neon-pulse relative digital-noise text-center">
-          <h2 className="text-2xl text-cyberBlue mb-2 font-orbitron text-shadow-neon-blue flicker">
+          <h2 data-testid="lobby-title" className="text-2xl text-cyberBlue mb-2 font-orbitron text-shadow-neon-blue flicker">
             &gt; CYBER ARENA
           </h2>
           <p className="text-foreground opacity-75 font-mono">
@@ -21,7 +21,7 @@ export default function LobbyPage() {
           </p>
         </div>
 
-        <div className="w-full">
+        <div className="w-full" data-testid="backend-status-card">
           <BackendStatus />
         </div>
 
@@ -112,7 +112,7 @@ export default function LobbyPage() {
         </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-        <Link href="/texas">
+        <Link data-testid="nav-texas" href="/texas">
           <div className="process-item process-item-enhanced cursor-pointer hover-glow-intense relative overflow-hidden">
             <div className="flex justify-between items-start mb-2">
               <h3 className="text-lg text-neonPink font-bold font-orbitron text-shadow-neon-pink">
@@ -128,7 +128,7 @@ export default function LobbyPage() {
           </div>
         </Link>
 
-        <Link href="/werewolf">
+        <Link data-testid="nav-werewolf" href="/werewolf">
           <div className="process-item process-item-enhanced cursor-pointer hover-glow-intense relative overflow-hidden">
             <div className="flex justify-between items-start mb-2">
               <h3 className="text-lg text-cyberBlue font-bold font-orbitron text-shadow-neon-blue">

@@ -132,10 +132,17 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
       </div>
       
       {/* Corner accents */}
-      <div className={`absolute top-0 left-0 w-2 h-2 border-l-2 border-t-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
-      <div className={`absolute top-0 right-0 w-2 h-2 border-r-2 border-t-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
-      <div className={`absolute bottom-0 left-0 w-2 h-2 border-l-2 border-b-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
-      <div className={`absolute bottom-0 right-0 w-2 h-2 border-r-2 border-b-2 ${getBorderColor(suit).split(' ')[0]} opacity-50`}></div>
+      {(() => {
+        const borderColorClass = getBorderColor(suit).split(' ')[0];
+        return (
+          <>
+            <div className={`absolute top-0 left-0 w-2 h-2 border-l-2 border-t-2 ${borderColorClass} opacity-50`}></div>
+            <div className={`absolute top-0 right-0 w-2 h-2 border-r-2 border-t-2 ${borderColorClass} opacity-50`}></div>
+            <div className={`absolute bottom-0 left-0 w-2 h-2 border-l-2 border-b-2 ${borderColorClass} opacity-50`}></div>
+            <div className={`absolute bottom-0 right-0 w-2 h-2 border-r-2 border-b-2 ${borderColorClass} opacity-50`}></div>
+          </>
+        );
+      })()}
     </div>
   );
 };

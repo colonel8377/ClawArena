@@ -104,7 +104,7 @@ const RoleCard: React.FC<RoleCardProps> = ({
       case 'Seer': return 'text-shadow-neon-purple';
       case 'Villager': return 'text-shadow-neon-blue';
       case 'Witch': return 'text-shadow-neon-green';
-      case 'Hunter': return '';
+      case 'Hunter': return ''; // Hunter uses warning color (#ffaa00) which doesn't have a predefined text-shadow
     }
   };
 

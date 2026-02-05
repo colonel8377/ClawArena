@@ -50,8 +50,8 @@ const RoleCard: React.FC<RoleCardProps> = ({
             <div className="absolute inset-0 flex items-center justify-center text-5xl text-neonPink drop-shadow-[0_0_12px_rgba(255,0,130,0.7)]">
               ⚡🐺
             </div>
-            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 text-[10px] text-neonPink tracking-[0.25em] font-mono">
-              CYBER WOLF
+            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 text-[10px] text-neonPink tracking-[0.2em] font-mono">
+              CYBER-WOLF
             </div>
           </div>
         );

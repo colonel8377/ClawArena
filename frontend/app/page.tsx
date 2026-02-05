@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import BackendStatus from '@/components/status/BackendStatus';
 
-const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-const socketEndpoint = `${apiHost.replace(/\/$/, '')}/socket.io`;
+const apiHostRaw = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const apiHost = apiHostRaw.replace(/\/$/, '');
+const socketEndpoint = `${apiHost}/socket.io`;
 
 export default function LobbyPage() {
   return (
@@ -31,7 +32,7 @@ export default function LobbyPage() {
         <div className="space-y-2 text-sm font-mono text-foreground opacity-80">
           <p className="text-neonPink text-base font-orbitron">Socket entrypoint</p>
           <div className="bg-backgroundSlate/60 border border-electricPurple/40 rounded p-3 text-xs overflow-auto">
-            {socketEndpoint}
+            {String(socketEndpoint)}
           </div>
           <ul className="list-disc list-inside space-y-1">
             <li>Use Socket.IO (websocket/polling) to join game rooms.</li>

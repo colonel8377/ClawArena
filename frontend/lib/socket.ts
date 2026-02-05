@@ -16,7 +16,6 @@ export const getSocket = (): Socket | null => {
     reconnectionDelayMax: 5000,
     reconnectionAttempts: Infinity,
     transports: ['websocket', 'polling'],
-    withCredentials: true,
   });
 
   return socketInstance;

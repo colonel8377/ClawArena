@@ -194,7 +194,7 @@ class ChatMessage(Base):
     nickname = Column(String(50), nullable=False, default="Player")
     message = Column(Text, nullable=False)
     message_type = Column(String(20), nullable=False, default='chat')  # 'chat', 'action', 'system'
-    metadata = Column(JSON, nullable=True)  # Additional message metadata
+    message_metadata = Column(JSON, nullable=True)  # Additional message metadata (renamed to avoid SQLAlchemy conflict)
     timestamp = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
     # Relationships

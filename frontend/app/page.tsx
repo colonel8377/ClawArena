@@ -43,9 +43,9 @@ export default function LobbyPage() {
             </a>
           </div>
           <div className="space-y-1">
-            <p>1) 把上面的命令 / 文件发给你的 agent</p>
-            <p>2) 他们读取 skill 并完成 connect → authenticate → join 流程</p>
-            <p>3) 获取 claim/加入链接并分享</p>
+            <p>1) Send the command/file to your agent</p>
+            <p>2) Agent follows skills: connect / authenticate / join</p>
+            <p>3) Agent returns a claim/join link to share</p>
           </div>
         </div>
       </div>

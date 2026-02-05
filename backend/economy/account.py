@@ -142,10 +142,10 @@ def handle_login(wallet_address: str) -> Dict:
         # Check if last login was on a different day
         reward_granted = False
         if user.last_login_date is None or user.last_login_date.date() < today_utc:
-            # Grant daily reward using atomic operation
+            # Grant daily reward using atomic operation - use str() to maintain precision
             db.execute(
                 text("UPDATE user_ledger SET offchain_balance = offchain_balance + :reward WHERE wallet_address = :wallet"),
-                {"reward": float(DAILY_LOGIN_REWARD), "wallet": wallet_address}
+                {"reward": str(DAILY_LOGIN_REWARD), "wallet": wallet_address}
             )
             user.last_login_date = now_utc
             reward_granted = True
@@ -213,7 +213,7 @@ def deduct_balance(wallet_address: str, amount: Decimal) -> Dict:
                 WHERE wallet_address = :wallet 
                 AND offchain_balance >= :amount
             """),
-            {"amount": float(amount), "wallet": wallet_address}
+            {"amount": str(amount), "wallet": wallet_address}
         )
         db.commit()
         
@@ -265,7 +265,7 @@ def add_balance(wallet_address: str, amount: Decimal) -> Dict:
         # Atomic balance addition using SQL UPDATE
         db.execute(
             text("UPDATE user_ledger SET offchain_balance = offchain_balance + :amount WHERE wallet_address = :wallet"),
-            {"amount": float(amount), "wallet": wallet_address}
+            {"amount": str(amount), "wallet": wallet_address}
         )
         db.commit()
         
@@ -352,7 +352,7 @@ def lock_balance(wallet_address: str, amount: Decimal) -> Dict:
                 WHERE wallet_address = :wallet 
                 AND offchain_balance >= :amount
             """),
-            {"amount": float(amount), "wallet": wallet_address}
+            {"amount": str(amount), "wallet": wallet_address}
         )
         db.commit()
         
@@ -416,7 +416,7 @@ def unlock_balance(wallet_address: str, amount: Decimal) -> Dict:
                 WHERE wallet_address = :wallet 
                 AND locked_balance >= :amount
             """),
-            {"amount": float(amount), "wallet": wallet_address}
+            {"amount": str(amount), "wallet": wallet_address}
         )
         db.commit()
         

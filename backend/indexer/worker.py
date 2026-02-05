@@ -228,13 +228,13 @@ class DepositEventWorker:
                 db.commit()
                 db.refresh(user)
             
-            # Atomic balance credit
+            # Atomic balance credit - use str() to maintain precision
             db.execute(
                 text(
                     "UPDATE user_ledger SET offchain_balance = offchain_balance + :amount "
                     "WHERE wallet_address = :wallet"
                 ),
-                {"amount": float(amount), "wallet": wallet_address}
+                {"amount": str(amount), "wallet": wallet_address}
             )
             db.commit()
             db.refresh(user)

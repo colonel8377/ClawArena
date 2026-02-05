@@ -74,9 +74,10 @@ server_account = Account.from_key(SERVER_PRIVATE_KEY)
 limiter = Limiter(key_func=get_remote_address)
 
 # Create Socket.IO server with proper configuration
+cors_origins = "*" if ALLOWED_ORIGINS == ["*"] else ALLOWED_ORIGINS
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins=ALLOWED_ORIGINS,
+    cors_allowed_origins=cors_origins,
     logger=True,
     engineio_logger=False,
     ping_timeout=60,
@@ -498,6 +499,8 @@ async def api_get_balance(request: Request, wallet_address: str):
 # SOCKET.IO EVENT HANDLERS
 # ============================================================================
 
+SPECTATOR_ROOM_PREFIX = "spectate:"
+
 @sio.event
 async def connect(sid, environ):
     """Handle client connection."""
@@ -797,6 +800,29 @@ async def get_state(sid, data):
 
 
 @sio.event
+async def watch_game(sid, data):
+    """
+    Join a poker table as a spectator (read-only).
+    Expected data: {'table_id': str}
+    """
+    try:
+        table_id = data.get('table_id')
+        if not table_id or table_id not in poker_tables:
+            await sio.emit('error', {'message': 'Invalid table_id'}, room=sid)
+            return
+
+        spectator_room = f"{SPECTATOR_ROOM_PREFIX}{table_id}"
+        await sio.enter_room(sid, spectator_room)
+
+        # Send immediate sanitized state
+        table = poker_tables[table_id]
+        state = table.get_spectator_state()
+        await sio.emit('game_state', state, room=sid)
+    except Exception as e:
+        await sio.emit('error', {'message': f'Watch game failed: {str(e)}'}, room=sid)
+
+
+@sio.event
 async def leave_game(sid, data):
     """
     Leave the current table.
@@ -879,9 +905,20 @@ async def broadcast_game_state(table_id: str):
     table = poker_tables[table_id]
     
     # Send personalized state to each player
-    for player_sid, player in table.players.items():
-        state = table.get_game_state(player_sid)
-        await sio.emit('game_state', state, room=player_sid)
+    # TexasGame stores player metadata in engine.players (dict) while BaseGame keeps a list
+    target_players = getattr(table.engine, "players", {}) or {}
+    if isinstance(target_players, dict):
+        for player_sid in target_players.keys():
+            state = table.get_game_state(player_sid)
+            await sio.emit('game_state', state, room=player_sid)
+    
+    # Send sanitized state to spectators
+    spectator_room = f"{SPECTATOR_ROOM_PREFIX}{table_id}"
+    try:
+        spectator_state = table.get_spectator_state()
+        await sio.emit('game_state', spectator_state, room=spectator_room)
+    except Exception as e:
+        print(f"⚠ Failed to broadcast spectator state for {table_id}: {e}")
     
     # Save state to Redis for hot storage (non-blocking)
     asyncio.create_task(table.save_state_to_redis())
@@ -919,11 +956,14 @@ async def create_werewolf_game(sid, data):
             werewolf_games[game_id] = WerewolfGame(game_id)
             
             # Persist game state to Redis
-            await redis_manager.save_game_state(
-                game_id,
-                werewolf_games[game_id].to_dict(),
-                game_type="werewolf"
-            )
+            try:
+                await redis_manager.save_game_state(
+                    game_id,
+                    werewolf_games[game_id].to_dict(),
+                    game_type="werewolf"
+                )
+            except Exception as e:
+                print(f"⚠ Failed to persist new werewolf game {game_id}: {e}")
         
         await sio.emit('werewolf_game_created', {'game_id': game_id}, room=sid)
         
@@ -966,11 +1006,14 @@ async def join_werewolf_game(sid, data):
             player_sessions[sid]['game_id'] = game_id
             
             # Persist updated game state
-            await redis_manager.save_game_state(
-                game_id,
-                game.to_dict(),
-                game_type="werewolf"
-            )
+            try:
+                await redis_manager.save_game_state(
+                    game_id,
+                    game.to_dict(),
+                    game_type="werewolf"
+                )
+            except Exception as e:
+                print(f"⚠ Failed to persist werewolf game {game_id}: {e}")
         
         # Join Socket.IO room
         await sio.enter_room(sid, game_id)
@@ -1145,6 +1188,28 @@ async def get_werewolf_state(sid, data):
         await sio.emit('error', {'message': f'Get werewolf state failed: {str(e)}'}, room=sid)
 
 
+@sio.event
+async def watch_werewolf_game(sid, data):
+    """
+    Join a Werewolf game as a spectator (read-only).
+    Expected data: {'game_id': str}
+    """
+    try:
+        game_id = data.get('game_id')
+        if not game_id or game_id not in werewolf_games:
+            await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
+            return
+
+        spectator_room = f"{SPECTATOR_ROOM_PREFIX}{game_id}"
+        await sio.enter_room(sid, spectator_room)
+
+        game = werewolf_games[game_id]
+        state = game.get_game_state(None)
+        await sio.emit('werewolf_state', state, room=sid)
+    except Exception as e:
+        await sio.emit('error', {'message': f'Watch werewolf failed: {str(e)}'}, room=sid)
+
+
 async def broadcast_werewolf_state(game_id: str):
     """
     Broadcast Werewolf game state to all players.
@@ -1159,6 +1224,14 @@ async def broadcast_werewolf_state(game_id: str):
     for player in game.players:
         state = game.get_game_state(player['sid'])
         await sio.emit('werewolf_state', state, room=player['sid'])
+
+    # Send masked state to spectators
+    spectator_room = f"{SPECTATOR_ROOM_PREFIX}{game_id}"
+    try:
+        spectator_state = game.get_game_state(None)
+        await sio.emit('werewolf_state', spectator_state, room=spectator_room)
+    except Exception as e:
+        print(f"⚠ Failed to broadcast spectator werewolf state for {game_id}: {e}")
     
     # Save state to Redis for hot storage (non-blocking)
     asyncio.create_task(game.save_state_to_redis())

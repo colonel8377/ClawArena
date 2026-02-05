@@ -29,6 +29,14 @@ class WerewolfPhase(Enum):
     FINISHED = "finished"
 
 
+class PlaceholderRole:
+    """Placeholder role used before real roles are assigned."""
+    team = Team.VILLAGER
+    
+    def get_role_info(self):
+        return {'role': 'unknown'}
+
+
 class WerewolfGame(BaseGame):
     """
     Werewolf game implementation.
@@ -102,7 +110,7 @@ class WerewolfGame(BaseGame):
         player = {
             'sid': sid,
             'wallet_address': wallet_address,
-            'role': None,  # Assigned when game starts
+            'role': PlaceholderRole(),  # Assigned when game starts
             'is_alive': True,
             'nickname': nickname
         }
@@ -469,6 +477,30 @@ class WerewolfGame(BaseGame):
             state['players'].append(player_info)
         
         return state
+
+    def to_dict(self) -> Dict:
+        """Serialize full game state for persistence/snapshots."""
+        def _role_info(role_obj):
+            if not role_obj:
+                return None
+            return role_obj.get_role_info() if hasattr(role_obj, "get_role_info") else role_obj
+
+        return {
+            'game_id': self.game_id,
+            'phase': self.phase.value,
+            'day_count': self.day_count,
+            'players': [
+                {
+                    'sid': p['sid'],
+                    'wallet_address': p['wallet_address'],
+                    'nickname': p['nickname'],
+                    'is_alive': p['is_alive'],
+                    'role': _role_info(p.get('role'))
+                }
+                for p in self.players
+            ],
+            'chat_messages': self.get_chat_history(limit=50)
+        }
     
     def is_game_over(self) -> bool:
         """Check if game is over."""

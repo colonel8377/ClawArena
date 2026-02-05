@@ -173,6 +173,16 @@ class TexasGame(BaseGame):
         }
         
         return state
+
+    def get_spectator_state(self) -> Dict:
+        """
+        Get a sanitized game state for spectators (no hole cards).
+        """
+        engine_state = self.engine.get_game_state(None, for_spectator=True)
+        return {
+            **engine_state,
+            'chat_messages': self.get_chat_history(limit=50)
+        }
     
     def is_game_over(self) -> bool:
         """Check if the game is over."""

@@ -1,53 +1,100 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { getSocket } from '@/lib/socket';
 import PlayingCard from '@/components/poker/PlayingCard';
 
+type PlayerStatus = 'active' | 'folded' | 'allin';
+
 interface Player {
-  id: string;
-  name: string;
+  sid: string;
+  nickname: string;
   chips: number;
-  status: 'active' | 'folded' | 'allin';
-  cards?: string[];
+  status: PlayerStatus;
+  hole_cards?: string[];
+  current_bet?: number;
 }
 
+interface GameState {
+  game_id: string;
+  phase: string;
+  hand_number: number;
+  community_cards: string[];
+  pot: number;
+  current_bet: number;
+  players: Player[];
+  chat_history?: { nickname: string; message: string }[];
+}
+
+const samplePlayers: Player[] = [
+  { sid: '0x001', nickname: 'Player_Alpha', chips: 1000, status: 'active', hole_cards: ['A♠', 'K♠'] },
+  { sid: '0x002', nickname: 'Player_Beta', chips: 950, status: 'active', hole_cards: ['??', '??'] },
+  { sid: '0x003', nickname: 'Player_Gamma', chips: 1200, status: 'folded', hole_cards: ['??', '??'] },
+  { sid: '0x004', nickname: 'Player_Delta', chips: 800, status: 'active', hole_cards: ['??', '??'] },
+];
+
+const sampleState: GameState = {
+  game_id: 'demo_table',
+  phase: 'waiting',
+  hand_number: 0,
+  community_cards: ['7♥', '8♦', '9♣', '??', '??'],
+  pot: 350,
+  current_bet: 50,
+  players: samplePlayers,
+  chat_history: [],
+};
+
 export default function TexasHoldemPage() {
+  const socket = useMemo(() => getSocket(), []);
   const [connected, setConnected] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [players, setPlayers] = useState<Player[]>([
-    { id: '0x001', name: 'Player_Alpha', chips: 1000, status: 'active', cards: ['A♠', 'K♠'] },
-    { id: '0x002', name: 'Player_Beta', chips: 950, status: 'active', cards: ['??', '??'] },
-    { id: '0x003', name: 'Player_Gamma', chips: 1200, status: 'folded', cards: ['??', '??'] },
-    { id: '0x004', name: 'Player_Delta', chips: 800, status: 'active', cards: ['??', '??'] },
-  ]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [communityCards, setCommunityCards] = useState(['7♥', '8♦', '9♣', '??', '??']);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [pot, setPot] = useState(350);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [currentBet, setCurrentBet] = useState(50);
+  const [tableId, setTableId] = useState('');
+  const [state, setState] = useState<GameState | null>(null);
+  const [lastMessage, setLastMessage] = useState<string | null>(null);
+  const [spectatorError, setSpectatorError] = useState<string | null>(null);
 
   useEffect(() => {
-    const socket = getSocket();
     if (!socket) return;
 
-    function onConnect() {
-      setConnected(true);
-    }
-
-    function onDisconnect() {
-      setConnected(false);
-    }
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+    const onGameState = (payload: GameState) => {
+      setState(payload);
+      setLastMessage(`State @ ${new Date().toLocaleTimeString()}`);
+    };
+    const onShowdown = (payload: unknown) => {
+      setLastMessage(`Showdown: ${JSON.stringify(payload)}`);
+    };
+    const onWithdraw = (payload: unknown) => {
+      setLastMessage(`Withdrawal signature: ${JSON.stringify(payload)}`);
+    };
+    const onError = (payload: { message?: string }) => {
+      setSpectatorError(payload?.message ?? 'Unknown error');
+    };
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
+    socket.on('game_state', onGameState);
+    socket.on('showdown_reveal', onShowdown);
+    socket.on('withdrawal_signature', onWithdraw);
+    socket.on('error', onError);
+
+    setConnected(socket.connected);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
+      socket.off('game_state', onGameState);
+      socket.off('showdown_reveal', onShowdown);
+      socket.off('withdrawal_signature', onWithdraw);
+      socket.off('error', onError);
     };
-  }, []);
+  }, [socket]);
+
+  const handleWatch = () => {
+    if (!socket || !tableId) return;
+    setSpectatorError(null);
+    socket.emit('watch_game', { table_id: tableId });
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -73,7 +120,37 @@ export default function TexasHoldemPage() {
         </div>
       </div>
 
-      {/* Visual Cards */}
+       {/* Spectator controls */}
+      <div className="terminal-border mb-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="space-y-1">
+            <div className="text-warning text-xs">=== SPECTATOR_MODE ===</div>
+            <p className="text-sm opacity-80">Join an existing table to watch agents play. You will only receive public information.</p>
+          </div>
+          <div className="flex gap-2 items-center">
+            <input
+              aria-label="Table ID"
+              value={tableId}
+              onChange={(e) => setTableId(e.target.value)}
+              className="bg-background border border-border px-3 py-2 text-sm rounded w-52"
+              placeholder="table_id"
+            />
+            <button
+              className="border border-primary text-primary px-4 py-2 hover:bg-primary hover:text-background transition-colors"
+              onClick={handleWatch}
+            >
+              WATCH
+            </button>
+          </div>
+        </div>
+        <div className="text-xs text-foreground opacity-70 mt-2">
+          {state ? `Watching table: ${state.game_id} | phase: ${state.phase} | hand #${state.hand_number}` : 'No live state yet; showing sample data.'}
+          {spectatorError && <span className="text-danger ml-2">Error: {spectatorError}</span>}
+          {lastMessage && <span className="text-cyberBlue ml-2">{lastMessage}</span>}
+        </div>
+      </div>
+
+       {/* Visual Cards */}
       <div className="terminal-border mb-4">
         <div className="text-warning text-xs mb-2">=== SAMPLE_HAND ===</div>
         <div className="flex flex-wrap gap-3">
@@ -85,18 +162,18 @@ export default function TexasHoldemPage() {
         </div>
       </div>
 
-      {/* Memory Dump Style - Game State */}
+       {/* Memory Dump Style - Game State */}
       <div className="terminal-border mb-4">
         <div className="font-mono text-xs space-y-2">
           <div className="text-warning">=== MEMORY DUMP: GAME_STATE ===</div>
           <div className="grid grid-cols-4 gap-2">
             <div>
               <span className="opacity-50">0x0000:</span> POT
-              <div className="text-primary ml-8">{pot} chips</div>
+              <div className="text-primary ml-8">{(state?.pot ?? sampleState.pot)} chips</div>
             </div>
             <div>
               <span className="opacity-50">0x0008:</span> CURRENT_BET
-              <div className="text-primary ml-8">{currentBet} chips</div>
+              <div className="text-primary ml-8">{state?.current_bet ?? sampleState.current_bet} chips</div>
             </div>
             <div>
               <span className="opacity-50">0x0010:</span> SMALL_BLIND
@@ -110,11 +187,11 @@ export default function TexasHoldemPage() {
         </div>
       </div>
 
-      {/* Community Cards */}
+       {/* Community Cards */}
       <div className="terminal-border mb-4">
         <div className="text-warning text-xs mb-2">=== COMMUNITY_CARDS ===</div>
         <div className="flex gap-4 font-mono text-2xl">
-          {communityCards.map((card, idx) => (
+          {(state?.community_cards ?? sampleState.community_cards).map((card, idx) => (
             <div
               key={idx}
               className={`border ${card === '??' ? 'border-border opacity-30' : 'border-primary'} p-4 w-20 h-28 flex items-center justify-center`}
@@ -125,7 +202,7 @@ export default function TexasHoldemPage() {
         </div>
       </div>
 
-      {/* Process List Style - Players */}
+       {/* Process List Style - Players */}
       <div className="terminal-border">
         <div className="text-warning text-xs mb-4">=== PROCESS_LIST: ACTIVE_PLAYERS ===</div>
         <div className="process-list">
@@ -137,17 +214,17 @@ export default function TexasHoldemPage() {
             <div>CARDS</div>
             <div>ACTION</div>
           </div>
-          {players.map((player) => (
-            <div key={player.id} className="process-item">
+          {(state?.players ?? sampleState.players).map((player) => (
+            <div key={player.sid} className="process-item">
               <div className="grid grid-cols-6 gap-2 text-sm items-center">
-                <div className="font-mono text-xs">{player.id}</div>
-                <div className="font-bold">{player.name}</div>
+                <div className="font-mono text-xs">{player.sid}</div>
+                <div className="font-bold">{player.nickname}</div>
                 <div className="text-primary">{player.chips}</div>
                 <div className={getStatusColor(player.status)}>
                   {player.status.toUpperCase()}
                 </div>
                 <div className="flex gap-2">
-                  {player.cards?.map((card, idx) => (
+                  {(player.hole_cards ?? []).map((card, idx) => (
                     <span 
                       key={idx}
                       className={`${card === '??' ? 'opacity-30' : 'text-warning'} font-mono`}

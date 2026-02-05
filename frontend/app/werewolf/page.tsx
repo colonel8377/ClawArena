@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getSocket } from '@/lib/socket';
 import RoleCard from '@/components/werewolf/RoleCard';
 
 interface Player {
-  id: string;
+  sid: string;
   name: string;
   role?: string;
   status: 'alive' | 'dead';
@@ -13,43 +13,84 @@ interface Player {
   y: number;
 }
 
+interface WerewolfState {
+  game_id: string;
+  phase: string;
+  day_count: number;
+  players: { sid: string; nickname: string; is_alive: boolean; role?: { role: string } }[];
+  chat_messages?: { nickname: string; message: string }[];
+}
+
+const samplePlayers: Player[] = [
+  { sid: 'node_001', name: 'Alice', role: 'Villager', status: 'alive', x: 50, y: 30 },
+  { sid: 'node_002', name: 'Bob', role: '???', status: 'alive', x: 150, y: 80 },
+  { sid: 'node_003', name: 'Charlie', role: '???', status: 'alive', x: 250, y: 30 },
+  { sid: 'node_004', name: 'Diana', role: '???', status: 'alive', x: 350, y: 80 },
+  { sid: 'node_005', name: 'Eve', role: '???', status: 'dead', x: 450, y: 30 },
+  { sid: 'node_006', name: 'Frank', role: '???', status: 'alive', x: 150, y: 180 },
+  { sid: 'node_007', name: 'Grace', role: '???', status: 'alive', x: 350, y: 180 },
+];
+
 export default function WerewolfPage() {
+  const socket = useMemo(() => getSocket(), []);
   const [connected, setConnected] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [gameId, setGameId] = useState('');
+  const [state, setState] = useState<WerewolfState | null>(null);
   const [phase, setPhase] = useState<'day' | 'night'>('day');
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [dayCount, setDayCount] = useState(1);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [players, setPlayers] = useState<Player[]>([
-    { id: 'node_001', name: 'Alice', role: 'Villager', status: 'alive', x: 50, y: 30 },
-    { id: 'node_002', name: 'Bob', role: '???', status: 'alive', x: 150, y: 80 },
-    { id: 'node_003', name: 'Charlie', role: '???', status: 'alive', x: 250, y: 30 },
-    { id: 'node_004', name: 'Diana', role: '???', status: 'alive', x: 350, y: 80 },
-    { id: 'node_005', name: 'Eve', role: '???', status: 'dead', x: 450, y: 30 },
-    { id: 'node_006', name: 'Frank', role: '???', status: 'alive', x: 150, y: 180 },
-    { id: 'node_007', name: 'Grace', role: '???', status: 'alive', x: 350, y: 180 },
-  ]);
+  const [spectatorError, setSpectatorError] = useState<string | null>(null);
+  const [logLine, setLogLine] = useState<string | null>(null);
+  const [players, setPlayers] = useState<Player[]>(samplePlayers);
 
   useEffect(() => {
-    const socket = getSocket();
     if (!socket) return;
 
-    function onConnect() {
-      setConnected(true);
-    }
-
-    function onDisconnect() {
-      setConnected(false);
-    }
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+    const onState = (payload: WerewolfState) => {
+      setState(payload);
+      setPhase(payload.phase === 'night' ? 'night' : 'day');
+      setDayCount(payload.day_count ?? 1);
+      setPlayers((prev) =>
+        payload.players?.map((p, idx) => ({
+          sid: p.sid,
+          name: p.nickname ?? `P${idx + 1}`,
+          role: p.role?.role ?? '???',
+          status: p.is_alive ? 'alive' : 'dead',
+          x: prev[idx]?.x ?? (idx + 1) * 80,
+          y: prev[idx]?.y ?? 60 + (idx % 2) * 80,
+        })) ?? prev
+      );
+      setLogLine(`Update @ ${new Date().toLocaleTimeString()}`);
+    };
+    const onPhaseChange = (payload: { phase?: string; day_count?: number }) => {
+      if (payload.phase === 'night' || payload.phase === 'day') setPhase(payload.phase);
+      if (payload.day_count) setDayCount(payload.day_count);
+    };
+    const onError = (payload: { message?: string }) => setSpectatorError(payload?.message ?? 'Unknown error');
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
+    socket.on('werewolf_state', onState);
+    socket.on('werewolf_phase_change', onPhaseChange);
+    socket.on('error', onError);
+
+    setConnected(socket.connected);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
+      socket.off('werewolf_state', onState);
+      socket.off('werewolf_phase_change', onPhaseChange);
+      socket.off('error', onError);
     };
-  }, []);
+  }, [socket]);
+
+  const handleWatch = () => {
+    if (!socket || !gameId) return;
+    setSpectatorError(null);
+    socket.emit('watch_werewolf_game', { game_id: gameId });
+  };
 
   const getNodeColor = (player: Player) => {
     if (player.status === 'dead') return '#ff0000';
@@ -73,6 +114,36 @@ export default function WerewolfPage() {
             </span></span>
             <span>Day: {dayCount}</span>
           </div>
+        </div>
+      </div>
+
+      {/* Spectator controls */}
+      <div className="terminal-border mb-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="space-y-1">
+            <div className="text-warning text-xs">=== SPECTATOR_MODE ===</div>
+            <p className="text-sm opacity-80">Enter a werewolf game_id to watch agents. Roles stay masked unless the server reveals them.</p>
+          </div>
+          <div className="flex gap-2 items-center">
+            <input
+              aria-label="Game ID"
+              value={gameId}
+              onChange={(e) => setGameId(e.target.value)}
+              className="bg-background border border-border px-3 py-2 text-sm rounded w-52"
+              placeholder="game_id"
+            />
+            <button
+              className="border border-primary text-primary px-4 py-2 hover:bg-primary hover:text-background transition-colors"
+              onClick={handleWatch}
+            >
+              WATCH
+            </button>
+          </div>
+        </div>
+        <div className="text-xs text-foreground opacity-70 mt-2">
+          {state ? `Watching game: ${state.game_id} | phase: ${state.phase} | day ${state.day_count}` : 'No live state yet; showing sample layout.'}
+          {spectatorError && <span className="text-danger ml-2">Error: {spectatorError}</span>}
+          {logLine && <span className="text-cyberBlue ml-2">{logLine}</span>}
         </div>
       </div>
 

@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { getSocket } from '@/lib/socket';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+import getApiBaseUrl from '@/lib/api';
 
 type HealthResponse = {
   status: string;
@@ -20,6 +19,7 @@ export default function BackendStatus() {
 
   useEffect(() => {
     let mounted = true;
+    const API_URL = getApiBaseUrl();
 
     fetch(`${API_URL}/health`)
       .then(async (res) => {

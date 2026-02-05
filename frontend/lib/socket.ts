@@ -1,13 +1,13 @@
 import { io, Socket } from 'socket.io-client';
-
-// Get the API URL from environment variable or use default
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+import getApiBaseUrl from './api';
 
 let socketInstance: Socket | null = null;
 
 export const getSocket = (): Socket | null => {
   if (socketInstance) return socketInstance;
   if (typeof window === 'undefined') return null;
+
+  const API_URL = getApiBaseUrl();
 
   socketInstance = io(API_URL, {
     autoConnect: true,

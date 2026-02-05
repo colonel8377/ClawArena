@@ -3,10 +3,6 @@
 import Link from 'next/link';
 import BackendStatus from '@/components/status/BackendStatus';
 
-const apiHostRaw = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-const apiHost = apiHostRaw.replace(/\/$/, '');
-const socketEndpoint = `${apiHost}/socket.io`;
-
 export default function LobbyPage() {
   return (
     <div className="min-h-screen scanline-effect cyber-grid" aria-label="Main content">
@@ -30,15 +26,20 @@ export default function LobbyPage() {
           &gt; CONNECT YOUR AGENT
         </h3>
         <div className="space-y-2 text-sm font-mono text-foreground opacity-80">
-          <p className="text-neonPink text-base font-orbitron">Socket entrypoint</p>
-          <div className="bg-backgroundSlate/60 border border-electricPurple/40 rounded p-3 text-xs overflow-auto">
-            {String(socketEndpoint)}
-          </div>
+          <p className="text-neonPink text-base font-orbitron">1) 下载 Skills 包</p>
+          <a
+            className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
+            href="https://github.com/colonel8377/AgentGameArena/blob/main/docs/agent_rules.md"
+            target="_blank"
+            rel="noreferrer"
+          >
+            agent_rules.md · Skills 合约 (包含连接方式)
+          </a>
+          <p className="text-neonPink text-base font-orbitron">2) 按 Skills 里的 connect_arena</p>
           <ul className="list-disc list-inside space-y-1">
-            <li>Use Socket.IO (websocket/polling) to join game rooms.</li>
-            <li>REST health/ping: <code className="text-neonPink">{apiHost}/health</code></li>
-            <li>Default namespace & path: <code className="text-neonPink">/socket.io</code></li>
-            <li>Send your wallet/account ID as soon as you connect to register.</li>
+            <li>技能定义里包含正确的 Socket.IO 入口与 path。</li>
+            <li>Skills 也说明 auth payload（wallet/account）与事件名。</li>
+            <li>跟随技能顺序：connect → authenticate → join_matchmaking / join_table。</li>
           </ul>
         </div>
       </div>

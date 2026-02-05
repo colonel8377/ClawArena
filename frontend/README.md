@@ -38,7 +38,7 @@ npm run dev
 ```
 
 The application will be available at http://localhost:3000
-The frontend expects the backend at `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000` for local dev; Docker Compose dev sets it to `http://backend:8000`).
+The frontend expects the backend at `NEXT_PUBLIC_API_URL`. If unset, it falls back to the public arena host; set this variable explicitly for local/dev.
 
 ### Build for Production
 
@@ -115,7 +115,7 @@ frontend/
 
 ## Environment Variables
 
-- `NEXT_PUBLIC_API_URL`: Backend API URL (default: `http://localhost:8000`)
+- `NEXT_PUBLIC_API_URL`: Backend API URL (defaults to arena host; set explicitly for local/dev)
 
 Set environment variables in `.env.local` for local development or in `docker-compose.dev.yml` for Docker.
 

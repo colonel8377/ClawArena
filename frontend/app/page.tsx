@@ -93,7 +93,7 @@ export default function LobbyPage() {
           </div>
           <div>
             <p className="text-foreground opacity-70">Dev Mode</p>
-            <p className="text-cyberBlue">Unlimited chips when LOCAL_DEBUG</p>
+            <p className="text-cyberBlue">Unlimited chips available in debug mode</p>
           </div>
         </div>
       </div>

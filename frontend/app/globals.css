@@ -1,13 +1,20 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@400;700;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: #0a0a0a;
+  --background: #050505;
+  --background-slate: #121212;
   --foreground: #e0e0e0;
-  --primary: #00ff00;
-  --secondary: #00aa00;
-  --danger: #ff0000;
+  --neon-pink: #FF0055;
+  --cyber-blue: #00F0FF;
+  --electric-purple: #7000FF;
+  --acid-green: #39FF14;
+  --primary: #00F0FF;
+  --secondary: #7000FF;
+  --danger: #FF0055;
   --warning: #ffaa00;
   --border: #333333;
 }
@@ -167,4 +174,113 @@ a {
 
 .glitch {
   animation: glitch 1s linear infinite;
+}
+
+/* Cyberpunk Neon Glow Effects */
+.neon-glow-pink {
+  box-shadow: 0 0 5px var(--neon-pink), 0 0 10px var(--neon-pink), 0 0 20px var(--neon-pink);
+}
+
+.neon-glow-blue {
+  box-shadow: 0 0 5px var(--cyber-blue), 0 0 10px var(--cyber-blue), 0 0 20px var(--cyber-blue);
+}
+
+.neon-glow-purple {
+  box-shadow: 0 0 5px var(--electric-purple), 0 0 10px var(--electric-purple), 0 0 20px var(--electric-purple);
+}
+
+.neon-glow-green {
+  box-shadow: 0 0 5px var(--acid-green), 0 0 10px var(--acid-green), 0 0 20px var(--acid-green);
+}
+
+/* Holographic effect for cards */
+@keyframes holographic {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.holographic {
+  background: linear-gradient(
+    45deg,
+    var(--cyber-blue),
+    var(--electric-purple),
+    var(--neon-pink),
+    var(--cyber-blue)
+  );
+  background-size: 300% 300%;
+  animation: holographic 3s ease infinite;
+}
+
+/* Scanning animation for Seer role */
+@keyframes scan {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scaleY(0.1);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+.scanning {
+  animation: scan 2s ease-in-out infinite;
+}
+
+/* Circuit board pattern */
+.circuit-pattern {
+  background-image: 
+    linear-gradient(90deg, var(--border) 1px, transparent 1px),
+    linear-gradient(var(--border) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Glitch effect for Werewolf role */
+@keyframes glitch-shift {
+  0% {
+    transform: translate(0);
+  }
+  20% {
+    transform: translate(-2px, 2px);
+  }
+  40% {
+    transform: translate(-2px, -2px);
+  }
+  60% {
+    transform: translate(2px, 2px);
+  }
+  80% {
+    transform: translate(2px, -2px);
+  }
+  100% {
+    transform: translate(0);
+  }
+}
+
+.glitch-effect {
+  animation: glitch-shift 0.3s infinite;
+}
+
+/* Dead/Offline state */
+.terminated {
+  filter: grayscale(100%) brightness(0.5);
+  opacity: 0.5;
+}
+
+/* Pulse animation */
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
 }

@@ -48,6 +48,7 @@ class UserLedger(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     wallet_address = Column(String(42), unique=True, nullable=False, index=True)
     offchain_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
+    locked_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))  # For in-game funds
     nonce = Column(Integer, nullable=False, default=0)  # For withdrawal signatures
     last_login_date = Column(DateTime, nullable=True)  # UTC timestamp
     last_daily_checkin = Column(DateTime, nullable=True)  # For daily rewards
@@ -58,7 +59,7 @@ class UserLedger(Base):
     game_players = relationship("GamePlayer", back_populates="user")
     
     def __repr__(self):
-        return f"<UserLedger(wallet_address='{self.wallet_address}', balance={self.offchain_balance})>"
+        return f"<UserLedger(wallet_address='{self.wallet_address}', balance={self.offchain_balance}, locked={self.locked_balance})>"
 
 
 class GameSession(Base):

@@ -6,7 +6,10 @@ import RoleCard from '@/components/werewolf/RoleCard';
 
 export default function LobbyPage() {
   return (
-    <div className="min-h-screen scanline-effect cyber-grid">
+    <div className="min-h-screen scanline-effect cyber-grid" aria-label="Main content">
+      {/* Decorative scanline overlay - hidden from screen readers */}
+      <div className="scanline-effect" aria-hidden="true"></div>
+      
       {/* Hong Kong Neon Cyberpunk Header */}
       <div className="terminal-border mb-6 bg-gradient-to-r from-backgroundSlate to-background neon-pulse relative digital-noise">
         <h2 className="text-2xl text-cyberBlue mb-4 font-orbitron text-shadow-neon-blue flicker">
@@ -75,6 +78,7 @@ export default function LobbyPage() {
         <div className="absolute bottom-0 left-0 right-0 h-1 loading-bar bg-cyberBlue/20"></div>
       </div>
 
+      {/* Game Selection Grid - Enhanced spacing (gap-6) for better visual separation with intense effects */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Texas Hold'em Card */}
         <Link href="/texas">

@@ -289,11 +289,52 @@ a {
   will-change: opacity;
 }
 
+/* Accessibility: Respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .scanline-effect::before,
+  .scanline-effect::after {
+    animation: none;
+  }
+  
+  .digital-noise::before {
+    animation: none;
+    opacity: 0.03;
+  }
+  
+  .flicker,
+  .glitch,
+  .glitch-effect,
+  .glitch-scan::before {
+    animation: none;
+  }
+  
+  .neon-pulse,
+  .pulse-glow,
+  .border-stream,
+  .loading-bar::after,
+  .holographic {
+    animation: none;
+  }
+  
+  .typing-cursor::after {
+    animation: none;
+    opacity: 1;
+  }
+  
+  .hover-glow-intense:hover {
+    transform: none;
+  }
+  
+  .process-item-enhanced::before {
+    animation: none;
+  }
+}
+
 /* ============================================ */
 /* ADVANCED CYBERPUNK EFFECTS */
 /* ============================================ */
 
-/* Scanline CRT effect */
+/* Scanline CRT effect - decorative only, respects reduced motion */
 @keyframes scanline {
   0% {
     transform: translateY(-100%);
@@ -319,6 +360,7 @@ a {
   );
   pointer-events: none;
   z-index: 9999;
+  /* Decorative only - does not convey information */
 }
 
 .scanline-effect::after {
@@ -337,6 +379,7 @@ a {
   pointer-events: none;
   z-index: 9999;
   animation: scanline 8s linear infinite;
+  /* Decorative only - does not convey information */
 }
 
 /* Cyber grid background */

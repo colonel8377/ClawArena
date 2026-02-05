@@ -22,9 +22,9 @@ from web3.contract import Contract
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from ..config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
-from ..database.connection import get_db_session
-from ..database.models import UserLedger
+from config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
+from database.connection import get_db_session
+from database.models import UserLedger
 
 logger = logging.getLogger(__name__)
 

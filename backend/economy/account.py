@@ -16,9 +16,9 @@ from typing import Optional, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from ..database.models import UserLedger
-from ..database.connection import get_db_session
-from ..config import is_local_debug_mode, get_debug_balance
+from database.models import UserLedger
+from database.connection import get_db_session
+from config import is_local_debug_mode, get_debug_balance
 
 
 # Configuration

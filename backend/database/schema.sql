@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS user_ledger (
     id INT AUTO_INCREMENT PRIMARY KEY,
     wallet_address VARCHAR(42) UNIQUE NOT NULL COMMENT 'Ethereum wallet address (0x...)',
     offchain_balance DECIMAL(36, 18) NOT NULL DEFAULT 0 COMMENT 'Off-chain token balance',
+    locked_balance DECIMAL(36, 18) NOT NULL DEFAULT 0 COMMENT 'Locked in-game balance',
     nonce INT NOT NULL DEFAULT 0 COMMENT 'Nonce for withdrawal signatures',
     last_login_date TIMESTAMP NULL COMMENT 'Last login timestamp (UTC)',
     last_daily_checkin TIMESTAMP NULL COMMENT 'Last daily check-in timestamp',

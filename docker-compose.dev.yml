@@ -30,7 +30,8 @@ services:
       - /app/node_modules
       - /app/.next
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      # Browser clients reach backend via host-mapped port
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     networks:
       - arena_network
     restart: unless-stopped

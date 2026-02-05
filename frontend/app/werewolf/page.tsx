@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { socket } from '@/lib/socket';
+import { getSocket } from '@/lib/socket';
 
 interface Player {
   id: string;
@@ -30,6 +30,9 @@ export default function WerewolfPage() {
   ]);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
     function onConnect() {
       setConnected(true);
     }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { socket } from '@/lib/socket';
+import { getSocket } from '@/lib/socket';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -16,7 +16,7 @@ export default function BackendStatus() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [socketConnected, setSocketConnected] = useState<boolean>(socket.connected);
+  const [socketConnected, setSocketConnected] = useState<boolean>(false);
 
   useEffect(() => {
     let mounted = true;
@@ -45,8 +45,13 @@ export default function BackendStatus() {
   }, []);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
     const onConnect = () => setSocketConnected(true);
     const onDisconnect = () => setSocketConnected(false);
+
+    setSocketConnected(socket.connected);
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);

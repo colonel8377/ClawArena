@@ -46,12 +46,12 @@ const RoleCard: React.FC<RoleCardProps> = ({
       case 'Werewolf':
         return (
           <div className="relative">
-            {/* Wolf head shape using CSS */}
-            <div className="text-6xl glitch-effect">
-              <div className="relative">
-                <div className="absolute inset-0 text-neonPink opacity-50">⛓</div>
-                <div className="relative text-neonPink tracking-widest">狼</div>
-              </div>
+            <div className="w-20 h-20 rounded-full border-2 border-neonPink neon-glow-pink bg-gradient-to-br from-neonPink/20 to-transparent animate-pulse"></div>
+            <div className="absolute inset-0 flex items-center justify-center text-5xl text-neonPink drop-shadow-[0_0_12px_rgba(255,0,130,0.7)]">
+              ⚡🐺
+            </div>
+            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 text-[10px] text-neonPink tracking-[0.25em] font-mono">
+              CYBER WOLF
             </div>
           </div>
         );

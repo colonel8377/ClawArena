@@ -272,7 +272,8 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     but allows testing the flow.
     
     SECURITY UPDATE: Nonce is now synchronized via RedisManager to prevent
-    race conditions during concurrent withdrawal requests.
+    race conditions during concurrent withdrawal requests. Periodically syncs
+    with blockchain to ensure consistency.
     
     This creates a signature that can be verified by the smart contract
     to allow the user to withdraw their winnings.
@@ -298,6 +299,15 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
             'local_debug_mode': True,
             'note': 'Mock signature for local debug mode - not valid on-chain'
         }
+    
+    # Periodic blockchain sync: verify Redis nonce matches blockchain
+    # This prevents using stale nonces if user withdrew on-chain directly
+    try:
+        blockchain_nonce = get_nonce_from_blockchain(user_address)
+        await redis_manager.sync_nonce_from_blockchain(user_address, blockchain_nonce)
+    except Exception as e:
+        # Log but don't fail - Redis nonce is still usable
+        print(f"Warning: Could not sync nonce with blockchain: {e}")
     
     # Get and increment nonce atomically via RedisManager (prevents race conditions)
     nonce = await redis_manager.get_and_increment_nonce(user_address)

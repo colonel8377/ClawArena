@@ -494,6 +494,36 @@ async def api_get_balance(request: Request, wallet_address: str):
         raise HTTPException(status_code=500, detail=f"Failed to get balance: {str(e)}")
 
 
+@app.get("/api/games/active")
+@limiter.limit("30/minute")
+async def api_list_active_games(request: Request):
+    """List active poker tables and werewolf games for spectators."""
+    return {
+        "poker_tables": list(poker_tables.keys()),
+        "werewolf_games": list(werewolf_games.keys())
+    }
+
+
+@app.get("/api/spectate/poker/{table_id}")
+@limiter.limit("30/minute")
+async def api_spectate_poker(request: Request, table_id: str):
+    """Return sanitized poker state for spectators (no hole cards)."""
+    if table_id not in poker_tables:
+        raise HTTPException(status_code=404, detail="Table not found")
+    table = poker_tables[table_id]
+    return table.get_game_state(for_spectator=True)
+
+
+@app.get("/api/spectate/werewolf/{game_id}")
+@limiter.limit("30/minute")
+async def api_spectate_werewolf(request: Request, game_id: str):
+    """Return werewolf state for spectators (roles masked)."""
+    if game_id not in werewolf_games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = werewolf_games[game_id]
+    return game.get_game_state()
+
+
 # ============================================================================
 # SOCKET.IO EVENT HANDLERS
 # ============================================================================

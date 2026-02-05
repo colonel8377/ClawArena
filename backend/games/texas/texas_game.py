@@ -157,14 +157,14 @@ class TexasGame(BaseGame):
         else:
             return self.engine.process_move(sid, action)
     
-    def get_game_state(self, sid: Optional[str] = None) -> Dict:
+    def get_game_state(self, sid: Optional[str] = None, for_spectator: bool = False) -> Dict:
         """
         Get the current game state.
         
         For poker, this includes player-specific hole cards when sid is provided.
         """
         # Get base state from engine
-        engine_state = self.engine.get_game_state(sid)
+        engine_state = self.engine.get_game_state(sid, for_spectator=for_spectator)
         
         # Add chat history from BaseGame
         state = {

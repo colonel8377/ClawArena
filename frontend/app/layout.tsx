@@ -14,17 +14,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="font-mono">
-        <header className="border-b border-cyberBlue p-4 neon-pulse relative digital-noise">
-          <div className="container mx-auto">
-            <h1 className="text-2xl text-cyberBlue glitch font-orbitron text-shadow-neon-blue flicker">
-              &gt; CYBER ARENA
-            </h1>
-            <p className="text-xs text-electricPurple opacity-70 mt-1 font-mono">
-              &gt; CYBER ARENA OPERATIONS TERMINAL
-            </p>
-          </div>
-          <div className="absolute bottom-0 left-0 right-0 h-1 loading-bar bg-cyberBlue/30"></div>
-        </header>
         <main className="container mx-auto p-4">
           {children}
         </main>

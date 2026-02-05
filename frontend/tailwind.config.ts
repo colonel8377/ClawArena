@@ -9,39 +9,39 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Hong Kong Neon Cyberpunk Color Scheme
-        background: "#050505",
-        backgroundSlate: "#121212",
-        foreground: "#e0e0e0",
-        
-        // Neon Accent Colors
-        neonPink: "#FF0055",
-        cyberBlue: "#00F0FF",
-        electricPurple: "#7000FF",
-        acidGreen: "#39FF14",
-        
+        // Theme tokens (RGB triplets defined in globals.css)
+        background: "rgb(var(--background) / <alpha-value>)",
+        backgroundSlate: "rgb(var(--background-slate) / <alpha-value>)",
+        foreground: "rgb(var(--foreground) / <alpha-value>)",
+
+        // Accent tokens
+        neonPink: "rgb(var(--neon-pink) / <alpha-value>)",
+        cyberBlue: "rgb(var(--cyber-blue) / <alpha-value>)",
+        electricPurple: "rgb(var(--electric-purple) / <alpha-value>)",
+        acidGreen: "rgb(var(--acid-green) / <alpha-value>)",
+
         // Legacy colors for compatibility
-        primary: "#00F0FF",
-        secondary: "#7000FF",
-        danger: "#FF0055",
-        warning: "#ffaa00",
-        border: "#333333",
+        primary: "rgb(var(--primary) / <alpha-value>)",
+        secondary: "rgb(var(--secondary) / <alpha-value>)",
+        danger: "rgb(var(--danger) / <alpha-value>)",
+        warning: "rgb(var(--warning) / <alpha-value>)",
+        border: "rgb(var(--border) / <alpha-value>)",
       },
       fontFamily: {
         mono: ["JetBrains Mono", "Courier New", "monospace"],
         orbitron: ["Orbitron", "JetBrains Mono", "sans-serif"],
       },
       boxShadow: {
-        'neon-pink': '0 0 5px #FF0055, 0 0 10px #FF0055, 0 0 20px #FF0055',
-        'neon-blue': '0 0 5px #00F0FF, 0 0 10px #00F0FF, 0 0 20px #00F0FF',
-        'neon-purple': '0 0 5px #7000FF, 0 0 10px #7000FF, 0 0 20px #7000FF',
-        'neon-green': '0 0 5px #39FF14, 0 0 10px #39FF14, 0 0 20px #39FF14',
+        'neon-pink': '0 0 5px rgb(var(--neon-pink)), 0 0 10px rgb(var(--neon-pink)), 0 0 20px rgb(var(--neon-pink))',
+        'neon-blue': '0 0 5px rgb(var(--cyber-blue)), 0 0 10px rgb(var(--cyber-blue)), 0 0 20px rgb(var(--cyber-blue))',
+        'neon-purple': '0 0 5px rgb(var(--electric-purple)), 0 0 10px rgb(var(--electric-purple)), 0 0 20px rgb(var(--electric-purple))',
+        'neon-green': '0 0 5px rgb(var(--acid-green)), 0 0 10px rgb(var(--acid-green)), 0 0 20px rgb(var(--acid-green))',
       },
       textShadow: {
-        'neon-pink': '0 0 5px #FF0055, 0 0 10px #FF0055',
-        'neon-blue': '0 0 5px #00F0FF, 0 0 10px #00F0FF',
-        'neon-purple': '0 0 5px #7000FF, 0 0 10px #7000FF',
-        'neon-green': '0 0 5px #39FF14, 0 0 10px #39FF14',
+        'neon-pink': '0 0 5px rgb(var(--neon-pink)), 0 0 10px rgb(var(--neon-pink))',
+        'neon-blue': '0 0 5px rgb(var(--cyber-blue)), 0 0 10px rgb(var(--cyber-blue))',
+        'neon-purple': '0 0 5px rgb(var(--electric-purple)), 0 0 10px rgb(var(--electric-purple))',
+        'neon-green': '0 0 5px rgb(var(--acid-green)), 0 0 10px rgb(var(--acid-green))',
       },
     },
   },
@@ -50,16 +50,16 @@ const config: Config = {
     function ({ addUtilities }: any) {
       const newUtilities = {
         '.text-shadow-neon-pink': {
-          textShadow: '0 0 5px #FF0055, 0 0 10px #FF0055',
+          textShadow: '0 0 5px rgb(var(--neon-pink)), 0 0 10px rgb(var(--neon-pink))',
         },
         '.text-shadow-neon-blue': {
-          textShadow: '0 0 5px #00F0FF, 0 0 10px #00F0FF',
+          textShadow: '0 0 5px rgb(var(--cyber-blue)), 0 0 10px rgb(var(--cyber-blue))',
         },
         '.text-shadow-neon-purple': {
-          textShadow: '0 0 5px #7000FF, 0 0 10px #7000FF',
+          textShadow: '0 0 5px rgb(var(--electric-purple)), 0 0 10px rgb(var(--electric-purple))',
         },
         '.text-shadow-neon-green': {
-          textShadow: '0 0 5px #39FF14, 0 0 10px #39FF14',
+          textShadow: '0 0 5px rgb(var(--acid-green)), 0 0 10px rgb(var(--acid-green))',
         },
       };
       addUtilities(newUtilities);

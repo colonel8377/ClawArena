@@ -1,5 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import getApiBaseUrl from './api';
+import { getBotToken, getStoredFingerprint } from './antiBot';
 
 let socketInstance: Socket | null = null;
 
@@ -8,6 +9,8 @@ export const getSocket = (): Socket | null => {
   if (typeof window === 'undefined') return null;
 
   const API_URL = getApiBaseUrl();
+  const botToken = getBotToken();
+  const fingerprint = getStoredFingerprint();
 
   socketInstance = io(API_URL, {
     autoConnect: true,
@@ -16,6 +19,10 @@ export const getSocket = (): Socket | null => {
     reconnectionDelayMax: 5000,
     reconnectionAttempts: Infinity,
     transports: ['websocket', 'polling'],
+    auth: {
+      botToken,
+      fingerprint,
+    },
   });
 
   return socketInstance;
@@ -67,3 +74,15 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 export default getSocket;
+
+export const refreshSocketAuth = (botToken?: string, fingerprint?: string) => {
+  const socket = getSocket();
+  if (!socket) return;
+  socket.auth = {
+    botToken: botToken ?? getBotToken(),
+    fingerprint: fingerprint ?? getStoredFingerprint(),
+  };
+  if (socket.disconnected) {
+    socket.connect();
+  }
+};

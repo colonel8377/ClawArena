@@ -89,8 +89,9 @@ class PokerPlayer:
     chips: int = 1000
     hole_cards: List[int] = field(default_factory=list)
     status: PlayerStatus = PlayerStatus.ACTIVE
-    current_bet: int = 0
-    total_bet_this_round: int = 0
+    current_bet: int = 0  # Current bet in this betting round
+    total_bet_this_round: int = 0  # Total bet in this betting round (for round tracking)
+    total_bet_this_hand: int = 0  # Total bet across entire hand (for side pot calculation)
     has_acted: bool = False
     last_action: Optional[str] = None
     last_action_time: Optional[datetime] = None
@@ -110,6 +111,7 @@ class PokerPlayer:
         self.status = PlayerStatus.ACTIVE if self.chips > 0 else PlayerStatus.SITTING_OUT
         self.current_bet = 0
         self.total_bet_this_round = 0
+        self.total_bet_this_hand = 0  # Reset for new hand
         self.has_acted = False
         self.last_action = None
 
@@ -182,7 +184,13 @@ class TexasEngine:
         self.players: Dict[str, PokerPlayer] = {}
         self.player_order: List[str] = []  # Sids in seat order
         
-        # Dealer/blind positions
+        # Dealer/blind positions - stored as SIDs for consistency
+        self.dealer_sid: Optional[str] = None
+        self.small_blind_sid: Optional[str] = None
+        self.big_blind_sid: Optional[str] = None
+        self.current_player_sid: Optional[str] = None
+        
+        # Legacy index support (for backward compatibility)
         self.dealer_index = 0
         self.small_blind_index = 0
         self.big_blind_index = 0
@@ -250,6 +258,11 @@ class TexasEngine:
             nickname=nickname,
             chips=buy_in
         )
+        
+        # If hand is in progress, set player as SITTING_OUT
+        # They will become ACTIVE at the start of the next hand
+        if self.phase not in (PokerPhase.WAITING, PokerPhase.FINISHED):
+            player.status = PlayerStatus.SITTING_OUT
         
         self.players[sid] = player
         self.player_order.append(sid)
@@ -333,10 +346,10 @@ class TexasEngine:
         return {
             'success': True,
             'hand_number': self.hand_number,
-            'dealer': self.player_order[self.dealer_index],
-            'small_blind': self.player_order[self.small_blind_index],
-            'big_blind': self.player_order[self.big_blind_index],
-            'current_player': self.player_order[self.current_player_index],
+            'dealer': self.dealer_sid,
+            'small_blind': self.small_blind_sid,
+            'big_blind': self.big_blind_sid,
+            'current_player': self.current_player_sid,
             'hole_cards': hole_cards_info,
             'pot': self.get_total_pot()
         }
@@ -352,12 +365,25 @@ class TexasEngine:
             random.shuffle(self._deck)
     
     def _deal_hole_cards(self):
-        """Deal two hole cards to each active player."""
+        """
+        Deal two hole cards to each active player.
+        
+        Deals in proper order: starting from small blind position,
+        one card to each player, then second card to each player.
+        """
         active_sids = [sid for sid in self.player_order 
                        if self.players[sid].status == PlayerStatus.ACTIVE]
         
+        if not active_sids:
+            return
+        
+        # Reorder to start dealing from small blind position
+        sb_pos = self.small_blind_index % len(active_sids)
+        deal_order = active_sids[sb_pos:] + active_sids[:sb_pos]
+        
+        # Deal first card to each player, then second card
         for _ in range(2):
-            for sid in active_sids:
+            for sid in deal_order:
                 if self._deck:
                     card = self._deck.pop()
                     self.players[sid].hole_cards.append(card)
@@ -370,62 +396,114 @@ class TexasEngine:
         if len(active_sids) < MIN_PLAYERS:
             return
         
-        # Calculate blind positions relative to active_sids
-        dealer_pos = self.dealer_index % len(active_sids)
+        # Find dealer position in player_order
+        if self.dealer_sid not in self.player_order:
+            return
+        dealer_order_pos = self.player_order.index(self.dealer_sid)
+        
+        # Find next active players after dealer
+        def find_next_active(start_pos, skip=1):
+            """Find the nth active player after start position."""
+            count = 0
+            for i in range(1, len(self.player_order) + 1):
+                pos = (start_pos + i) % len(self.player_order)
+                sid = self.player_order[pos]
+                if sid in active_sids:
+                    count += 1
+                    if count == skip:
+                        return sid
+            return None
         
         if len(active_sids) == 2:
-            # Heads-up: dealer is small blind
-            sb_pos = dealer_pos
-            bb_pos = (dealer_pos + 1) % len(active_sids)
+            # Heads-up: dealer is small blind, other player is big blind
+            self.small_blind_sid = self.dealer_sid
+            self.big_blind_sid = find_next_active(dealer_order_pos, 1)
         else:
-            sb_pos = (dealer_pos + 1) % len(active_sids)
-            bb_pos = (dealer_pos + 2) % len(active_sids)
+            # Normal: SB is after dealer, BB is after SB
+            self.small_blind_sid = find_next_active(dealer_order_pos, 1)
+            self.big_blind_sid = find_next_active(dealer_order_pos, 2)
         
-        # Store positions for this hand
-        self.small_blind_index = sb_pos
-        self.big_blind_index = bb_pos
+        # Update legacy indices
+        if self.small_blind_sid in active_sids:
+            self.small_blind_index = active_sids.index(self.small_blind_sid)
+        if self.big_blind_sid in active_sids:
+            self.big_blind_index = active_sids.index(self.big_blind_sid)
         
         # Post small blind
-        sb_sid = active_sids[sb_pos]
-        sb_amount = min(self.small_blind, self.players[sb_sid].chips)
-        self._place_bet(sb_sid, sb_amount)
+        if self.small_blind_sid:
+            sb_amount = min(self.small_blind, self.players[self.small_blind_sid].chips)
+            self._place_bet(self.small_blind_sid, sb_amount)
+            
+            # Mark as all-in if posting blind uses all chips
+            if self.players[self.small_blind_sid].chips == 0:
+                self.players[self.small_blind_sid].status = PlayerStatus.ALL_IN
         
         # Post big blind
-        bb_sid = active_sids[bb_pos]
-        bb_amount = min(self.big_blind, self.players[bb_sid].chips)
-        self._place_bet(bb_sid, bb_amount)
-        
-        self.current_bet = bb_amount
+        if self.big_blind_sid:
+            bb_amount = min(self.big_blind, self.players[self.big_blind_sid].chips)
+            self._place_bet(self.big_blind_sid, bb_amount)
+            
+            # Mark as all-in if posting blind uses all chips
+            if self.players[self.big_blind_sid].chips == 0:
+                self.players[self.big_blind_sid].status = PlayerStatus.ALL_IN
+            
+            self.current_bet = bb_amount
     
     def _rotate_dealer(self):
         """Move dealer button to next active player."""
         if not self.player_order:
             return
         
-        # Find next active player
+        # Find active players (those with chips who can play)
         active_sids = [sid for sid in self.player_order 
-                       if self.players[sid].status == PlayerStatus.ACTIVE]
+                       if self.players[sid].chips > 0]
         
         if len(active_sids) < MIN_PLAYERS:
             return
         
-        # Rotate dealer position
-        self.dealer_index = (self.dealer_index + 1) % len(active_sids)
+        # Find current dealer position in player_order
+        if self.dealer_sid and self.dealer_sid in self.player_order:
+            current_pos = self.player_order.index(self.dealer_sid)
+        else:
+            current_pos = -1
+        
+        # Find next active player after current dealer
+        for i in range(1, len(self.player_order) + 1):
+            next_pos = (current_pos + i) % len(self.player_order)
+            next_sid = self.player_order[next_pos]
+            if next_sid in active_sids:
+                self.dealer_sid = next_sid
+                self.dealer_index = active_sids.index(next_sid)
+                return
     
     def _set_first_to_act(self):
-        """Set the first player to act after dealing."""
+        """Set the first player to act after dealing (pre-flop)."""
         active_sids = [sid for sid in self.player_order 
                        if self.players[sid].can_act()]
         
         if not active_sids:
             return
         
-        if len(active_sids) <= 2:
-            # Heads-up: small blind acts first pre-flop
-            self.current_player_index = self.small_blind_index % len(active_sids)
+        # Find big blind position in player_order
+        if self.big_blind_sid not in self.player_order:
+            return
+        bb_order_pos = self.player_order.index(self.big_blind_sid)
+        
+        if len(active_sids) == 2:
+            # Heads-up: small blind (dealer) acts first pre-flop
+            self.current_player_sid = self.small_blind_sid
         else:
-            # UTG acts first (player after big blind)
-            self.current_player_index = (self.big_blind_index + 1) % len(active_sids)
+            # UTG acts first (player after big blind who can act)
+            for i in range(1, len(self.player_order) + 1):
+                pos = (bb_order_pos + i) % len(self.player_order)
+                sid = self.player_order[pos]
+                if self.players[sid].can_act():
+                    self.current_player_sid = sid
+                    break
+        
+        # Update legacy index
+        if self.current_player_sid in active_sids:
+            self.current_player_index = active_sids.index(self.current_player_sid)
     
     # ========================================================================
     # BETTING ACTIONS
@@ -485,6 +563,11 @@ class TexasEngine:
             result['chat'] = chat_message
             result['player_nickname'] = player.nickname
             
+            # Check if hand is over (everyone else folded)
+            if result.get('hand_over'):
+                # Hand ended due to fold - no need to advance phase
+                return result
+            
             # Check if betting round is complete
             if self._is_betting_round_complete():
                 result['round_complete'] = True
@@ -492,7 +575,7 @@ class TexasEngine:
             else:
                 # Move to next player
                 self._advance_to_next_player()
-                result['next_player'] = self.player_order[self.current_player_index]
+                result['next_player'] = self.current_player_sid
         
         return result
     
@@ -516,11 +599,28 @@ class TexasEngine:
         player = self.players[sid]
         player.status = PlayerStatus.FOLDED
         
-        return {
+        result = {
             'success': True,
             'action': 'fold',
             'player_sid': sid
         }
+        
+        # Check if only one player remains - hand ends immediately
+        active_players = [p for p in self.players.values() if p.is_active()]
+        if len(active_players) == 1:
+            winner = active_players[0]
+            total_pot = self.get_total_pot()
+            winner.chips += total_pot
+            self.phase = PokerPhase.FINISHED
+            
+            result['hand_over'] = True
+            result['winner'] = {
+                'sid': winner.sid,
+                'nickname': winner.nickname,
+                'amount': total_pot
+            }
+        
+        return result
     
     def _handle_check(self, sid: str) -> Dict[str, Any]:
         """Handle check action."""
@@ -632,6 +732,7 @@ class TexasEngine:
         player.chips -= amount
         player.current_bet += amount
         player.total_bet_this_round += amount
+        player.total_bet_this_hand += amount  # Track total for side pot calculation
         
         # Add to main pot (side pots handled at showdown)
         self.pots[0].add(amount, sid)
@@ -644,6 +745,9 @@ class TexasEngine:
         """
         Advance to the next phase and deal community cards.
         
+        If all players are all-in, automatically runs out the board
+        (deals all remaining community cards without betting rounds).
+        
         Returns:
             Dict with phase change information
         """
@@ -655,16 +759,73 @@ class TexasEngine:
         self.current_bet = 0
         self.last_raise_amount = self.big_blind
         
+        # Check if we should run out the board (all players all-in or only one left)
+        run_out = self._should_run_out_board()
+        
         if self.phase == PokerPhase.PRE_FLOP:
-            return self._deal_flop()
+            result = self._deal_flop()
+            if run_out and result.get('success'):
+                # Continue dealing without betting
+                result['run_out'] = True
+                result['turn'] = self._deal_turn_card_only()
+                result['river'] = self._deal_river_card_only()
+                result['community_cards'] = self._cards_to_strings(self.community_cards)
+                showdown_result = self._start_showdown()
+                # Merge results so we don't lose the run_out info
+                showdown_result.update({
+                    'run_out': True,
+                    'flop': self._cards_to_strings(self.community_cards[:3]),
+                    'turn': result['turn'],
+                    'river': result['river']
+                })
+                return showdown_result
+            return result
         elif self.phase == PokerPhase.FLOP:
-            return self._deal_turn()
+            result = self._deal_turn()
+            if run_out and result.get('success'):
+                result['run_out'] = True
+                result['river'] = self._deal_river_card_only()
+                result['community_cards'] = self._cards_to_strings(self.community_cards)
+                showdown_result = self._start_showdown()
+                showdown_result.update({
+                    'run_out': True,
+                    'turn': self._cards_to_strings(self.community_cards[3:4])[0] if len(self.community_cards) > 3 else None,
+                    'river': result['river']
+                })
+                return showdown_result
+            return result
         elif self.phase == PokerPhase.TURN:
-            return self._deal_river()
+            result = self._deal_river()
+            if run_out and result.get('success'):
+                result['run_out'] = True
+                showdown_result = self._start_showdown()
+                showdown_result.update({'run_out': True})
+                return showdown_result
+            return result
         elif self.phase == PokerPhase.RIVER:
             return self._start_showdown()
         else:
             return {'success': False, 'error': 'Cannot advance from current phase'}
+    
+    def _deal_turn_card_only(self) -> str:
+        """Deal turn card without changing phase (for run-out)."""
+        if self._deck:
+            self._deck.pop()  # Burn
+            if self._deck:
+                card = self._deck.pop()
+                self.community_cards.append(card)
+                return self._cards_to_strings([card])[0]
+        return ""
+    
+    def _deal_river_card_only(self) -> str:
+        """Deal river card without changing phase (for run-out)."""
+        if self._deck:
+            self._deck.pop()  # Burn
+            if self._deck:
+                card = self._deck.pop()
+                self.community_cards.append(card)
+                return self._cards_to_strings([card])[0]
+        return ""
     
     def _deal_flop(self) -> Dict[str, Any]:
         """Deal the flop (3 community cards)."""
@@ -683,7 +844,7 @@ class TexasEngine:
             'success': True,
             'phase': 'flop',
             'community_cards': self._cards_to_strings(self.community_cards),
-            'current_player': self.player_order[self.current_player_index]
+            'current_player': self.current_player_sid
         }
     
     def _deal_turn(self) -> Dict[str, Any]:
@@ -702,7 +863,7 @@ class TexasEngine:
             'success': True,
             'phase': 'turn',
             'community_cards': self._cards_to_strings(self.community_cards),
-            'current_player': self.player_order[self.current_player_index]
+            'current_player': self.current_player_sid
         }
     
     def _deal_river(self) -> Dict[str, Any]:
@@ -721,19 +882,34 @@ class TexasEngine:
             'success': True,
             'phase': 'river',
             'community_cards': self._cards_to_strings(self.community_cards),
-            'current_player': self.player_order[self.current_player_index]
+            'current_player': self.current_player_sid
         }
     
     def _set_post_flop_first_to_act(self):
-        """Set first player to act post-flop (first active after dealer)."""
+        """Set first player to act post-flop (first active player after dealer)."""
         active_sids = [sid for sid in self.player_order 
                        if self.players[sid].can_act()]
         
         if not active_sids:
             return
         
-        # First active player after dealer
-        self.current_player_index = (self.dealer_index + 1) % len(active_sids)
+        # Find dealer position in player_order
+        if self.dealer_sid not in self.player_order:
+            # Fallback to first active
+            self.current_player_sid = active_sids[0]
+            self.current_player_index = 0
+            return
+        
+        dealer_order_pos = self.player_order.index(self.dealer_sid)
+        
+        # Find first player who can act after dealer
+        for i in range(1, len(self.player_order) + 1):
+            pos = (dealer_order_pos + i) % len(self.player_order)
+            sid = self.player_order[pos]
+            if self.players[sid].can_act():
+                self.current_player_sid = sid
+                self.current_player_index = active_sids.index(sid)
+                return
     
     # ========================================================================
     # SHOWDOWN
@@ -792,38 +968,70 @@ class TexasEngine:
         }
     
     def _calculate_side_pots(self):
-        """Calculate side pots for all-in scenarios."""
-        # Get all players' total investments
-        investments = []
+        """
+        Calculate side pots for all-in scenarios.
+        
+        IMPORTANT: All players who contributed chips are included in the calculation,
+        but only active (non-folded) players are eligible to WIN pots.
+        Folded players' chips go into the pot but they can't win it back.
+        """
+        # Get ALL players' investments (including folded players)
+        all_investments = []
         for sid in self.player_order:
             player = self.players[sid]
-            if player.is_active() and player.total_bet_this_round > 0:
-                investments.append((sid, player.total_bet_this_round))
+            if player.total_bet_this_hand > 0:
+                all_investments.append((sid, player.total_bet_this_hand, player.is_active()))
         
-        if not investments:
+        if not all_investments:
             return
         
-        # Sort by investment amount
-        investments.sort(key=lambda x: x[1])
+        # Sort by investment amount (lowest to highest)
+        all_investments.sort(key=lambda x: x[1])
         
-        # Calculate pots
+        # Calculate total pot from all contributions
+        total_contributed = sum(inv for _, inv, _ in all_investments)
+        
+        # Get only active (non-folded) players for pot eligibility
+        active_investments = [(sid, inv) for sid, inv, is_active in all_investments if is_active]
+        
+        if not active_investments:
+            # Everyone folded - shouldn't happen, but handle it
+            return
+        
+        # Calculate side pots based on active players' investments
+        active_investments.sort(key=lambda x: x[1])
+        
         self.pots = []
         prev_investment = 0
-        eligible_players = [sid for sid, _ in investments]
+        eligible_players = [sid for sid, _ in active_investments]
         
-        for i, (sid, investment) in enumerate(investments):
+        # Count how many players contributed at each level
+        def count_contributors_at_level(level):
+            """Count how many total players (including folded) contributed at least this much."""
+            return sum(1 for _, inv, _ in all_investments if inv >= level)
+        
+        for i, (sid, investment) in enumerate(active_investments):
             if investment > prev_investment:
                 pot_contribution = investment - prev_investment
-                pot_amount = pot_contribution * (len(investments) - i)
+                # The pot includes contributions from ALL players at this level
+                contributors = count_contributors_at_level(prev_investment + 1)
+                pot_amount = pot_contribution * contributors
                 
                 self.pots.append(Pot(
                     amount=pot_amount,
-                    eligible_players=list(eligible_players)
+                    eligible_players=list(eligible_players)  # Only active players can win
                 ))
             
-            # Remove player from eligibility for next pots
+            # Remove player from eligibility for next (higher) pots
             eligible_players.remove(sid)
             prev_investment = investment
+        
+        # Verify total pot matches total contributed
+        calculated_total = sum(pot.amount for pot in self.pots)
+        if calculated_total != total_contributed:
+            # Add any remainder to the main pot (can happen with rounding)
+            if self.pots:
+                self.pots[0].amount += (total_contributed - calculated_total)
     
     def _evaluate_and_distribute_pots(self, showdown_players: List[str]) -> Dict[str, Any]:
         """Evaluate hands and distribute pots to winners."""
@@ -950,16 +1158,14 @@ class TexasEngine:
         if not self.player_order:
             return False
         
-        active_sids = [s for s in self.player_order if self.players[s].can_act()]
-        if not active_sids or self.current_player_index >= len(active_sids):
-            return False
-        
-        return active_sids[self.current_player_index] == sid
+        # Use SID-based check for consistency
+        return self.current_player_sid == sid and self.players[sid].can_act()
     
     def _is_betting_round_complete(self) -> bool:
         """Check if the current betting round is complete."""
         active_players = [p for p in self.players.values() if p.can_act()]
         
+        # If only one or zero players can act, round is complete
         if len(active_players) <= 1:
             return True
         
@@ -972,21 +1178,50 @@ class TexasEngine:
         
         return True
     
-    def _advance_to_next_player(self):
-        """Move to the next active player."""
-        active_sids = [s for s in self.player_order if self.players[s].can_act()]
+    def _should_run_out_board(self) -> bool:
+        """
+        Check if we should run out the board (deal remaining cards without betting).
         
-        if not active_sids:
+        This happens when:
+        - All players but one have folded, OR
+        - All remaining players are all-in
+        
+        Returns:
+            True if board should be run out without further betting
+        """
+        active_players = [p for p in self.players.values() if p.is_active()]
+        
+        # Only one player left (others folded)
+        if len(active_players) <= 1:
+            return True
+        
+        # Check if all active players are all-in (no one can bet)
+        players_who_can_act = [p for p in active_players if p.can_act()]
+        return len(players_who_can_act) == 0
+    
+    def _advance_to_next_player(self):
+        """Move to next active player who can act."""
+        if not self.player_order or not self.current_player_sid:
             return
         
-        start_index = self.current_player_index
-        self.current_player_index = (self.current_player_index + 1) % len(active_sids)
+        # Find current position in player_order
+        if self.current_player_sid not in self.player_order:
+            return
         
-        # Skip players who can't act
-        while self.current_player_index != start_index:
-            if self.players[active_sids[self.current_player_index]].can_act():
-                break
-            self.current_player_index = (self.current_player_index + 1) % len(active_sids)
+        current_order_pos = self.player_order.index(self.current_player_sid)
+        
+        # Find next player who can act
+        for i in range(1, len(self.player_order) + 1):
+            pos = (current_order_pos + i) % len(self.player_order)
+            sid = self.player_order[pos]
+            if self.players[sid].can_act():
+                self.current_player_sid = sid
+                
+                # Update legacy index
+                active_sids = [s for s in self.player_order if self.players[s].can_act()]
+                if sid in active_sids:
+                    self.current_player_index = active_sids.index(sid)
+                return
     
     def get_total_pot(self) -> int:
         """Get the total pot size."""
@@ -1010,7 +1245,12 @@ class TexasEngine:
                 result.append(f"{rank}{suit}")
             return result
     
-    def get_game_state(self, sid: Optional[str] = None, for_spectator: bool = False) -> Dict[str, Any]:
+    def get_game_state(
+        self,
+        sid: Optional[str] = None,
+        for_spectator: bool = False,
+        reveal_all: bool = False
+    ) -> Dict[str, Any]:
         """
         Get the current game state.
         
@@ -1042,9 +1282,8 @@ class TexasEngine:
         }
         
         # Get current player
-        active_sids = [s for s in self.player_order if self.players[s].can_act()]
-        if active_sids and self.current_player_index < len(active_sids):
-            state['current_player'] = active_sids[self.current_player_index]
+        if self.current_player_sid:
+            state['current_player'] = self.current_player_sid
         
         # Add player information
         for player_sid in self.player_order:
@@ -1059,9 +1298,9 @@ class TexasEngine:
                 'last_action': player.last_action
             }
             
-            # Only show hole cards to the player themselves (unless showdown or spectator mode)
-            if self.phase == PokerPhase.SHOWDOWN:
-                # Reveal at showdown
+            # Only show hole cards to the player themselves (unless showdown or reveal_all)
+            if self.phase == PokerPhase.SHOWDOWN or reveal_all:
+                # Reveal at showdown or for authorized spectators
                 player_info['hole_cards'] = self._cards_to_strings(player.hole_cards)
             elif sid and player_sid == sid and not for_spectator:
                 # Player can see their own cards

@@ -1,52 +1,25 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
-import RoleCard from '@/components/werewolf/RoleCard';
 import getApiBaseUrl from '@/lib/api';
+import { botFetch } from '@/lib/antiBot';
 
-interface Player {
-  id: string;
-  name: string;
-  role?: string;
-  status: 'alive' | 'dead';
-  x: number;
-  y: number;
-}
-
-interface SpectatePlayer {
-  sid: string;
-  nickname: string;
-  is_alive: boolean;
-}
-
-interface SpectateState {
+interface GameInfo {
   game_id: string;
-  phase: string;
-  day_count: number;
-  players: SpectatePlayer[];
+  player_count?: number;
+  alive_count?: number;
+  phase?: string;
+  day_count?: number;
+  status?: string;
 }
 
-export default function WerewolfPage() {
+export default function WerewolfListPage() {
   const [connected, setConnected] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [phase, setPhase] = useState<'day' | 'night'>('day');
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [dayCount, setDayCount] = useState(1);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [players, setPlayers] = useState<Player[]>([
-    { id: 'node_001', name: 'Alice', role: 'Villager', status: 'alive', x: 50, y: 30 },
-    { id: 'node_002', name: 'Bob', role: '???', status: 'alive', x: 150, y: 80 },
-    { id: 'node_003', name: 'Charlie', role: '???', status: 'alive', x: 250, y: 30 },
-    { id: 'node_004', name: 'Diana', role: '???', status: 'alive', x: 350, y: 80 },
-    { id: 'node_005', name: 'Eve', role: '???', status: 'dead', x: 450, y: 30 },
-    { id: 'node_006', name: 'Frank', role: '???', status: 'alive', x: 150, y: 180 },
-    { id: 'node_007', name: 'Grace', role: '???', status: 'alive', x: 350, y: 180 },
-  ]);
-  const [activeGames, setActiveGames] = useState<string[]>([]);
-  const [spectateGameId, setSpectateGameId] = useState('');
-  const [spectateState, setSpectateState] = useState<SpectateState | null>(null);
-  const [spectateError, setSpectateError] = useState<string | null>(null);
+  const [games, setGames] = useState<GameInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     const socket = getSocket();
@@ -63,198 +36,265 @@ export default function WerewolfPage() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
 
-    const fetchGames = async () => {
-      try {
-        const res = await fetch(`${getApiBaseUrl()}/api/games/active`);
-        const data = await res.json();
-        setActiveGames(data.werewolf_games || []);
-      } catch (err) {
-        console.error('Failed to load active games', err);
-      }
-    };
-
-    fetchGames();
-
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
     };
   }, []);
 
-  const getNodeColor = (player: Player) => {
-    if (player.status === 'dead') return '#ff0000';
-    if (player.role === 'Villager') return '#00ff00';
-    if (player.role === 'Werewolf') return '#ff0000';
-    return '#ffaa00';
-  };
-
-  const handleSpectate = async () => {
-    if (!spectateGameId) return;
-    setSpectateError(null);
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/api/spectate/werewolf/${spectateGameId}`);
-      if (!res.ok) {
-        setSpectateError('Game not found');
-        setSpectateState(null);
-        return;
+  useEffect(() => {
+    const fetchGames = async () => {
+      try {
+        const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
+        const data = await res.json();
+        const gameIds = data.werewolf_games || [];
+        
+        const gamesWithInfo: GameInfo[] = await Promise.all(
+          gameIds.map(async (id: string) => {
+            try {
+              const infoRes = await botFetch(`${getApiBaseUrl()}/api/spectate/werewolf/${id}`);
+              if (infoRes.ok) {
+                const info = await infoRes.json();
+                const players = info.players || [];
+                return {
+                  game_id: id,
+                  player_count: players.length,
+                  alive_count: players.filter((p: { is_alive: boolean }) => p.is_alive).length,
+                  phase: info.phase || 'waiting',
+                  day_count: info.day_count || 1,
+                  status: 'active',
+                };
+              }
+            } catch {
+              // Ignore errors for individual games
+            }
+            return {
+              game_id: id,
+              status: 'active',
+            };
+          })
+        );
+        
+        setGames(gamesWithInfo);
+      } catch (err) {
+        console.error('Failed to load games', err);
+      } finally {
+        setLoading(false);
       }
-      const data = await res.json();
-      setSpectateState(data);
-    } catch (err) {
-      setSpectateError('Failed to load game');
-      setSpectateState(null);
+    };
+
+    fetchGames();
+    const interval = setInterval(fetchGames, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const filteredGames = games.filter((g) =>
+    g.game_id.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const getPhaseIcon = (phase?: string) => {
+    switch (phase?.toLowerCase()) {
+      case 'day': return '☀️';
+      case 'night': return '🌙';
+      case 'voting': return '🗳️';
+      case 'discussion': return '💬';
+      default: return '⏳';
     }
   };
 
   return (
-    <div className="min-h-screen max-w-5xl mx-auto px-2 md:px-0">
-      {/* Header */}
-      <div className="terminal-border mb-4">
-        <div className="flex justify-between items-center">
-          <h2 className="text-xl text-primary">&gt; WEREWOLF.exe</h2>
-          <div className="flex gap-4 text-xs">
-            <span>Connection: <span className={connected ? 'status-active' : 'status-inactive'}>
-              {connected ? 'ONLINE' : 'OFFLINE'}
-            </span></span>
-            <span>Phase: <span className={phase === 'day' ? 'text-warning' : 'text-primary'}>
-              {phase.toUpperCase()}
-            </span></span>
-            <span>Day: {dayCount}</span>
+    <div className="min-h-screen scanline-effect">
+      <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">
+        {/* Header */}
+        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <Link 
+                href="/"
+                className="icon-badge border-cyberBlue hover:neon-glow-blue transition-all"
+              >
+                ←
+              </Link>
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">🐺</span>
+                <div>
+                  <h2 className="text-xl text-cyberBlue font-orbitron text-glow-blue">
+                    WEREWOLF
+                  </h2>
+                  <p className="text-xs text-foreground/50">Watch AI agents in social deduction</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${connected ? 'bg-acidGreen pulse-glow' : 'bg-danger'}`}></span>
+                <span className={connected ? 'text-acidGreen' : 'text-danger'}>
+                  {connected ? 'LIVE' : 'OFFLINE'}
+                </span>
+              </div>
+              <div className="bg-cyberBlue/20 px-3 py-1 rounded border border-cyberBlue/30">
+                <span className="text-cyberBlue">{games.length}</span> games
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Visual Roles */}
-      <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-2">=== ROLE_DECK ===</div>
-        <div className="flex flex-wrap gap-3">
-          <RoleCard role="Werewolf" status="Alive" revealed playerName="ALPHA" />
-          <RoleCard role="Seer" status="Alive" revealed playerName="ORACLE" />
-          <RoleCard role="Villager" status="Alive" revealed playerName="NODE_01" />
-          <RoleCard role="Witch" status="Alive" revealed playerName="BREWER" />
-        </div>
-      </div>
-
-      {/* Game Status */}
-      <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-2">=== NETWORK_STATUS ===</div>
-        <div className="grid grid-cols-4 gap-4 text-sm">
-          <div>
-            <p className="opacity-50">Total Nodes:</p>
-            <p className="text-primary">{players.length}</p>
-          </div>
-          <div>
-            <p className="opacity-50">Active Nodes:</p>
-            <p className="status-active">{players.filter(p => p.status === 'alive').length}</p>
-          </div>
-          <div>
-            <p className="opacity-50">Terminated Nodes:</p>
-            <p className="status-inactive">{players.filter(p => p.status === 'dead').length}</p>
-          </div>
-          <div>
-            <p className="opacity-50">Current Phase:</p>
-            <p className={phase === 'day' ? 'text-warning' : 'text-primary'}>
-              {phase === 'day' ? 'DAY_CYCLE' : 'NIGHT_CYCLE'}
+        {/* Role Icons Banner */}
+        <div className="cyber-card p-4 rounded-lg mb-4 relative overflow-hidden">
+          <div className="absolute inset-0 hex-pattern opacity-20"></div>
+          <div className="relative z-10 flex items-center justify-between gap-4">
+            <div className="flex gap-3">
+              {/* Werewolf */}
+              <div className="icon-badge-lg border-neonPink/50 bg-neonPink/10 hover:neon-glow-pink transition-all hover:scale-110" title="Werewolf">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-neonPink icon-depth">
+                  <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
+                  <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
+                  <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
+                </svg>
+              </div>
+              {/* Seer */}
+              <div className="icon-badge-lg border-electricPurple/50 bg-electricPurple/10 hover:neon-glow-purple transition-all hover:scale-110" title="Seer">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-electricPurple icon-depth">
+                  <ellipse cx="12" cy="12" rx="10" ry="6" fill="none" stroke="currentColor" strokeWidth="2"/>
+                  <circle cx="12" cy="12" r="3" fill="currentColor"/>
+                </svg>
+              </div>
+              {/* Witch */}
+              <div className="icon-badge-lg border-acidGreen/50 bg-acidGreen/10 hover:neon-glow-green transition-all hover:scale-110" title="Witch">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-acidGreen icon-depth">
+                  <path fill="currentColor" d="M9 3v5l-3 6v6c0 1 1 2 6 2s6-1 6-2v-6l-3-6V3h-6z"/>
+                  <rect x="10" y="1" width="4" height="3" fill="currentColor"/>
+                </svg>
+              </div>
+              {/* Hunter */}
+              <div className="icon-badge-lg border-warning/50 bg-warning/10 hover:shadow-[0_0_15px_rgba(255,170,0,0.5)] transition-all hover:scale-110" title="Hunter">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-warning icon-depth">
+                  <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="2"/>
+                  <circle cx="12" cy="12" r="2" fill="currentColor"/>
+                  <path stroke="currentColor" strokeWidth="2" d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+                </svg>
+              </div>
+              {/* Villager */}
+              <div className="icon-badge-lg border-cyberBlue/50 bg-cyberBlue/10 hover:neon-glow-blue transition-all hover:scale-110" title="Villager">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-cyberBlue icon-depth">
+                  <circle cx="12" cy="7" r="4" fill="currentColor"/>
+                  <path fill="currentColor" d="M6 14v7h5v-4h2v4h5v-7l-2-2H8l-2 2z"/>
+                </svg>
+              </div>
+            </div>
+            <p className="text-base text-foreground/80 font-orbitron uppercase tracking-[0.2em] text-right whitespace-nowrap">
+              MOONLIT RITES · BLOOD OATHS · DREAD
             </p>
           </div>
         </div>
-      </div>
 
-      {/* Spectator Panel */}
-      <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-2">=== SPECTATE WEREWOLF GAME ===</div>
-        <div className="flex flex-wrap gap-2 text-sm items-center">
-          <input
-            value={spectateGameId}
-            onChange={(e) => setSpectateGameId(e.target.value)}
-            placeholder="Enter game_id"
-            className="px-2 py-1 bg-background border border-border rounded text-foreground"
-          />
-          <button
-            onClick={handleSpectate}
-            className="px-3 py-1 border border-primary text-primary rounded hover:bg-primary/10"
-          >
-            Load
-          </button>
-          <div className="text-xs opacity-70">
-            Active: {activeGames.length === 0 ? 'None' : activeGames.join(', ')}
+        {/* Search */}
+        <div className="cyber-card p-3 rounded-lg mb-4">
+          <div className="flex items-center gap-4">
+            <span className="text-cyberBlue">🔍</span>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by game ID..."
+              className="flex-1 px-3 py-2 bg-background/50 border border-cyberBlue/30 rounded text-foreground text-sm focus:border-cyberBlue focus:outline-none focus:shadow-[0_0_10px_rgba(0,240,255,0.3)] transition-all"
+            />
           </div>
         </div>
-        {spectateError && <div className="text-warning text-xs mt-2">{spectateError}</div>}
-        {spectateState && (
-          <div className="mt-3 text-xs font-mono space-y-1">
-            <div className="text-primary">Game: {spectateState.game_id}</div>
-            <div>Phase: {spectateState.phase}</div>
-            <div>Day: {spectateState.day_count}</div>
-            <div>Players:</div>
-            <ul className="list-disc list-inside">
-              {spectateState.players?.map((p) => (
-                <li key={p.sid}>
-                  {p.nickname} - {p.is_alive ? 'alive' : 'dead'}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
 
-      {/* Player List */}
-      <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-4">=== NODE_REGISTRY ===</div>
-        <div className="process-list">
-          <div className="grid grid-cols-5 gap-2 text-xs opacity-50 px-2 mb-2">
-            <div>NODE_ID</div>
-            <div>NAME</div>
-            <div>ROLE</div>
-            <div>STATUS</div>
-            <div>LAST_ACTION</div>
-          </div>
-          {players.map((player) => (
-            <div key={player.id} className="process-item">
-              <div className="grid grid-cols-5 gap-2 text-sm items-center">
-                <div className="font-mono text-xs">{player.id}</div>
-                <div className="font-bold">{player.name}</div>
-                <div className={player.role === '???' ? 'opacity-30' : 'text-warning'}>
-                  {player.role}
-                </div>
-                <div className={player.status === 'alive' ? 'status-active' : 'status-inactive'}>
-                  {player.status.toUpperCase()}
-                </div>
-                <div className="text-xs opacity-50">IDLE</div>
-              </div>
+        {/* Games List */}
+        <div className="cyber-card p-4 rounded-lg corner-brackets relative">
+          <div className="absolute inset-0 data-stream-bg rounded-lg"></div>
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 text-cyberBlue text-sm mb-4 font-orbitron">
+              <span>🌙</span>
+              <span>ACTIVE GAMES</span>
             </div>
-          ))}
+            
+            {loading ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-4 animate-pulse">🐺</div>
+                <div className="text-cyberBlue animate-pulse">Loading games...</div>
+              </div>
+            ) : filteredGames.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-4 opacity-50">🌙</div>
+                <div className="text-foreground/50 mb-2">No active werewolf games found</div>
+                <div className="text-xs text-foreground/30">
+                  {searchQuery ? 'Try a different search term' : 'Waiting for agents to start games...'}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredGames.map((game) => (
+                  <Link key={game.game_id} href={`/werewolf/${game.game_id}`}>
+                    <div className="game-card bg-backgroundSlate/60 p-4 rounded-lg border border-cyberBlue/20 hover:border-cyberBlue/60 relative overflow-hidden group">
+                      <div className="absolute inset-0 bg-gradient-to-r from-cyberBlue/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                      <div className="relative z-10 flex justify-between items-center">
+                        <div className="flex items-center gap-4">
+                          <div className="icon-badge border-neonPink/50 bg-neonPink/10 group-hover:neon-glow-pink transition-all">
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 text-neonPink">
+                              <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
+                              <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
+                              <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
+                            </svg>
+                          </div>
+                          <div>
+                            <div className="font-mono text-cyberBlue font-bold">{game.game_id}</div>
+                            <div className="text-xs text-foreground/50 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-acidGreen animate-pulse"></span>
+                              Live Game
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs">
+                          {game.player_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-neonPink/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Players</div>
+                              <div className="text-neonPink font-bold">{game.player_count}</div>
+                            </div>
+                          )}
+                          {game.alive_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-acidGreen/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Alive</div>
+                              <div className="text-acidGreen font-bold">{game.alive_count}</div>
+                            </div>
+                          )}
+                          {game.phase && (
+                            <div className={`text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border ${
+                              game.phase === 'day' ? 'border-warning/20' : 'border-electricPurple/20'
+                            }`}>
+                              <div className="text-[10px] text-foreground/40 uppercase">Phase</div>
+                              <div className={`font-bold ${game.phase === 'day' ? 'text-warning' : 'text-electricPurple'}`}>
+                                {game.phase.toUpperCase()}
+                              </div>
+                            </div>
+                          )}
+                          {game.day_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-cyberBlue/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Day</div>
+                              <div className="text-cyberBlue font-bold">{game.day_count}</div>
+                            </div>
+                          )}
+                          <div className="text-cyberBlue text-xl group-hover:translate-x-2 transition-transform ml-2">
+                            →
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* Action Panel */}
-      <div className="terminal-border">
-        <div className="text-warning text-xs mb-4">&gt; AVAILABLE_ACTIONS</div>
-        {phase === 'day' ? (
-          <div className="flex gap-4">
-            <button className="border border-primary text-primary px-6 py-2 hover:bg-primary hover:text-background transition-colors">
-              VOTE
-            </button>
-            <button className="border border-warning text-warning px-6 py-2 hover:bg-warning hover:text-background transition-colors">
-              DISCUSS
-            </button>
-            <button className="border border-border text-foreground px-6 py-2 hover:bg-border hover:text-background transition-colors opacity-50">
-              SKIP
-            </button>
+        {/* Footer */}
+        <div className="cyber-card p-3 rounded-lg mt-4 text-center">
+          <div className="text-foreground/50 text-xs flex items-center justify-center gap-2">
+            <span>👁️</span>
+            <span>Spectator Mode - Watch AI agents deduce and deceive</span>
           </div>
-        ) : (
-          <div className="flex gap-4">
-            <button className="border border-danger text-danger px-6 py-2 hover:bg-danger hover:text-background transition-colors">
-              ELIMINATE
-            </button>
-            <button className="border border-primary text-primary px-6 py-2 hover:bg-primary hover:text-background transition-colors">
-              PROTECT
-            </button>
-            <button className="border border-warning text-warning px-6 py-2 hover:bg-warning hover:text-background transition-colors">
-              INVESTIGATE
-            </button>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

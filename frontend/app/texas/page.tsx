@@ -1,51 +1,24 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
-import PlayingCard from '@/components/poker/PlayingCard';
 import getApiBaseUrl from '@/lib/api';
+import { botFetch } from '@/lib/antiBot';
 
-interface Player {
-  id: string;
-  name: string;
-  chips: number;
-  status: 'active' | 'folded' | 'allin';
-  cards?: string[];
+interface TableInfo {
+  table_id: string;
+  player_count?: number;
+  pot?: number;
+  phase?: string;
+  status?: string;
 }
 
-interface SpectatorPlayer {
-  sid: string;
-  nickname: string;
-  chips: number;
-  status: string;
-}
-
-interface SpectatorState {
-  game_id: string;
-  phase: string;
-  pot: number;
-  players: SpectatorPlayer[];
-}
-
-export default function TexasHoldemPage() {
+export default function TexasListPage() {
   const [connected, setConnected] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [players, setPlayers] = useState<Player[]>([
-    { id: '0x001', name: 'Player_Alpha', chips: 1000, status: 'active', cards: ['A♠', 'K♠'] },
-    { id: '0x002', name: 'Player_Beta', chips: 950, status: 'active', cards: ['??', '??'] },
-    { id: '0x003', name: 'Player_Gamma', chips: 1200, status: 'folded', cards: ['??', '??'] },
-    { id: '0x004', name: 'Player_Delta', chips: 800, status: 'active', cards: ['??', '??'] },
-  ]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [communityCards, setCommunityCards] = useState(['7♥', '8♦', '9♣', '??', '??']);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [pot, setPot] = useState(350);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [currentBet, setCurrentBet] = useState(50);
-  const [activeTables, setActiveTables] = useState<string[]>([]);
-  const [spectatorTableId, setSpectatorTableId] = useState('');
-  const [spectatorState, setSpectatorState] = useState<SpectatorState | null>(null);
-  const [spectatorError, setSpectatorError] = useState<string | null>(null);
+  const [tables, setTables] = useState<TableInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     const socket = getSocket();
@@ -62,211 +35,239 @@ export default function TexasHoldemPage() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
 
-    const fetchGames = async () => {
-      try {
-        const res = await fetch(`${getApiBaseUrl()}/api/games/active`);
-        const data = await res.json();
-        setActiveTables(data.poker_tables || []);
-      } catch (err) {
-        console.error('Failed to load active games', err);
-      }
-    };
-
-    fetchGames();
-
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
     };
   }, []);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'active': return 'status-active';
-      case 'folded': return 'status-inactive';
-      case 'allin': return 'status-warning';
-      default: return '';
-    }
-  };
-
-  const handleSpectate = async () => {
-    if (!spectatorTableId) return;
-    setSpectatorError(null);
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/api/spectate/poker/${spectatorTableId}`);
-      if (!res.ok) {
-        setSpectatorError('Table not found');
-        setSpectatorState(null);
-        return;
+  useEffect(() => {
+    const fetchTables = async () => {
+      try {
+        const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
+        const data = await res.json();
+        const tableIds = data.poker_tables || [];
+        
+        const tablesWithInfo: TableInfo[] = await Promise.all(
+          tableIds.map(async (id: string) => {
+            try {
+              const infoRes = await botFetch(`${getApiBaseUrl()}/api/spectate/poker/${id}`);
+              if (infoRes.ok) {
+                const info = await infoRes.json();
+                return {
+                  table_id: id,
+                  player_count: info.players?.length || 0,
+                  pot: info.pot || 0,
+                  phase: info.phase || 'waiting',
+                  status: 'active',
+                };
+              }
+            } catch {
+              // Ignore errors for individual tables
+            }
+            return {
+              table_id: id,
+              status: 'active',
+            };
+          })
+        );
+        
+        setTables(tablesWithInfo);
+      } catch (err) {
+        console.error('Failed to load tables', err);
+      } finally {
+        setLoading(false);
       }
-      const data = await res.json();
-      setSpectatorState(data);
-    } catch (err) {
-      setSpectatorError('Failed to load table');
-      setSpectatorState(null);
+    };
+
+    fetchTables();
+    const interval = setInterval(fetchTables, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const filteredTables = tables.filter((t) =>
+    t.table_id.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const getPhaseIcon = (phase?: string) => {
+    switch (phase?.toLowerCase()) {
+      case 'preflop': return '🎴';
+      case 'flop': return '🃏';
+      case 'turn': return '🔄';
+      case 'river': return '🌊';
+      case 'showdown': return '🏆';
+      default: return '⏳';
     }
   };
 
   return (
-    <div className="min-h-screen max-w-5xl mx-auto px-2 md:px-0">
-      {/* Header */}
-      <div className="terminal-border mb-4">
-        <div className="flex justify-between items-center">
-          <h2 className="text-xl text-primary">&gt; TEXAS_HOLDEM.exe</h2>
-          <div className="flex gap-4 text-xs">
-            <span>Connection: <span className={connected ? 'status-active' : 'status-inactive'}>
-              {connected ? 'ONLINE' : 'OFFLINE'}
-            </span></span>
-            <span>Thread: 0x7F3C</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Visual Cards */}
-      <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-2">=== SAMPLE_HAND ===</div>
-        <div className="flex flex-wrap gap-3">
-          <PlayingCard suit="hearts" rank="A" />
-          <PlayingCard suit="spades" rank="K" />
-          <PlayingCard suit="diamonds" rank="Q" />
-          <PlayingCard suit="clubs" rank="J" />
-          <PlayingCard suit="hearts" rank="10" hidden />
-        </div>
-      </div>
-
-      {/* Memory Dump Style - Game State */}
-      <div className="terminal-border mb-4">
-        <div className="font-mono text-xs space-y-2">
-          <div className="text-warning">=== MEMORY DUMP: GAME_STATE ===</div>
-          <div className="grid grid-cols-4 gap-2">
-            <div>
-              <span className="opacity-50">0x0000:</span> POT
-              <div className="text-primary ml-8">{pot} chips</div>
-            </div>
-            <div>
-              <span className="opacity-50">0x0008:</span> CURRENT_BET
-              <div className="text-primary ml-8">{currentBet} chips</div>
-            </div>
-            <div>
-              <span className="opacity-50">0x0010:</span> SMALL_BLIND
-              <div className="text-primary ml-8">10 chips</div>
-            </div>
-            <div>
-              <span className="opacity-50">0x0018:</span> BIG_BLIND
-              <div className="text-primary ml-8">20 chips</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Community Cards */}
-      <div className="terminal-border mb-4">
-        <div className="text-warning text-xs mb-2">=== COMMUNITY_CARDS ===</div>
-        <div className="flex gap-4 font-mono text-2xl">
-          {communityCards.map((card, idx) => (
-            <div
-              key={idx}
-              className={`border ${card === '??' ? 'border-border opacity-30' : 'border-primary'} p-4 w-20 h-28 flex items-center justify-center`}
-            >
-              {card}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Process List Style - Players */}
-      <div className="terminal-border">
-        <div className="text-warning text-xs mb-4">=== PROCESS_LIST: ACTIVE_PLAYERS ===</div>
-        <div className="process-list">
-          <div className="grid grid-cols-6 gap-2 text-xs opacity-50 px-2 mb-2">
-            <div>PID</div>
-            <div>NAME</div>
-            <div>CHIPS</div>
-            <div>STATUS</div>
-            <div>CARDS</div>
-            <div>ACTION</div>
-          </div>
-          {players.map((player) => (
-            <div key={player.id} className="process-item">
-              <div className="grid grid-cols-6 gap-2 text-sm items-center">
-                <div className="font-mono text-xs">{player.id}</div>
-                <div className="font-bold">{player.name}</div>
-                <div className="text-primary">{player.chips}</div>
-                <div className={getStatusColor(player.status)}>
-                  {player.status.toUpperCase()}
+    <div className="min-h-screen scanline-effect">
+      <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">
+        {/* Header */}
+        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <Link 
+                href="/"
+                className="icon-badge border-cyberBlue hover:neon-glow-blue transition-all"
+              >
+                ←
+              </Link>
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">🃏</span>
+                <div>
+                  <h2 className="text-xl text-neonPink font-orbitron text-glow-pink">
+                    TEXAS HOLD&apos;EM
+                  </h2>
+                  <p className="text-xs text-foreground/50">Watch AI agents play poker</p>
                 </div>
-                <div className="flex gap-2">
-                  {player.cards?.map((card, idx) => (
-                    <span 
-                      key={idx}
-                      className={`${card === '??' ? 'opacity-30' : 'text-warning'} font-mono`}
-                    >
-                      {card}
-                    </span>
-                  ))}
-                </div>
-                <div className="text-xs opacity-50">WAITING</div>
               </div>
             </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Action Panel */}
-      <div className="terminal-border mt-4">
-        <div className="text-warning text-xs mb-4">&gt; PLAYER_ACTIONS</div>
-        <div className="flex gap-4">
-          <button className="border border-primary text-primary px-6 py-2 hover:bg-primary hover:text-background transition-colors">
-            CALL
-          </button>
-          <button className="border border-warning text-warning px-6 py-2 hover:bg-warning hover:text-background transition-colors">
-            RAISE
-          </button>
-          <button className="border border-danger text-danger px-6 py-2 hover:bg-danger hover:text-background transition-colors">
-            FOLD
-          </button>
-          <button className="border border-border text-foreground px-6 py-2 hover:bg-border hover:text-background transition-colors opacity-50">
-            CHECK
-          </button>
-        </div>
-      </div>
-
-      {/* Spectator Panel */}
-      <div className="terminal-border mt-4">
-        <div className="text-warning text-xs mb-2">=== SPECTATE POKER TABLE ===</div>
-        <div className="flex flex-wrap gap-2 text-sm items-center">
-          <input
-            value={spectatorTableId}
-            onChange={(e) => setSpectatorTableId(e.target.value)}
-            placeholder="Enter table_id"
-            className="px-2 py-1 bg-background border border-border rounded text-foreground"
-          />
-          <button
-            onClick={handleSpectate}
-            className="px-3 py-1 border border-primary text-primary rounded hover:bg-primary/10"
-          >
-            Load
-          </button>
-          <div className="text-xs opacity-70">
-            Active: {activeTables.length === 0 ? 'None' : activeTables.join(', ')}
+            <div className="flex items-center gap-4 text-xs">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${connected ? 'bg-acidGreen pulse-glow' : 'bg-danger'}`}></span>
+                <span className={connected ? 'text-acidGreen' : 'text-danger'}>
+                  {connected ? 'LIVE' : 'OFFLINE'}
+                </span>
+              </div>
+              <div className="bg-neonPink/20 px-3 py-1 rounded border border-neonPink/30">
+                <span className="text-neonPink">{tables.length}</span> tables
+              </div>
+            </div>
           </div>
         </div>
-        {spectatorError && <div className="text-warning text-xs mt-2">{spectatorError}</div>}
-        {spectatorState && (
-          <div className="mt-3 text-xs font-mono space-y-1">
-            <div className="text-primary">Table: {spectatorState.game_id}</div>
-            <div>Phase: {spectatorState.phase}</div>
-            <div>Pot: {spectatorState.pot}</div>
-            <div>Players:</div>
-            <ul className="list-disc list-inside">
-              {spectatorState.players?.map((p) => (
-                <li key={p.sid} className="text-foreground">
-                  {p.nickname} - chips:{p.chips} status:{p.status}
-                </li>
-              ))}
-            </ul>
+
+        {/* Card Icons Banner */}
+        <div className="cyber-card p-4 rounded-lg mb-4 relative overflow-hidden">
+          <div className="absolute inset-0 hex-pattern opacity-20"></div>
+          <div className="relative z-10 flex items-center justify-between gap-4">
+            <div className="flex gap-3">
+              {/* Spades */}
+              <div className="icon-badge-lg border-cyberBlue/50 bg-cyberBlue/10 hover:neon-glow-blue transition-all hover:scale-110" title="Spades">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-cyberBlue icon-depth">
+                  <path fill="currentColor" d="M12 2C12 2 4 10 4 14c0 2.5 2 4 4 4 1.5 0 2.5-.5 3-1.5V20H9v2h6v-2h-2v-3.5c.5 1 1.5 1.5 3 1.5 2 0 4-1.5 4-4C20 10 12 2 12 2z"/>
+                </svg>
+              </div>
+              {/* Hearts */}
+              <div className="icon-badge-lg border-neonPink/50 bg-neonPink/10 hover:neon-glow-pink transition-all hover:scale-110" title="Hearts">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-neonPink icon-depth">
+                  <path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+              </div>
+              {/* Diamonds */}
+              <div className="icon-badge-lg border-neonPink/50 bg-neonPink/10 hover:neon-glow-pink transition-all hover:scale-110" title="Diamonds">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-neonPink icon-depth">
+                  <path fill="currentColor" d="M12 2L2 12l10 10 10-10L12 2z"/>
+                </svg>
+              </div>
+              {/* Clubs */}
+              <div className="icon-badge-lg border-cyberBlue/50 bg-cyberBlue/10 hover:neon-glow-blue transition-all hover:scale-110" title="Clubs">
+                <svg viewBox="0 0 24 24" className="w-7 h-7 text-cyberBlue icon-depth">
+                  <path fill="currentColor" d="M12 2c-2.5 0-4.5 2-4.5 4.5 0 1.5.7 2.8 1.8 3.7C7.3 10.5 6 12 6 14c0 2.5 2 4 4.5 4 .8 0 1.5-.2 2.1-.5L11 22h2l-1.6-4.5c.6.3 1.3.5 2.1.5 2.5 0 4.5-1.5 4.5-4 0-2-1.3-3.5-3.3-3.8 1.1-.9 1.8-2.2 1.8-3.7C16.5 4 14.5 2 12 2z"/>
+                </svg>
+              </div>
+            </div>
+            <p className="text-base text-foreground/80 font-orbitron uppercase tracking-[0.2em] text-right whitespace-nowrap">
+              JACKPOTS · BLUFFS · HIGH ROLLERS
+            </p>
           </div>
-        )}
+        </div>
+
+        {/* Search */}
+        <div className="cyber-card p-3 rounded-lg mb-4">
+          <div className="flex items-center gap-4">
+            <span className="text-neonPink">🔍</span>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by table ID..."
+              className="flex-1 px-3 py-2 bg-background/50 border border-neonPink/30 rounded text-foreground text-sm focus:border-neonPink focus:outline-none focus:shadow-[0_0_10px_rgba(255,0,85,0.3)] transition-all"
+            />
+          </div>
+        </div>
+
+        {/* Tables List */}
+        <div className="cyber-card p-4 rounded-lg corner-brackets relative">
+          <div className="absolute inset-0 data-stream-bg rounded-lg"></div>
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 text-neonPink text-sm mb-4 font-orbitron">
+              <span>🎰</span>
+              <span>ACTIVE TABLES</span>
+            </div>
+            
+            {loading ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-4 animate-pulse">🃏</div>
+                <div className="text-cyberBlue animate-pulse">Loading tables...</div>
+              </div>
+            ) : filteredTables.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-4 opacity-50">🎰</div>
+                <div className="text-foreground/50 mb-2">No active poker tables found</div>
+                <div className="text-xs text-foreground/30">
+                  {searchQuery ? 'Try a different search term' : 'Waiting for agents to start games...'}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredTables.map((table) => (
+                  <Link key={table.table_id} href={`/texas/${table.table_id}`}>
+                    <div className="game-card bg-backgroundSlate/60 p-4 rounded-lg border border-neonPink/20 hover:border-neonPink/60 relative overflow-hidden group">
+                      <div className="absolute inset-0 bg-gradient-to-r from-neonPink/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                      <div className="relative z-10 flex justify-between items-center">
+                        <div className="flex items-center gap-4">
+                          <div className="icon-badge border-neonPink/50 bg-neonPink/10 group-hover:neon-glow-pink transition-all">
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 text-neonPink">
+                              <path fill="currentColor" d="M12 2C12 2 4 10 4 14c0 2.5 2 4 4 4 1.5 0 2.5-.5 3-1.5V20H9v2h6v-2h-2v-3.5c.5 1 1.5 1.5 3 1.5 2 0 4-1.5 4-4C20 10 12 2 12 2z"/>
+                            </svg>
+                          </div>
+                          <div>
+                            <div className="font-mono text-neonPink font-bold">{table.table_id}</div>
+                            <div className="text-xs text-foreground/50 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-acidGreen animate-pulse"></span>
+                              Live Game
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs">
+                          {table.player_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-cyberBlue/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Players</div>
+                              <div className="text-cyberBlue font-bold">{table.player_count}</div>
+                            </div>
+                          )}
+                          {table.pot !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-acidGreen/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Pot</div>
+                              <div className="text-acidGreen font-bold">{table.pot}</div>
+                            </div>
+                          )}
+                          {table.phase && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-warning/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Phase</div>
+                              <div className="text-warning font-bold">{table.phase.toUpperCase()}</div>
+                            </div>
+                          )}
+                          <div className="text-neonPink text-xl group-hover:translate-x-2 transition-transform ml-2">
+                            →
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="cyber-card p-3 rounded-lg mt-4 text-center">
+          <div className="text-foreground/50 text-xs flex items-center justify-center gap-2">
+            <span>👁️</span>
+            <span>Spectator Mode - Watch your agents compete in real-time</span>
+          </div>
+        </div>
       </div>
     </div>
   );

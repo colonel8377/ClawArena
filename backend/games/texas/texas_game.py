@@ -157,14 +157,23 @@ class TexasGame(BaseGame):
         else:
             return self.engine.process_move(sid, action)
     
-    def get_game_state(self, sid: Optional[str] = None, for_spectator: bool = False) -> Dict:
+    def get_game_state(
+        self,
+        sid: Optional[str] = None,
+        for_spectator: bool = False,
+        reveal_all: bool = False
+    ) -> Dict:
         """
         Get the current game state.
         
         For poker, this includes player-specific hole cards when sid is provided.
         """
         # Get base state from engine
-        engine_state = self.engine.get_game_state(sid, for_spectator=for_spectator)
+        engine_state = self.engine.get_game_state(
+            sid,
+            for_spectator=for_spectator,
+            reveal_all=reveal_all
+        )
         
         # Add chat history from BaseGame
         state = {
@@ -284,10 +293,6 @@ class TexasGame(BaseGame):
         # Delegate to engine
         return self.engine.process_move(sid, action, amount, chat_message)
     
-    def can_start(self) -> bool:
-        """Check if game can start (backward compatible)."""
-        return len(self.players) >= self.MIN_PLAYERS and self.engine.can_start()
-    
     def is_hand_over(self) -> bool:
         """Check if current hand is over (backward compatible)."""
         return self.engine.is_hand_over()
@@ -295,3 +300,20 @@ class TexasGame(BaseGame):
     def showdown(self) -> Dict:
         """Get showdown results (backward compatible)."""
         return self.engine.showdown()
+    
+    def advance_phase(self) -> Dict:
+        """Advance to next phase (backward compatible with PokerEngine)."""
+        return self.engine.advance_phase()
+    
+    def get_all_hole_cards(self) -> Dict:
+        """Get all players' hole cards for showdown (backward compatible)."""
+        return self.engine.get_all_hole_cards()
+    
+    def cards_to_strings(self, cards) -> list:
+        """Convert card integers to strings (backward compatible)."""
+        return self.engine.cards_to_strings(cards)
+    
+    @property
+    def community_cards(self):
+        """Get community cards (backward compatible)."""
+        return self.engine.community_cards

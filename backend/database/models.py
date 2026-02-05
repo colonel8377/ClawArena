@@ -5,17 +5,23 @@ This module defines the database schema for:
 - User ledger with off-chain balances and nonces
 - Game sessions with state snapshots
 - Game players with zombie tracking
+- Chat messages for game communication
 - Game history for analytics
+- Transaction log for auditing
+
+Design Principles:
+- NO foreign keys for production (better performance, easier scaling)
+- Application-level referential integrity
+- Proper indexes for query optimization
 """
 
 from datetime import datetime, timezone
 from decimal import Decimal
 from sqlalchemy import (
-    Column, Integer, String, DECIMAL, DateTime, Boolean, 
-    Text, ForeignKey, Index, JSON, func
+    Column, BigInteger, Integer, String, DECIMAL, DateTime, Boolean, 
+    Text, Index, JSON, func
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
 import enum
 
 Base = declarative_base()
@@ -36,6 +42,16 @@ class GameStatus(enum.Enum):
     ABORTED = "aborted"
 
 
+class TransactionType(enum.Enum):
+    """Transaction types for audit log."""
+    DEPOSIT = "deposit"
+    WITHDRAW = "withdraw"
+    GAME_ENTRY = "game_entry"
+    GAME_WIN = "game_win"
+    GAME_REFUND = "game_refund"
+    DAILY_REWARD = "daily_reward"
+
+
 class UserLedger(Base):
     """
     User ledger table (primary user account).
@@ -45,7 +61,7 @@ class UserLedger(Base):
     """
     __tablename__ = 'user_ledger'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     wallet_address = Column(String(42), unique=True, nullable=False, index=True)
     offchain_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     locked_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))  # For in-game funds
@@ -55,11 +71,12 @@ class UserLedger(Base):
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     
-    # Relationships
-    game_players = relationship("GamePlayer", back_populates="user")
-    
     def __repr__(self):
         return f"<UserLedger(wallet_address='{self.wallet_address}', balance={self.offchain_balance}, locked={self.locked_balance})>"
+    
+    def get_available_balance(self) -> Decimal:
+        """Get balance available for withdrawal or game entry."""
+        return self.offchain_balance - self.locked_balance
 
 
 class GameSession(Base):
@@ -71,24 +88,21 @@ class GameSession(Base):
     __tablename__ = 'game_sessions'
     
     id = Column(String(64), primary_key=True)  # UUID or custom game ID
-    game_type = Column(String(50), nullable=False, index=True)  # 'werewolf'
+    game_type = Column(String(50), nullable=False, index=True)  # 'werewolf', 'texas_holdem'
     status = Column(String(20), nullable=False, default=GameStatus.WAITING.value, index=True)
     winner_team = Column(String(50), nullable=True)  # 'wolf', 'villager', or NULL
     entry_fee = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     prize_pool = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     player_count = Column(Integer, nullable=False, default=0)
     state_snapshot = Column(JSON, nullable=True)  # Full game state for recovery
-    chat_history = Column(JSON, nullable=True)  # Chat messages for reconnection
-    current_phase = Column(String(20), nullable=True)  # Current game phase
+    chat_history = Column(JSON, nullable=True)  # Chat messages for reconnection (legacy)
+    current_phase = Column(String(50), nullable=True)  # Current game phase
     day_count = Column(Integer, nullable=False, default=0)
+    config = Column(JSON, nullable=True)  # Game configuration
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
-    
-    # Relationships
-    players = relationship("GamePlayer", back_populates="game_session", cascade="all, delete-orphan")
-    chat_messages = relationship("ChatMessage", back_populates="game_session", cascade="all, delete-orphan")
     
     # Indexes
     __table_args__ = (
@@ -104,33 +118,32 @@ class GamePlayer(Base):
     Game player table.
     
     Tracks player participation in games with zombie handling.
+    No foreign keys - application handles referential integrity.
     """
     __tablename__ = 'game_players'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_session_id = Column(String(64), ForeignKey('game_sessions.id'), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey('user_ledger.id'), nullable=False, index=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    game_session_id = Column(String(64), nullable=False, index=True)  # Reference to game_sessions.id
+    user_id = Column(BigInteger, nullable=False, index=True)  # Reference to user_ledger.id
     wallet_address = Column(String(42), nullable=False, index=True)
     socket_sid = Column(String(64), nullable=True)  # Current socket session ID
     nickname = Column(String(50), nullable=False, default="Player")
-    role = Column(String(20), nullable=True)  # wolf, seer, witch, hunter, villager
+    role = Column(String(30), nullable=True)  # wolf, seer, witch, hunter, villager
     team = Column(String(20), nullable=True)  # wolf, villager
     status = Column(String(20), nullable=False, default=PlayerStatus.ALIVE.value)
     is_alive = Column(Boolean, nullable=False, default=True)
     consecutive_timeouts = Column(Integer, nullable=False, default=0)  # For zombie detection
     entry_paid = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     winnings = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
+    seat_position = Column(Integer, nullable=True)  # Seat position at table
     joined_at = Column(DateTime, nullable=False, server_default=func.now())
     last_action_at = Column(DateTime, nullable=True)
-    
-    # Relationships
-    game_session = relationship("GameSession", back_populates="players")
-    user = relationship("UserLedger", back_populates="game_players")
     
     # Indexes
     __table_args__ = (
         Index('idx_game_players_session_wallet', 'game_session_id', 'wallet_address'),
         Index('idx_game_players_socket', 'socket_sid'),
+        Index('idx_game_players_session_status', 'game_session_id', 'status'),
     )
     
     def __repr__(self):
@@ -157,6 +170,34 @@ class GamePlayer(Base):
             self.mark_zombie()
 
 
+class ChatMessage(Base):
+    """
+    Chat message table.
+    
+    Stores all chat messages for games with persistence across sessions.
+    No foreign keys - application handles referential integrity.
+    """
+    __tablename__ = 'chat_messages'
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    game_session_id = Column(String(64), nullable=False, index=True)  # Reference to game_sessions.id
+    game_type = Column(String(50), nullable=False, default="unknown", index=True)  # 'werewolf', 'texas', etc.
+    player_wallet = Column(String(42), nullable=False, index=True)  # Player who sent the message
+    nickname = Column(String(50), nullable=False, default="Player")
+    message = Column(Text, nullable=False)
+    message_type = Column(String(20), nullable=False, default='chat')  # 'chat', 'action', 'system', 'bluff'
+    message_metadata = Column(JSON, nullable=True)  # Additional message metadata
+    created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_chat_messages_game_time', 'game_session_id', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<ChatMessage(game='{self.game_session_id}', player='{self.nickname}', type='{self.message_type}')>"
+
+
 class GameHistory(Base):
     """
     Game history table.
@@ -165,8 +206,8 @@ class GameHistory(Base):
     """
     __tablename__ = 'game_history'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_session_id = Column(String(64), nullable=True, index=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    game_session_id = Column(String(64), nullable=True, index=True)  # Reference to game_sessions.id
     game_type = Column(String(50), nullable=False, index=True)  # 'werewolf', 'texas_holdem', etc.
     winner_wallet = Column(String(42), nullable=True, index=True)  # NULL for draws or no winner
     winner_team = Column(String(20), nullable=True)  # wolf, villager
@@ -174,39 +215,39 @@ class GameHistory(Base):
     player_count = Column(Integer, nullable=True)
     duration_seconds = Column(Integer, nullable=True)
     was_aborted = Column(Boolean, nullable=False, default=False)
-    timestamp = Column(DateTime, nullable=False, server_default=func.now(), index=True)
+    result_data = Column(JSON, nullable=True)  # Detailed game result data
+    created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
     def __repr__(self):
         return f"<GameHistory(game_type='{self.game_type}', winner='{self.winner_wallet}')>"
 
 
-class ChatMessage(Base):
+class TransactionLog(Base):
     """
-    Chat message table.
+    Transaction audit log.
     
-    Stores all chat messages for games with persistence across sessions.
+    Records all balance changes for auditing and dispute resolution.
     """
-    __tablename__ = 'chat_messages'
+    __tablename__ = 'transaction_log'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_session_id = Column(String(64), ForeignKey('game_sessions.id'), nullable=False, index=True)
-    player_wallet = Column(String(42), nullable=False, index=True)  # Player who sent the message
-    nickname = Column(String(50), nullable=False, default="Player")
-    message = Column(Text, nullable=False)
-    message_type = Column(String(20), nullable=False, default='chat')  # 'chat', 'action', 'system'
-    message_metadata = Column(JSON, nullable=True)  # Additional message metadata (renamed to avoid SQLAlchemy conflict)
-    timestamp = Column(DateTime, nullable=False, server_default=func.now(), index=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False, index=True)  # Reference to user_ledger.id
+    wallet_address = Column(String(42), nullable=False, index=True)
+    tx_type = Column(String(30), nullable=False, index=True)  # Transaction type
+    amount = Column(DECIMAL(36, 18), nullable=False)
+    balance_before = Column(DECIMAL(36, 18), nullable=False)
+    balance_after = Column(DECIMAL(36, 18), nullable=False)
+    game_session_id = Column(String(64), nullable=True, index=True)  # Related game if applicable
+    tx_hash = Column(String(66), nullable=True)  # On-chain tx hash if applicable
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
-    # Relationships
-    game_session = relationship("GameSession", back_populates="chat_messages")
-    
-    # Indexes
     __table_args__ = (
-        Index('idx_chat_messages_game_time', 'game_session_id', 'timestamp'),
+        Index('uk_transaction_log_tx_hash', 'tx_hash', unique=True),
     )
     
     def __repr__(self):
-        return f"<ChatMessage(game='{self.game_session_id}', player='{self.nickname}', type='{self.message_type}')>"
+        return f"<TransactionLog(wallet='{self.wallet_address}', type='{self.tx_type}', amount={self.amount})>"
 
 
 # Legacy User model for backwards compatibility
@@ -218,7 +259,7 @@ class User(Base):
     """
     __tablename__ = 'users'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     wallet_address = Column(String(42), unique=True, nullable=False, index=True)
     balance = Column(DECIMAL(20, 8), nullable=False, default=0)  # Virtual balance
     last_login_date = Column(DateTime, nullable=True)  # UTC timestamp
@@ -226,3 +267,46 @@ class User(Base):
     
     def __repr__(self):
         return f"<User(wallet_address='{self.wallet_address}', balance={self.balance})>"
+
+
+# ============================================================================
+# Helper functions for application-level referential integrity
+# ============================================================================
+
+def get_game_players_by_session(db_session, game_session_id: str):
+    """
+    Get all players for a game session.
+    
+    Application-level join since we don't have FK.
+    """
+    return db_session.query(GamePlayer).filter(
+        GamePlayer.game_session_id == game_session_id
+    ).all()
+
+
+def get_chat_messages_by_session(
+    db_session, 
+    game_session_id: str, 
+    limit: int = 100,
+    game_type: str = None
+):
+    """
+    Get chat messages for a game session.
+    
+    Application-level join since we don't have FK.
+    """
+    query = db_session.query(ChatMessage).filter(
+        ChatMessage.game_session_id == game_session_id
+    )
+    if game_type:
+        query = query.filter(ChatMessage.game_type == game_type)
+    return query.order_by(ChatMessage.created_at.desc()).limit(limit).all()
+
+
+def get_user_by_wallet(db_session, wallet_address: str):
+    """
+    Get user ledger by wallet address.
+    """
+    return db_session.query(UserLedger).filter(
+        UserLedger.wallet_address == wallet_address
+    ).first()

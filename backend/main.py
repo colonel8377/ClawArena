@@ -20,6 +20,7 @@ from typing import Dict, Optional
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -41,11 +42,23 @@ from games.texas import TexasGame, TexasEngine, create_poker_game, create_texas_
 from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
 from database.redis_manager import redis_manager
+from database.persistence_manager import persistence_manager
 from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
-from games.werewolf.werewolf_game import WerewolfGame
+from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase, PHASE_TIMEOUT_SECONDS
 from games.werewolf.matchmaker import WerewolfMatchmaker
 from indexer.worker import deposit_worker
 from decimal import Decimal
+from anti_bot import (
+    BotChallengeRequest,
+    BotVerifyRequest,
+    issue_challenge,
+    verify_challenge,
+    verify_request_bot_token,
+    verify_socket_auth,
+)
+
+# Werewolf game timeout check interval (seconds)
+WEREWOLF_TIMEOUT_CHECK_INTERVAL = 5
 
 
 # ============================================================================
@@ -74,11 +87,12 @@ server_account = Account.from_key(SERVER_PRIVATE_KEY)
 limiter = Limiter(key_func=get_remote_address)
 
 # Create Socket.IO server with proper configuration
+socketio_origins = '*' if '*' in ALLOWED_ORIGINS else ALLOWED_ORIGINS
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins=ALLOWED_ORIGINS,
+    cors_allowed_origins=socketio_origins,
     logger=True,
-    engineio_logger=False,
+    engineio_logger=True,  # Enable Engine.IO logging to debug WebSocket messages
     ping_timeout=60,
     ping_interval=25
 )
@@ -93,6 +107,23 @@ app = FastAPI(
 # Add rate limiter to app
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Anti-bot middleware
+@app.middleware("http")
+async def bot_protection_middleware(request: Request, call_next):
+    allowed, reason, risk = await verify_request_bot_token(request)
+    if not allowed:
+        status = 429 if reason == "risk_blocked" else 403
+        return JSONResponse(
+            status_code=status,
+            content={
+                "error": "bot_protection",
+                "code": reason,
+                "challenge_required": reason in {"challenge_required", "invalid_token", "token_mismatch"},
+                "risk": risk,
+            },
+        )
+    return await call_next(request)
 
 # CORS middleware with configurable origins
 app.add_middleware(
@@ -160,25 +191,209 @@ async def startup_event():
     
     # Restore persisted games from Redis
     try:
-        persisted_game_ids = await redis_manager.list_persisted_games()
-        if persisted_game_ids:
-            print(f"Found {len(persisted_game_ids)} persisted games")
-            # Note: Full game restoration requires implementing from_dict method
-            # For now, we just log the persisted games and clear old state
-            for game_id in persisted_game_ids:
+        # Check new optimized storage first
+        active_game_ids = await redis_manager.list_active_games()
+        legacy_game_ids = await redis_manager.list_persisted_games()
+        
+        all_game_ids = set(active_game_ids + legacy_game_ids)
+        
+        if all_game_ids:
+            print(f"Found {len(all_game_ids)} persisted games")
+            restored_count = 0
+            
+            for game_id in all_game_ids:
                 try:
-                    state_with_meta = await redis_manager.restore_game_state(game_id)
-                    if state_with_meta:
-                        # Clean up old persisted states
-                        # TODO: Implement WerewolfGame.from_dict for full restoration
-                        await redis_manager.delete_game_state(game_id)
-                        print(f"  ⚠ Cleaned up persisted state for: {game_id} (restoration not yet implemented)")
+                    # Try new optimized storage first
+                    state_data = await persistence_manager.restore_game_state(game_id)
+                    
+                    # Fallback to legacy storage
+                    if not state_data:
+                        state_data = await redis_manager.restore_game_state(game_id)
+                    
+                    if state_data and state_data.get('state'):
+                        state = state_data['state']
+                        game_type = state_data.get('game_type', 'unknown')
+                        
+                        # Only restore active games
+                        phase = state.get('phase', 'unknown')
+                        if phase in ['waiting', 'finished', 'aborted']:
+                            print(f"  ⚠ Skipping inactive game: {game_id} (phase: {phase})")
+                            await redis_manager.delete_game_data(game_id)
+                            continue
+                        
+                        if game_type == 'werewolf':
+                            # Restore werewolf game using from_dict
+                            game = WerewolfGame.from_dict(state)
+                            werewolf_games[game_id] = game
+                            restored_count += 1
+                            print(f"  ✓ Restored werewolf game: {game_id} (phase: {phase}, day: {game.day_count})")
+                        else:
+                            print(f"  ⚠ Unknown game type: {game_type} for {game_id}")
+                            
                 except Exception as e:
-                    print(f"  ⚠ Error processing game {game_id}: {e}")
+                    print(f"  ⚠ Error restoring game {game_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            print(f"✓ Restored {restored_count} active games")
         else:
             print("No persisted games found")
     except Exception as e:
         print(f"⚠ Game restoration check failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Start werewolf game timeout checker
+    asyncio.create_task(werewolf_timeout_checker())
+    print("✓ Werewolf game timeout checker started")
+
+
+# ============================================================================
+# WEREWOLF GAME TIMEOUT CHECKER
+# ============================================================================
+
+async def werewolf_timeout_checker():
+    """
+    Background task that checks for phase timeouts in active werewolf games.
+    
+    Runs every WEREWOLF_TIMEOUT_CHECK_INTERVAL seconds and:
+    1. Checks each active game for timeout
+    2. If timeout, executes default actions and advances phase
+    3. Broadcasts state updates to all players
+    """
+    # Active phases that can timeout
+    ACTIVE_PHASES = {
+        WerewolfPhase.NIGHT_WOLF_DISCUSSION,
+        WerewolfPhase.NIGHT_WOLF_VOTING,
+        WerewolfPhase.NIGHT_SEER,
+        WerewolfPhase.NIGHT_WITCH,
+        WerewolfPhase.NIGHT_HUNTER,
+        WerewolfPhase.DAY_ANNOUNCEMENT,
+        WerewolfPhase.DAY_SPEAKING,
+        WerewolfPhase.DAY_VOTING,
+        WerewolfPhase.DAY_HUNTER,
+    }
+    
+    while True:
+        try:
+            await asyncio.sleep(WEREWOLF_TIMEOUT_CHECK_INTERVAL)
+            
+            # Check each active game
+            for game_id, game in list(werewolf_games.items()):
+                # Skip games not in active phases
+                if game.phase not in ACTIVE_PHASES:
+                    continue
+                
+                # Check if phase has timed out
+                time_remaining = game.get_time_remaining()
+                if time_remaining <= 0:
+                    print(f"[Timeout] Game {game_id} phase {game.phase.value} timed out")
+                    
+                    try:
+                        # Handle timeout (executes default actions and advances phase)
+                        old_phase = game.phase.value
+                        result = await game.handle_phase_timeout()
+                        new_phase = result.get('new_phase', game.phase.value)
+                        
+                        # Persist phase change
+                        significant_phases = ['day_announcement', 'day_voting', 'finished', 'aborted']
+                        is_significant = new_phase in significant_phases or old_phase in significant_phases
+                        
+                        await persistence_manager.on_phase_changed(
+                            game_id=game_id,
+                            new_phase=new_phase,
+                            day_count=result.get('day_count', game.day_count),
+                            game_state=game.to_dict(),
+                            deaths=result.get('deaths', []),
+                            significant=is_significant
+                        )
+                        
+                        # Emit timeout notification
+                        if result.get('timed_out_players'):
+                            for nickname in result['timed_out_players']:
+                                await sio.emit('PLAYER_TIMEOUT', {
+                                    'message': f'Player {nickname} Timed Out',
+                                    'player': nickname,
+                                    'timestamp': datetime.utcnow().isoformat()
+                                }, room=game_id)
+                        
+                        # Check if game was aborted
+                        if result.get('aborted'):
+                            await sio.emit('GAME_ABORTED', {
+                                'message': result.get('reason', 'Game aborted'),
+                                'refund_players': result.get('refund_players', []),
+                                'timestamp': datetime.utcnow().isoformat()
+                            }, room=game_id)
+                            continue
+                        
+                        # Emit phase change
+                        await sio.emit('werewolf_phase_change', {
+                            'phase': result.get('new_phase'),
+                            'day_count': result.get('day_count'),
+                            'deaths': result.get('deaths', []),
+                            'eliminated': result.get('eliminated'),
+                            'game_over': result.get('game_over', False),
+                            'winners': result.get('winners', [])
+                        }, room=game_id)
+                        
+                        # Check if game ended
+                        if result.get('game_over'):
+                            await handle_werewolf_game_end(game_id, result.get('winners', []))
+                        
+                        # Broadcast updated state to all players
+                        await broadcast_werewolf_state(game_id)
+                        
+                    except Exception as e:
+                        print(f"[Timeout] Error handling timeout for game {game_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        
+        except asyncio.CancelledError:
+            print("Werewolf timeout checker stopped")
+            break
+        except Exception as e:
+            print(f"[Timeout] Error in werewolf timeout checker: {e}")
+
+
+async def handle_werewolf_game_end(game_id: str, winners: list):
+    """
+    Handle game end: record results and award winnings.
+    
+    Uses PersistenceManager for unified MySQL persistence.
+    """
+    game = werewolf_games.get(game_id)
+    
+    # Determine winner team
+    winner_team = None
+    if game and winners:
+        # Check if any winner is a wolf
+        for player in game.players:
+            if player['wallet_address'] in winners:
+                if player.get('role') and hasattr(player['role'], 'team'):
+                    winner_team = player['role'].team.value
+                    break
+    
+    # Persist game end to MySQL
+    try:
+        await persistence_manager.on_game_ended(
+            game_id=game_id,
+            winner_team=winner_team,
+            winners=winners,
+            was_aborted=False,
+            final_state=game.to_dict() if game else None
+        )
+    except Exception as e:
+        print(f"Failed to persist game end: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Award winnings (50 tokens per winner)
+    try:
+        for winner_address in winners:
+            add_balance(winner_address, Decimal("50.0"))
+            print(f"Awarded 50 tokens to winner: {winner_address[:8]}...")
+    except Exception as e:
+        print(f"Failed to award winnings: {e}")
 
 
 # ============================================================================
@@ -316,12 +531,20 @@ async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
     user_address = Web3.to_checksum_address(user_address)
     
     # Create the message to sign (matching smart contract's expected format)
-    # This must match: keccak256(abi.encodePacked(address, amount, nonce))
+    # This must match: keccak256(abi.encodePacked(address, amount, nonce, chainId, contract))
     
     # Using Web3.py to create the same hash as Solidity
+    if not ARENA_VAULT_ADDRESS:
+        raise ValueError("ARENA_VAULT_ADDRESS not set - cannot generate withdrawal signature")
+    
+    if not w3:
+        raise RuntimeError("Web3 provider not initialized - cannot generate withdrawal signature")
+    
+    vault_address = Web3.to_checksum_address(ARENA_VAULT_ADDRESS)
+    chain_id = w3.eth.chain_id
     message = w3.solidity_keccak(
-        ['address', 'uint256', 'uint256'],
-        [user_address, amount, nonce]
+        ['address', 'uint256', 'uint256', 'uint256', 'address'],
+        [user_address, amount, nonce, chain_id, vault_address]
     )
     
     # Sign the message hash
@@ -365,6 +588,18 @@ async def health(request: Request):
         "web3_connected": w3.is_connected() if w3 else False,
         "local_debug_mode": LOCAL_DEBUG_MODE
     }
+
+
+@app.post("/bot/challenge")
+@limiter.limit("20/minute")
+async def bot_challenge(request: Request, payload: BotChallengeRequest):
+    return await issue_challenge(request, payload.fingerprint)
+
+
+@app.post("/bot/verify")
+@limiter.limit("20/minute")
+async def bot_verify(request: Request, payload: BotVerifyRequest):
+    return await verify_challenge(request, payload)
 
 
 @app.post("/auth/nonce")
@@ -523,22 +758,22 @@ async def api_list_active_games(request: Request, q: Optional[str] = None):
 
 @app.get("/api/spectate/poker/{table_id}")
 @limiter.limit("30/minute")
-async def api_spectate_poker(request: Request, table_id: str):
-    """Return sanitized poker state for spectators (no hole cards)."""
+async def api_spectate_poker(request: Request, table_id: str, reveal: bool = False):
+    """Return poker state for spectators (optionally reveal hole cards)."""
     if table_id not in poker_tables:
         raise HTTPException(status_code=404, detail="Table not found")
     table = poker_tables[table_id]
-    return table.get_game_state(for_spectator=True)
+    return table.get_game_state(for_spectator=True, reveal_all=reveal)
 
 
 @app.get("/api/spectate/werewolf/{game_id}")
 @limiter.limit("30/minute")
-async def api_spectate_werewolf(request: Request, game_id: str):
-    """Return werewolf state for spectators (roles masked)."""
+async def api_spectate_werewolf(request: Request, game_id: str, reveal: bool = False):
+    """Return werewolf state for spectators (optionally reveal roles)."""
     if game_id not in werewolf_games:
         raise HTTPException(status_code=404, detail="Game not found")
     game = werewolf_games[game_id]
-    return game.get_game_state()
+    return game.get_game_state(reveal_all=reveal)
 
 
 # ============================================================================
@@ -546,8 +781,12 @@ async def api_spectate_werewolf(request: Request, game_id: str):
 # ============================================================================
 
 @sio.event
-async def connect(sid, environ):
+async def connect(sid, environ, auth):
     """Handle client connection."""
+    allowed, reason = await verify_socket_auth(environ, auth)
+    if not allowed:
+        print(f"Rejected socket connection: {sid} ({reason})")
+        return False
     print(f"Client connected: {sid}")
     player_sessions[sid] = {
         'address': None,
@@ -590,6 +829,9 @@ async def authenticate(sid, data):
     
     In local debug mode, skips signature verification and accepts any valid address.
     
+    On successful authentication, checks if player was in an active game and sends
+    GAME_SNAPSHOT for reconnection recovery.
+    
     Expected data: {'address': str, 'signature': str}
     """
     try:
@@ -621,6 +863,9 @@ async def authenticate(sid, data):
                 'address': address,
                 'local_debug_mode': True
             }, room=sid)
+            
+            # Check for reconnection to active game
+            await handle_reconnection(sid, address)
             return
         
         # Normal mode: full SIWE authentication
@@ -652,8 +897,78 @@ async def authenticate(sid, data):
         
         await sio.emit('authenticated', {'address': address}, room=sid)
         
+        # Check for reconnection to active game
+        await handle_reconnection(sid, address)
+        
     except Exception as e:
         await sio.emit('error', {'message': f'Authentication failed: {str(e)}'}, room=sid)
+
+
+async def handle_reconnection(sid: str, wallet_address: str):
+    """
+    Handle reconnection by checking if player was in an active game.
+    
+    If found, updates the player's sid and sends GAME_SNAPSHOT.
+    
+    Args:
+        sid: New socket ID
+        wallet_address: Player's wallet address
+    """
+    wallet_lower = wallet_address.lower()
+    
+    # Inactive werewolf phases (no need to reconnect)
+    INACTIVE_PHASES = {WerewolfPhase.WAITING, WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}
+    
+    # Check werewolf games for this wallet
+    for game_id, game in werewolf_games.items():
+        # Skip finished/aborted/waiting games
+        if game.phase in INACTIVE_PHASES:
+            continue
+        
+        # Find player by wallet address
+        for player in game.players:
+            if player['wallet_address'].lower() == wallet_lower:
+                old_sid = player['sid']
+                
+                # Update player's socket ID
+                if old_sid != sid:
+                    game.update_player_sid(old_sid, sid)
+                    print(f"[Reconnect] Player {wallet_address} reconnected to game {game_id}")
+                
+                # Update session
+                player_sessions[sid]['game_id'] = game_id
+                
+                # Join Socket.IO room
+                await sio.enter_room(sid, game_id)
+                
+                # Send GAME_SNAPSHOT for recovery
+                snapshot = game.get_game_snapshot(sid)
+                await sio.emit('GAME_SNAPSHOT', snapshot, room=sid)
+                
+                print(f"[Reconnect] Sent GAME_SNAPSHOT to {wallet_address} for game {game_id}")
+                return
+    
+    # Check poker tables for this wallet
+    for table_id, table in poker_tables.items():
+        for player in table.players:
+            if player.get('wallet_address', '').lower() == wallet_lower:
+                # Update session
+                player_sessions[sid]['table_id'] = table_id
+                
+                # Join Socket.IO room
+                await sio.enter_room(sid, table_id)
+                
+                # Send game state
+                state = table.get_game_state(sid)
+                await sio.emit('GAME_SNAPSHOT', {
+                    'game_id': table_id,
+                    'game_type': 'texas',
+                    **state,
+                    'timestamp': datetime.utcnow().isoformat()
+                }, room=sid)
+                
+                print(f"[Reconnect] Sent GAME_SNAPSHOT to {wallet_address} for poker table {table_id}")
+                return
 
 
 @sio.event
@@ -768,32 +1083,83 @@ async def player_move(sid, data):
             await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
             return
         
+        if chat_message:
+            player = next((p for p in table.players if p.get('sid') == sid), None)
+            if player:
+                message_type = 'chat' if action == 'chat' else 'action'
+                metadata = {'action': action} if action != 'chat' else None
+                asyncio.create_task(
+                    persistence_manager.save_chat_message(
+                        game_id=table_id,
+                        game_type=table.game_type,
+                        wallet_address=player.get('wallet_address', ''),
+                        nickname=player.get('nickname', 'Player'),
+                        message=chat_message,
+                        message_type=message_type,
+                        metadata=metadata
+                    )
+                )
+        
         # Broadcast updated state
         await broadcast_game_state(table_id)
         
+        # Check if hand ended (everyone else folded)
+        if result.get('hand_over'):
+            winner_info = result.get('winner', {})
+            await sio.emit('hand_winner', {
+                'winner': winner_info,
+                'reason': 'All other players folded',
+                'pot': winner_info.get('amount', 0)
+            }, room=table_id)
+            
+            # Generate withdrawal signature for winner
+            if winner_info.get('amount', 0) > 0:
+                winner_sid = winner_info.get('sid')
+                winner_player = None
+                for p in table.players:
+                    if p.get('sid') == winner_sid:
+                        winner_player = p
+                        break
+                
+                if winner_player:
+                    await generate_and_emit_withdrawal(
+                        table_id,
+                        winner_player['wallet_address'],
+                        winner_info['amount']
+                    )
+            return
+        
         # Check if round complete and advance phase
         if result.get('advance_phase'):
-            phase_result = table.advance_phase()
+            phase_result = table.engine.advance_phase()
             await broadcast_game_state(table_id)
             
-            # Check for showdown
-            if table.phase.value == 'showdown':
-                showdown_result = table.get_game_state()
-                # Broadcast showdown reveal
+            # Check for showdown (use engine.phase, not table.phase)
+            if table.engine.phase.value == 'showdown':
+                showdown_result = table.engine.showdown()
+                
+                # Broadcast showdown reveal with all hole cards visible
                 await sio.emit('showdown_reveal', {
-                    'player_hands': table.get_all_hole_cards(),
-                    'community_cards': table.cards_to_strings(table.community_cards),
+                    'player_hands': table.engine.get_all_hole_cards(),
+                    'community_cards': table.engine.cards_to_strings(table.engine.community_cards),
                     'winners': showdown_result.get('winners', [])
                 }, room=table_id)
                 
                 # Generate withdrawal signatures for winners
                 for winner in showdown_result.get('winners', []):
                     if winner.get('amount', 0) > 0:
-                        player = table.players.get(winner['sid'])
-                        if player:
+                        winner_sid = winner.get('sid')
+                        # Find player by sid from the list
+                        winner_player = None
+                        for p in table.players:
+                            if p.get('sid') == winner_sid:
+                                winner_player = p
+                                break
+                        
+                        if winner_player:
                             await generate_and_emit_withdrawal(
                                 table_id,
-                                player.wallet_address,
+                                winner_player['wallet_address'],
                                 winner['amount']
                             )
         
@@ -917,18 +1283,87 @@ async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount:
 
 async def broadcast_game_state(table_id: str):
     """
-    Broadcast game state to all players at the table.
+    Broadcast game state to all players at the table with Privacy Filter.
+    
+    Implements the unified room broadcast architecture:
+    1. Public Payload (game_update): All players' hole_cards are MASKED as ["??", "??"]
+    2. Private Payload (private_hand): Each agent receives their own hole cards separately
+    
     Also saves state to Redis for persistence.
     """
     if table_id not in poker_tables:
         return
     
     table = poker_tables[table_id]
+    engine = table.engine
     
-    # Send personalized state to each player
-    for player_sid, player in table.players.items():
-        state = table.get_game_state(player_sid)
-        await sio.emit('game_state', state, room=player_sid)
+    is_showdown = engine.phase.value == 'showdown'
+    
+    # Build public player list with MASKED hole cards (unless showdown)
+    public_players = []
+    for player_sid in engine.player_order:
+        player = engine.players.get(player_sid)
+        if not player:
+            continue
+        
+        player_info = {
+            'sid': player_sid,
+            'wallet_address': player.wallet_address,
+            'nickname': player.nickname,
+            'chips': player.chips,
+            'current_bet': player.current_bet,
+            'status': player.status.value,
+            'last_action': player.last_action,
+            # CRITICAL: Mask hole cards unless showdown
+            'hole_cards': engine.cards_to_strings(player.hole_cards) if is_showdown else ['??', '??']
+        }
+        public_players.append(player_info)
+    
+    # Get current player
+    active_sids = [s for s in engine.player_order if engine.players[s].can_act()]
+    current_player = None
+    if active_sids and engine.current_player_index < len(active_sids):
+        current_player = active_sids[engine.current_player_index]
+    
+    # Build public game state (game_update event)
+    public_state = {
+        'game_id': table_id,
+        'phase': engine.phase.value,
+        'hand_number': engine.hand_number,
+        'community_cards': engine.cards_to_strings(engine.community_cards),
+        'pot': engine.get_total_pot(),
+        'current_bet': engine.current_bet,
+        'min_raise': engine.current_bet + engine.last_raise_amount,
+        'current_player': current_player,
+        'players': public_players,
+        'chat_history': [
+            {
+                'nickname': msg.player_nickname,
+                'message': msg.message,
+                'action': msg.action,
+                'timestamp': msg.timestamp
+            }
+            for msg in engine.chat_history[-20:]
+        ],
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    
+    # STEP 1: Broadcast public state to all players in the room (game_update)
+    await sio.emit('game_update', public_state, room=table_id)
+    
+    # STEP 2: Send private_hand to each agent (their own hole cards only)
+    if not is_showdown:
+        for player_dict in table.players:
+            player_sid = player_dict['sid']
+            player = engine.players.get(player_sid)
+            if player and player.hole_cards:
+                private_payload = {
+                    'game_id': table_id,
+                    'hole_cards': engine.cards_to_strings(player.hole_cards),
+                    'your_turn': player_sid == current_player,
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+                await sio.emit('private_hand', private_payload, room=player_sid)
     
     # Save state to Redis for hot storage (non-blocking)
     asyncio.create_task(table.save_state_to_redis())
@@ -943,7 +1378,7 @@ async def create_werewolf_game(sid, data):
     """
     Create a new Werewolf game.
     
-    Expected data: {'game_id': str}
+    Expected data: {'game_id': str, 'entry_fee': float (optional)}
     """
     try:
         # Check authentication
@@ -952,6 +1387,8 @@ async def create_werewolf_game(sid, data):
             return
         
         game_id = data.get('game_id')
+        entry_fee = Decimal(str(data.get('entry_fee', 0)))
+        
         if not game_id:
             await sio.emit('error', {'message': 'game_id required'}, room=sid)
             return
@@ -965,10 +1402,17 @@ async def create_werewolf_game(sid, data):
             
             werewolf_games[game_id] = WerewolfGame(game_id)
             
-            # Persist game state to Redis
-            await redis_manager.save_game_state(
+            # Persist to MySQL (cold storage)
+            await persistence_manager.on_game_created(
+                game_id=game_id,
+                game_type="werewolf",
+                entry_fee=entry_fee
+            )
+            
+            # Persist core state to Redis (hot storage)
+            await redis_manager.save_game_core(
                 game_id,
-                werewolf_games[game_id].to_dict(),
+                werewolf_games[game_id].get_core_state(),
                 game_type="werewolf"
             )
         
@@ -1012,10 +1456,18 @@ async def join_werewolf_game(sid, data):
             # Update session
             player_sessions[sid]['game_id'] = game_id
             
-            # Persist updated game state
-            await redis_manager.save_game_state(
+            # Persist to MySQL (player record)
+            await persistence_manager.on_player_joined(
+                game_id=game_id,
+                wallet_address=address,
+                socket_sid=sid,
+                nickname=nickname
+            )
+            
+            # Persist core state to Redis
+            await redis_manager.save_game_core(
                 game_id,
-                game.to_dict(),
+                game.get_core_state(),
                 game_type="werewolf"
             )
         
@@ -1055,6 +1507,23 @@ async def start_werewolf_game(sid, data):
             await sio.emit('error', {'message': 'Cannot start game (need more players)'}, room=sid)
             return
         
+        # Prepare player data with roles for MySQL persistence
+        players_with_roles = []
+        for player in game.players:
+            player_data = {
+                'wallet_address': player['wallet_address'],
+                'role_type': player['role'].role_type.value if player.get('role') else None,
+                'team': player['role'].team.value if player.get('role') else None
+            }
+            players_with_roles.append(player_data)
+        
+        # Persist game start to MySQL and Redis
+        await persistence_manager.on_game_started(
+            game_id=game_id,
+            players_with_roles=players_with_roles,
+            initial_state=game.to_dict()
+        )
+        
         # Broadcast updated state
         await broadcast_werewolf_state(game_id)
         
@@ -1069,14 +1538,24 @@ async def werewolf_action(sid, data):
     
     Expected data: {
         'game_id': str,
-        'action': str,  # 'night_kill', 'seer_check', 'witch_save', 'witch_poison', 'vote', 'hunter_shoot'
-        'target_sid': str (optional, depends on action)
+        'action': str,  # Actions by phase:
+            # Night Wolf Discussion: 'wolf_chat' (message required)
+            # Night Wolf Voting: 'night_kill' (target_sid required)
+            # Night Seer: 'seer_check' (target_sid required)
+            # Night Witch: 'witch_save', 'witch_poison' (target_sid for poison), 'witch_skip'
+            # Night/Day Hunter: 'hunter_shoot' (target_sid optional, None = skip)
+            # Day Speaking: 'speak' (message required)
+            # Day Voting: 'vote' (target_sid optional, None = abstain)
+            # Any time: 'chat' (message required, public chat)
+        'target_sid': str (optional, depends on action),
+        'message': str (optional, for chat/speak/wolf_chat)
     }
     """
     try:
         game_id = data.get('game_id')
         action = data.get('action')
         target_sid = data.get('target_sid')
+        message = data.get('message')
         
         if not game_id or game_id not in werewolf_games:
             await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
@@ -1086,30 +1565,123 @@ async def werewolf_action(sid, data):
             await sio.emit('error', {'message': 'Action required'}, room=sid)
             return
         
-        # Emit "thinking" state to indicate player is processing action
-        await sio.emit('player_thinking', {
-            'game_id': game_id,
-            'player_sid': sid,
-            'action_type': action
-        }, room=game_id)
-        
         game = werewolf_games[game_id]
-        result = game.process_action(sid, action, target_sid=target_sid)
+        
+        # Emit "thinking" state for non-chat actions
+        if action not in ['chat', 'wolf_chat']:
+            await sio.emit('player_thinking', {
+                'game_id': game_id,
+                'player_sid': sid,
+                'action_type': action
+            }, room=game_id)
+        
+        # Build kwargs for action
+        kwargs = {}
+        if target_sid is not None:  # Allow None for abstain/skip
+            kwargs['target_sid'] = target_sid
+        if message:
+            kwargs['message'] = message
+        
+        result = game.process_action(sid, action, **kwargs)
         
         if not result['success']:
             await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
             return
         
-        # Send action confirmation
+        # Send action confirmation to the player
         await sio.emit('werewolf_action_result', result, room=sid)
         
-        # Persist game state after action
-        await redis_manager.save_game_state(game_id, game.to_dict(), game_type="werewolf")
+        if action in ['chat', 'wolf_chat'] and message:
+            player = next((p for p in game.players if p['sid'] == sid), None)
+            if player:
+                metadata = {'phase': game.phase.value, 'is_wolf_chat': action == 'wolf_chat'}
+                asyncio.create_task(
+                    persistence_manager.save_chat_message(
+                        game_id=game_id,
+                        game_type=game.game_type,
+                        wallet_address=player['wallet_address'],
+                        nickname=player['nickname'],
+                        message=message,
+                        message_type=action,
+                        metadata=metadata
+                    )
+                )
+        
+        # Handle wolf_chat broadcast to other wolves only
+        # (Chat stored in-memory in WerewolfGame, broadcast via Socket.IO)
+        if action == 'wolf_chat' and result.get('wolf_only'):
+            wolf_sids = [p['sid'] for p in game.players 
+                        if p.get('role') and hasattr(p['role'], 'role_type') 
+                        and p['role'].role_type.value == 'wolf']
+            for wolf_sid in wolf_sids:
+                if wolf_sid != sid:
+                    await sio.emit('wolf_chat_message', result.get('chat'), room=wolf_sid)
+        
+        # Handle public chat broadcast
+        # (Chat stored in-memory in WerewolfGame, broadcast via Socket.IO)
+        elif action == 'chat':
+            await sio.emit('chat_message', result.get('chat'), room=game_id)
+        
+        # Handle speak action (persist to MySQL for permanent history)
+        elif action == 'speak':
+            player = next((p for p in game.players if p['sid'] == sid), None)
+            if player:
+                asyncio.create_task(
+                    persistence_manager.save_speech(
+                        game_id=game_id,
+                        wallet_address=player['wallet_address'],
+                        nickname=player['nickname'],
+                        message=message or '',
+                        phase=game.phase.value,
+                        game_type=game.game_type
+                    )
+                )
+        
+        # Persist core game state after non-chat actions
+        if action not in ['chat', 'wolf_chat']:
+            await redis_manager.save_game_core(game_id, game.get_core_state(), game_type="werewolf")
+        
+        # Check if all actions are complete - auto advance phase
+        if result.get('all_actions_complete'):
+            print(f"[AutoAdvance] All actions complete for game {game_id} phase {game.phase.value}, advancing...")
+            old_phase = game.phase.value
+            phase_result = game.advance_phase()
+            new_phase = phase_result.get('new_phase', '')
+            
+            # Determine if this is a significant phase change (for MySQL sync)
+            significant_phases = ['day_announcement', 'day_voting', 'finished', 'aborted']
+            is_significant = new_phase in significant_phases or old_phase in significant_phases
+            
+            # Persist phase change
+            await persistence_manager.on_phase_changed(
+                game_id=game_id,
+                new_phase=new_phase,
+                day_count=phase_result.get('day_count', game.day_count),
+                game_state=game.to_dict(),
+                deaths=phase_result.get('deaths', []),
+                significant=is_significant
+            )
+            
+            # Emit phase change
+            await sio.emit('werewolf_phase_change', {
+                'phase': new_phase,
+                'day_count': phase_result.get('day_count'),
+                'deaths': phase_result.get('deaths', []),
+                'eliminated': phase_result.get('eliminated'),
+                'game_over': phase_result.get('game_over', False),
+                'winners': phase_result.get('winners', [])
+            }, room=game_id)
+            
+            # Handle game end
+            if phase_result.get('game_over'):
+                await handle_werewolf_game_end(game_id, phase_result.get('winners', []))
         
         # Broadcast updated state (masked appropriately)
         await broadcast_werewolf_state(game_id)
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         await sio.emit('error', {'message': f'Werewolf action failed: {str(e)}'}, room=sid)
 
 
@@ -1128,10 +1700,23 @@ async def advance_werewolf_phase(sid, data):
             return
         
         game = werewolf_games[game_id]
+        old_phase = game.phase.value
         result = game.advance_phase()
+        new_phase = result.get('new_phase', game.phase.value)
         
-        # Persist game state after phase change
-        await redis_manager.save_game_state(game_id, game.to_dict(), game_type="werewolf")
+        # Determine if this is a significant phase change
+        significant_phases = ['day_announcement', 'day_voting', 'finished', 'aborted']
+        is_significant = new_phase in significant_phases or old_phase in significant_phases
+        
+        # Persist phase change
+        await persistence_manager.on_phase_changed(
+            game_id=game_id,
+            new_phase=new_phase,
+            day_count=result.get('day_count', game.day_count),
+            game_state=game.to_dict(),
+            deaths=result.get('deaths', []),
+            significant=is_significant
+        )
         
         # Emit phase change to all players
         await sio.emit('werewolf_phase_change', result, room=game_id)
@@ -1139,28 +1724,7 @@ async def advance_werewolf_phase(sid, data):
         # Check if game ended
         if game.is_game_over():
             winners = game.get_winners()
-            
-            # Record game in database
-            try:
-                from database.connection import get_db_session
-                with get_db_session() as db:
-                    for winner_address in winners:
-                        game_record = GameHistory(
-                            game_type='werewolf',
-                            winner_wallet=winner_address,
-                            timestamp=datetime.utcnow()
-                        )
-                        db.add(game_record)
-                    db.commit()
-            except Exception as e:
-                print(f"Failed to record game result: {e}")
-            
-            # Award winnings (example: 50 tokens per winner)
-            try:
-                for winner_address in winners:
-                    add_balance(winner_address, Decimal("50.0"))
-            except Exception as e:
-                print(f"Failed to award winnings: {e}")
+            await handle_werewolf_game_end(game_id, winners)
         
         # Broadcast updated state
         await broadcast_werewolf_state(game_id)
@@ -1195,7 +1759,13 @@ async def get_werewolf_state(sid, data):
 async def broadcast_werewolf_state(game_id: str):
     """
     Broadcast Werewolf game state to all players.
-    Also saves state to Redis for persistence.
+    
+    Each player receives a personalized view:
+    - Own role is visible
+    - Wolves see other wolves
+    - Wolves get wolf_chat history
+    - Dead players' roles may be revealed
+    - Phase-specific info (witch sees who's dying, etc.)
     """
     if game_id not in werewolf_games:
         return
@@ -1207,8 +1777,8 @@ async def broadcast_werewolf_state(game_id: str):
         state = game.get_game_state(player['sid'])
         await sio.emit('werewolf_state', state, room=player['sid'])
     
-    # Save state to Redis for hot storage (non-blocking)
-    asyncio.create_task(game.save_state_to_redis())
+    # Refresh TTL for active game (non-blocking)
+    asyncio.create_task(redis_manager.refresh_game_ttl(game_id))
 
 
 # ============================================================================
@@ -1249,10 +1819,25 @@ async def on_game_matched(players, game_size: int):
     game = WerewolfGame(game_id)
     werewolf_games[game_id] = game
     
+    # Persist game creation to MySQL
+    await persistence_manager.on_game_created(
+        game_id=game_id,
+        game_type="werewolf",
+        entry_fee=Decimal("0")
+    )
+    
     # Add all players to game
     for player in players:
         # Add player to game
         game.add_player(player.sid, player.wallet_address, nickname=player.nickname)
+        
+        # Persist player join to MySQL
+        await persistence_manager.on_player_joined(
+            game_id=game_id,
+            wallet_address=player.wallet_address,
+            socket_sid=player.sid,
+            nickname=player.nickname
+        )
         
         # Update session
         if player.sid in player_sessions:
@@ -1263,6 +1848,23 @@ async def on_game_matched(players, game_size: int):
     
     # Start the game
     game.start_game()
+    
+    # Prepare player data with roles for MySQL persistence
+    players_with_roles = []
+    for p in game.players:
+        player_data = {
+            'wallet_address': p['wallet_address'],
+            'role_type': p['role'].role_type.value if p.get('role') else None,
+            'team': p['role'].team.value if p.get('role') else None
+        }
+        players_with_roles.append(player_data)
+    
+    # Persist game start to MySQL and Redis
+    await persistence_manager.on_game_started(
+        game_id=game_id,
+        players_with_roles=players_with_roles,
+        initial_state=game.to_dict()
+    )
     
     # Notify all players
     for player in players:

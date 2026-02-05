@@ -38,6 +38,15 @@ SERVER_PRIVATE_KEY = os.getenv(
 # CORS configuration
 ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*').split(',')
 
+# Anti-bot configuration
+BOT_TOKEN_SECRET = os.getenv('BOT_TOKEN_SECRET', 'dev-unsafe-secret')
+BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '1800'))  # 30 minutes
+BOT_CHALLENGE_TTL = int(os.getenv('BOT_CHALLENGE_TTL', '300'))  # 5 minutes
+BOT_POW_DIFFICULTY = int(os.getenv('BOT_POW_DIFFICULTY', '16'))  # leading zero bits
+BOT_RISK_CHALLENGE_THRESHOLD = int(os.getenv('BOT_RISK_CHALLENGE_THRESHOLD', '25'))
+BOT_RISK_BLOCK_THRESHOLD = int(os.getenv('BOT_RISK_BLOCK_THRESHOLD', '60'))
+BOT_ALLOW_BYPASS_LOCAL = os.getenv('BOT_ALLOW_BYPASS_LOCAL', 'true').lower() == 'true'
+
 
 def is_local_debug_mode() -> bool:
     """
@@ -74,3 +83,9 @@ if LOCAL_DEBUG_MODE:
     print("- All accounts have UNLIMITED funds")
     print("- DO NOT USE IN PRODUCTION!")
     print("=" * 70)
+elif BOT_TOKEN_SECRET == 'dev-unsafe-secret':
+    import warnings
+    warnings.warn(
+        "BOT_TOKEN_SECRET is using a default value. Set BOT_TOKEN_SECRET in production!",
+        RuntimeWarning
+    )

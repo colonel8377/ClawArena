@@ -5,13 +5,19 @@ This module centralizes all Redis operations:
 - Connection pooling and management
 - Distributed locking for critical sections
 - Nonce synchronization for secure withdrawals
-- Game state persistence (save/restore)
+- Game core state persistence (save/restore)
 - Session management
 
+Architecture (Single-Server):
+- Chat messages: In-memory (WerewolfGame) + Socket.IO broadcast
+- Game state: Redis (core state for server restart recovery)
+- Formal speeches: MySQL (permanent history)
+
 Features:
-- Async context manager for locks
+- Async context manager for distributed locks
 - Automatic connection retry logic
 - Graceful fallback when Redis unavailable
+- Configurable TTL for different data types
 """
 
 import os
@@ -38,14 +44,19 @@ REDIS_SESSION_PREFIX = 'arena:session:'
 REDIS_GAME_PREFIX = 'arena:game:'
 REDIS_NONCE_PREFIX = 'arena:nonce:'
 REDIS_LOCK_PREFIX = 'arena:lock:'
-REDIS_PERSISTENCE_PREFIX = 'arena:persist:'
+REDIS_PERSISTENCE_PREFIX = 'arena:persist:'  # Legacy, for full state
+REDIS_GAME_CORE_PREFIX = 'arena:core:'       # Core game state (frequent updates)
+REDIS_INDEXER_PREFIX = 'arena:indexer:'      # Indexer state and dedup
 
-# Timeouts and TTLs
-SESSION_EXPIRY = 3600  # 1 hour
-LOCK_TIMEOUT = 10  # seconds
-LOCK_RETRY_DELAY = 0.1  # seconds
-GAME_STATE_EXPIRY = 86400  # 24 hours
-NONCE_EXPIRY = 86400  # 24 hours (same as game state)
+# Timeouts and TTLs (seconds)
+SESSION_EXPIRY = 3600           # 1 hour
+LOCK_TIMEOUT = 10               # seconds
+LOCK_RETRY_DELAY = 0.1          # seconds
+GAME_STATE_EXPIRY = 86400       # 24 hours (legacy, for full state)
+GAME_CORE_EXPIRY = 7200         # 2 hours (active game core state)
+NONCE_EXPIRY = 86400            # 24 hours
+EVENT_PROCESSING_LOCK_EXPIRY = 300  # 5 minutes
+PROCESSED_EVENT_EXPIRY = 86400 * 30  # 30 days
 
 
 # ============================================================================
@@ -420,6 +431,156 @@ class RedisManager:
             return []
     
     # ========================================================================
+    # OPTIMIZED GAME STATE PERSISTENCE (Separated Storage)
+    # ========================================================================
+    
+    async def save_game_core(
+        self,
+        game_id: str,
+        core_state: Dict[str, Any],
+        game_type: str = "unknown"
+    ) -> bool:
+        """
+        Save core game state (without chat) to Redis.
+        
+        This is optimized for frequent updates - excludes bulky chat data.
+        Use this for phase changes, player actions, etc.
+        
+        Args:
+            game_id: Unique game identifier
+            core_state: Game state WITHOUT chat history
+            game_type: Type of game
+            
+        Returns:
+            True if saved successfully
+        """
+        if not await self.ping():
+            logger.warning(f"Redis unavailable - cannot persist core state {game_id}")
+            return False
+        
+        try:
+            core_key = f"{REDIS_GAME_CORE_PREFIX}{game_id}"
+            
+            state_with_meta = {
+                "game_id": game_id,
+                "game_type": game_type,
+                "saved_at": datetime.utcnow().isoformat(),
+                "state": core_state
+            }
+            
+            await self._redis.setex(
+                core_key,
+                GAME_CORE_EXPIRY,
+                json.dumps(state_with_meta)
+            )
+            
+            logger.debug(f"Game core state saved: {game_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving game core state {game_id}: {e}")
+            return False
+    
+    async def restore_game_core(self, game_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Restore core game state from Redis.
+        
+        Args:
+            game_id: Unique game identifier
+            
+        Returns:
+            Core state dictionary if found, None otherwise
+        """
+        if not await self.ping():
+            return None
+        
+        try:
+            core_key = f"{REDIS_GAME_CORE_PREFIX}{game_id}"
+            data = await self._redis.get(core_key)
+            
+            if not data:
+                return None
+            
+            return json.loads(data)
+            
+        except Exception as e:
+            logger.error(f"Error restoring game core state {game_id}: {e}")
+            return None
+    
+    async def delete_game_data(self, game_id: str) -> bool:
+        """
+        Delete all game-related data from Redis.
+        
+        Cleans up: core state, legacy full state.
+        
+        Args:
+            game_id: Game identifier
+            
+        Returns:
+            True if deleted
+        """
+        if not await self.ping():
+            return False
+        
+        try:
+            keys_to_delete = [
+                f"{REDIS_GAME_CORE_PREFIX}{game_id}",
+                f"{REDIS_PERSISTENCE_PREFIX}{game_id}",  # Legacy key
+            ]
+            
+            await self._redis.delete(*keys_to_delete)
+            logger.info(f"Game data deleted: {game_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting game data {game_id}: {e}")
+            return False
+    
+    async def refresh_game_ttl(self, game_id: str) -> bool:
+        """
+        Refresh TTL for game core state key.
+        
+        Call this periodically for active games to prevent expiration.
+        
+        Args:
+            game_id: Game identifier
+            
+        Returns:
+            True if refreshed
+        """
+        if not await self.ping():
+            return False
+        
+        try:
+            core_key = f"{REDIS_GAME_CORE_PREFIX}{game_id}"
+            await self._redis.expire(core_key, GAME_CORE_EXPIRY)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error refreshing game TTL {game_id}: {e}")
+            return False
+    
+    async def list_active_games(self) -> List[str]:
+        """
+        List all games with active core state in Redis.
+        
+        Returns:
+            List of game IDs
+        """
+        if not await self.ping():
+            return []
+        
+        try:
+            pattern = f"{REDIS_GAME_CORE_PREFIX}*"
+            keys = await self._redis.keys(pattern)
+            
+            return [key.replace(REDIS_GAME_CORE_PREFIX, "") for key in keys]
+            
+        except Exception as e:
+            logger.error(f"Error listing active games: {e}")
+            return []
+    
+    # ========================================================================
     # SESSION MANAGEMENT (Delegated from SocketManager)
     # ========================================================================
     
@@ -494,6 +655,124 @@ class RedisManager:
             return True
         except Exception as e:
             logger.error(f"Error deleting session {key}: {e}")
+            return False
+    
+    # ========================================================================
+    # INDEXER STATE (Deposit Deduplication + Progress Tracking)
+    # ========================================================================
+    
+    def _indexer_last_block_key(self, vault_address: str) -> str:
+        """Build Redis key for last processed block per vault."""
+        return f"{REDIS_INDEXER_PREFIX}last_block:{vault_address.lower()}"
+    
+    def _processed_event_key(self, event_id: str) -> str:
+        """Build Redis key for processed event ID."""
+        return f"{REDIS_INDEXER_PREFIX}processed:{event_id}"
+    
+    def _processing_lock_key(self, event_id: str) -> str:
+        """Build Redis key for in-progress event processing lock."""
+        return f"{REDIS_INDEXER_PREFIX}processing:{event_id}"
+    
+    async def get_last_processed_block(self, vault_address: str) -> Optional[int]:
+        """
+        Get last processed block for a vault address.
+        
+        Returns:
+            Block number if found, None otherwise
+        """
+        if not await self.ping():
+            return None
+        
+        try:
+            key = self._indexer_last_block_key(vault_address)
+            value = await self._redis.get(key)
+            return int(value) if value is not None else None
+        except Exception as e:
+            logger.error(f"Error getting last processed block: {e}")
+            return None
+    
+    async def set_last_processed_block(self, vault_address: str, block_number: int) -> bool:
+        """
+        Persist last processed block for a vault address.
+        
+        Returns:
+            True if persisted successfully
+        """
+        if not await self.ping():
+            return False
+        
+        try:
+            key = self._indexer_last_block_key(vault_address)
+            await self._redis.set(key, int(block_number))
+            return True
+        except Exception as e:
+            logger.error(f"Error setting last processed block: {e}")
+            return False
+    
+    async def is_event_processed(self, event_id: str) -> bool:
+        """
+        Check if an event has already been processed.
+        
+        Returns:
+            True if processed, False otherwise
+        """
+        if not await self.ping():
+            return False
+        
+        try:
+            key = self._processed_event_key(event_id)
+            return await self._redis.exists(key) == 1
+        except Exception as e:
+            logger.error(f"Error checking processed event {event_id}: {e}")
+            return False
+    
+    async def acquire_event_processing_lock(self, event_id: str) -> bool:
+        """
+        Acquire a short-lived lock for event processing.
+        
+        Returns:
+            True if lock acquired (or Redis unavailable), False otherwise
+        """
+        if not await self.ping():
+            logger.warning("Redis unavailable - proceeding without event lock")
+            return True
+        
+        try:
+            key = self._processing_lock_key(event_id)
+            return await self._redis.set(key, "1", nx=True, ex=EVENT_PROCESSING_LOCK_EXPIRY)
+        except Exception as e:
+            logger.error(f"Error acquiring event lock {event_id}: {e}")
+            return True
+    
+    async def release_event_processing_lock(self, event_id: str):
+        """
+        Release event processing lock.
+        """
+        if not await self.ping():
+            return
+        
+        try:
+            key = self._processing_lock_key(event_id)
+            await self._redis.delete(key)
+        except Exception as e:
+            logger.error(f"Error releasing event lock {event_id}: {e}")
+    
+    async def mark_event_processed(self, event_id: str) -> bool:
+        """
+        Mark an event as processed to prevent duplicate credits.
+        
+        Returns:
+            True if marked successfully
+        """
+        if not await self.ping():
+            return False
+        
+        try:
+            key = self._processed_event_key(event_id)
+            await self._redis.setex(key, PROCESSED_EVENT_EXPIRY, "1")
+            return True
+        except Exception as e:
+            logger.error(f"Error marking event processed {event_id}: {e}")
             return False
     
     # ========================================================================

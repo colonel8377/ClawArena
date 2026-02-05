@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getSocket } from '@/lib/socket';
 import getApiBaseUrl from '@/lib/api';
+import { botFetch } from '@/lib/antiBot';
 
 type HealthResponse = {
   status: string;
@@ -23,7 +24,7 @@ export default function BackendStatus() {
     const API_URL = getApiBaseUrl();
     setApiBase(API_URL);
 
-    fetch(`${API_URL}/health`)
+    botFetch(`${API_URL}/health`)
       .then(async (res) => {
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);

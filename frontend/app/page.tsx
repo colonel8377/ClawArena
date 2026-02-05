@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import PlayingCard from '@/components/poker/PlayingCard';
 import RoleCard from '@/components/werewolf/RoleCard';
+import BackendStatus from '@/components/status/BackendStatus';
 
 export default function LobbyPage() {
   return (
@@ -18,6 +19,11 @@ export default function LobbyPage() {
         <p className="text-foreground opacity-75 mb-4 font-mono typing-cursor">
           Direct entry to poker and werewolf modules—no fluff.
         </p>
+      </div>
+
+      {/* Backend / Socket Status */}
+      <div className="mb-6">
+        <BackendStatus />
       </div>
 
       {/* Component Showcase Section */}

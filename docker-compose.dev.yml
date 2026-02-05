@@ -14,6 +14,30 @@
 
 services:
   # ==========================================================================
+  # Frontend Service (Next.js)
+  # ==========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: arena_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount source code for hot reloading
+      - ./frontend:/app
+      # Prevent container's node_modules from being overwritten
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    networks:
+      - arena_network
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  # ==========================================================================
   # Backend Service (FastAPI + Socket.IO)
   # ==========================================================================
   backend:

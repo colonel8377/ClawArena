@@ -26,7 +26,8 @@ export default function LobbyPage() {
         {/* Poker Cards Showcase */}
         <div className="mb-8">
           <h4 className="text-lg text-neonPink mb-4 font-mono text-shadow-neon-pink">
-            // POKER CARDS - NEON AESTHETICS
+            {/* POKER CARDS - NEON AESTHETICS */}
+            &gt; POKER CARDS - NEON AESTHETICS
           </h4>
           <div className="flex flex-wrap gap-4 p-4 bg-background/50 rounded">
             <PlayingCard suit="hearts" rank="A" />
@@ -46,7 +47,8 @@ export default function LobbyPage() {
         {/* Werewolf Roles Showcase */}
         <div>
           <h4 className="text-lg text-cyberBlue mb-4 font-mono text-shadow-neon-blue">
-            // WEREWOLF ROLES - CYBERPUNK IDENTITIES
+            {/* WEREWOLF ROLES - CYBERPUNK IDENTITIES */}
+            &gt; WEREWOLF ROLES - CYBERPUNK IDENTITIES
           </h4>
           <div className="flex flex-wrap gap-4 p-4 bg-background/50 rounded">
             <RoleCard role="Werewolf" status="Alive" revealed playerName="ALPHA_01" />

@@ -14,8 +14,11 @@ interface Player {
 
 export default function WerewolfPage() {
   const [connected, setConnected] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [phase, setPhase] = useState<'day' | 'night'>('day');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [dayCount, setDayCount] = useState(1);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [players, setPlayers] = useState<Player[]>([
     { id: 'node_001', name: 'Alice', role: 'Villager', status: 'alive', x: 50, y: 30 },
     { id: 'node_002', name: 'Bob', role: '???', status: 'alive', x: 150, y: 80 },

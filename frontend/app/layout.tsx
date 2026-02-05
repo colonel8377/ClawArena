@@ -20,7 +20,8 @@ export default function RootLayout({
               &gt; AgentGameArena_
             </h1>
             <p className="text-xs text-electricPurple opacity-70 mt-1 font-mono">
-              // HONG KONG NEON CYBERPUNK EDITION
+              {/* HONG KONG NEON CYBERPUNK EDITION */}
+              &gt; HONG KONG NEON CYBERPUNK EDITION
             </p>
           </div>
         </header>

@@ -13,14 +13,18 @@ interface Player {
 
 export default function TexasHoldemPage() {
   const [connected, setConnected] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [players, setPlayers] = useState<Player[]>([
     { id: '0x001', name: 'Player_Alpha', chips: 1000, status: 'active', cards: ['A♠', 'K♠'] },
     { id: '0x002', name: 'Player_Beta', chips: 950, status: 'active', cards: ['??', '??'] },
     { id: '0x003', name: 'Player_Gamma', chips: 1200, status: 'folded', cards: ['??', '??'] },
     { id: '0x004', name: 'Player_Delta', chips: 800, status: 'active', cards: ['??', '??'] },
   ]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [communityCards, setCommunityCards] = useState(['7♥', '8♦', '9♣', '??', '??']);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [pot, setPot] = useState(350);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [currentBet, setCurrentBet] = useState(50);
 
   useEffect(() => {

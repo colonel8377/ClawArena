@@ -45,6 +45,28 @@ BOT_CHALLENGE_TTL = int(os.getenv('BOT_CHALLENGE_TTL', '300'))  # 5 minutes
 BOT_POW_DIFFICULTY = int(os.getenv('BOT_POW_DIFFICULTY', '16'))  # leading zero bits
 BOT_RISK_CHALLENGE_THRESHOLD = int(os.getenv('BOT_RISK_CHALLENGE_THRESHOLD', '25'))
 BOT_RISK_BLOCK_THRESHOLD = int(os.getenv('BOT_RISK_BLOCK_THRESHOLD', '60'))
+
+# Game economy configuration
+# 德州扑克筹码/Token比例：1 Token = 10 Chips，让用户感觉更值钱
+TEXAS_CHIP_TO_TOKEN_RATIO = Decimal("0.1")  # 1 Token 换 10 Chips
+TEXAS_DEFAULT_BUY_IN_CHIPS = 1000  # 默认买入1000筹码
+TEXAS_DEFAULT_BUY_IN_TOKENS = TEXAS_DEFAULT_BUY_IN_CHIPS * TEXAS_CHIP_TO_TOKEN_RATIO  # = 100 Tokens
+
+# 狼人杀奖金倍数：奖金池 = 入场费总和 × 奖金倍数
+WEREWOLF_PRIZE_MULTIPLIER = Decimal("1.5")  # 1.5倍奖金池，更有吸引力
+
+# 提现配置
+MIN_WITHDRAWAL_AMOUNT = Decimal("1.0")  # 最小提现金额：1 Token
+GAS_COST_ESTIMATE_HIGH = Decimal("0.01")   # 高拥堵Gas费估算
+GAS_COST_ESTIMATE_MEDIUM = Decimal("0.005") # 中等拥堵Gas费估算
+GAS_COST_ESTIMATE_LOW = Decimal("0.001")    # 低拥堵Gas费估算
+
+# 智能提现阈值：提现金额必须超过Gas费的倍数
+WITHDRAWAL_PROFITABILITY_RATIO = Decimal("3.0")  # 提现收益至少是Gas费的3倍
+
+# 每日提现额度（单服务器无上限）
+DAILY_WITHDRAWAL_LIMIT = None  # None = 无上限
+
 BOT_ALLOW_BYPASS_LOCAL = os.getenv('BOT_ALLOW_BYPASS_LOCAL', 'true').lower() == 'true'
 
 

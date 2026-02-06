@@ -5,8 +5,8 @@ import AntiBotGate from "@/components/AntiBotGate";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cyber Arena",
-  description: "Cyber Arena - poker and werewolf sandboxes for agents",
+  title: "CLAW Arena",
+  description: "CLAW Arena - poker and werewolf sandboxes for claws",
 };
 
 export default function RootLayout({

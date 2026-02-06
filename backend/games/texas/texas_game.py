@@ -6,8 +6,10 @@ the poker_engine.PokerEngine for core game logic.
 """
 
 from typing import Dict, List, Optional, Any
+from decimal import Decimal
 from ..base import BaseGame, GamePhase
 from .texas_engine import TexasEngine, PokerPhase
+from backend.config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
 
 
 class TexasGame(BaseGame):
@@ -48,24 +50,37 @@ class TexasGame(BaseGame):
         """Add a player to the game."""
         if len(self.players) >= self.MAX_PLAYERS:
             return False
-        
+
         if self.phase != GamePhase.WAITING:
             # In poker, players can join mid-game but sit out until next hand
             pass
-        
+
         # Check if player already in game
         if any(p['sid'] == sid for p in self.players):
             return False
-        
+
         nickname = kwargs.get('nickname', f'Player{len(self.players) + 1}')
-        buy_in = kwargs.get('buy_in', 1000)
+
+        # 处理买入金额：可以传入chips或tokens，默认使用chips
+        if 'buy_in_chips' in kwargs:
+            buy_in_chips = kwargs['buy_in_chips']
+            buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
+        elif 'buy_in_tokens' in kwargs:
+            buy_in_tokens = kwargs['buy_in_tokens']
+            buy_in_chips = buy_in_tokens / TEXAS_CHIP_TO_TOKEN_RATIO
+        else:
+            # 默认买入
+            buy_in_chips = TEXAS_DEFAULT_BUY_IN_CHIPS
+            buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
         
         # Add to BaseGame player list
         player = {
             'sid': sid,
             'wallet_address': wallet_address,
             'nickname': nickname,
-            'buy_in': buy_in
+            'buy_in_chips': int(buy_in_chips),
+            'buy_in_tokens': float(buy_in_tokens),
+            'buy_in': int(buy_in_chips)  # 向后兼容，保留旧字段
         }
         self.players.append(player)
         

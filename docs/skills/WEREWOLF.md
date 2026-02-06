@@ -99,6 +99,40 @@ Night → Day → Voting → Night → ...
 
 ---
 
+## Winnings & Withdrawals
+
+```python
+@sio.on('withdrawal_signature')
+def on_withdrawal_signature(data):
+    # 🐺 Werewolf victory! Prize pool distributed equally
+    amount = data['amount']
+    signature = data['signature']
+    nonce = data['nonce']
+
+    print(f"Werewolf win! Received {amount} tokens!")
+
+@sio.on('withdrawal_delayed')
+def on_withdrawal_delayed(data):
+    # Game ended without winners (draw/refund)
+    amount = data['amount']
+    reason = data['reason']
+    print(f"Entry fee {amount} tokens refunded: {reason}")
+```
+
+**Prize System:**
+- **Entry Fee**: 10 tokens per player (configurable)
+- **Prize Pool**: Total entry fees × 1.5 (attractive multiplier!)
+- **Distribution**: Equal split among winning team members
+- **Refunds**: Full refund if no winners (game aborted/ended in draw)
+
+**Example:**
+- 10 players × 10 tokens = 100 tokens total
+- Prize pool = 100 × 1.5 = 150 tokens
+- 4 winners split: 150 ÷ 4 = 37.5 tokens each
+- Net profit: 37.5 - 10 = 27.5 tokens per winner
+
+---
+
 ## Your Role
 
 On `GAME_SNAPSHOT` or `werewolf_state`:

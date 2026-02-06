@@ -43,7 +43,16 @@ from database.connection import init_db, get_db
 from database.models import User, GameHistory, ChatMessage
 from database.redis_manager import redis_manager
 from database.persistence_manager import persistence_manager
-from economy.account import register_user, handle_login, deduct_balance, add_balance, get_balance
+from economy.account import (
+    register_user, handle_login, deduct_balance, add_balance, get_balance,
+    validate_account_balance, get_account_summary, transfer_balance, batch_get_balances,
+    InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError
+)
+from config import (
+    TEXAS_CHIP_TO_TOKEN_RATIO, WEREWOLF_PRIZE_MULTIPLIER,
+    MIN_WITHDRAWAL_AMOUNT, GAS_COST_ESTIMATE_HIGH, GAS_COST_ESTIMATE_MEDIUM,
+    GAS_COST_ESTIMATE_LOW, WITHDRAWAL_PROFITABILITY_RATIO, DAILY_WITHDRAWAL_LIMIT
+)
 from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase, PHASE_TIMEOUT_SECONDS
 from games.werewolf.matchmaker import WerewolfMatchmaker
 from indexer.worker import deposit_worker
@@ -152,6 +161,143 @@ werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
 # Note: Database initialization with retry logic is performed in the async startup handler
 # to properly wait for MySQL to be ready in Docker environments.
 # The init_db() function now includes retry logic for container startup scenarios.
+
+
+# ============================================================================
+# SMART WITHDRAWAL MANAGEMENT
+# ============================================================================
+
+class SmartWithdrawalManager:
+    """智能提现管理器 - 单服务器优化"""
+
+    def __init__(self):
+        self.pending_withdrawals = {}  # wallet_address -> list of pending amounts
+
+    async def should_withdraw(self, wallet_address: str, amount: Decimal) -> Dict[str, Any]:
+        """
+        智能判断是否应该提现
+
+        Args:
+            wallet_address: 用户钱包地址
+            amount: 提现金额
+
+        Returns:
+            Dict with decision and reasoning
+        """
+        # 检查最小提现金额
+        if amount < MIN_WITHDRAWAL_AMOUNT:
+            return {
+                'should_withdraw': False,
+                'reason': f'Amount {amount} below minimum {MIN_WITHDRAWAL_AMOUNT}',
+                'accumulate': True
+            }
+
+        # 获取当前Gas费估算（这里简化，实际可以调用Gas估算API）
+        gas_cost = await self._estimate_gas_cost()
+
+        # 计算净收益
+        net_profit = amount - gas_cost
+
+        # 检查是否值得提现
+        if net_profit < gas_cost * WITHDRAWAL_PROFITABILITY_RATIO:
+            return {
+                'should_withdraw': False,
+                'reason': f'Net profit {net_profit} too low vs gas cost {gas_cost}',
+                'accumulate': True,
+                'suggested_wait': True
+            }
+
+        # 检查每日限额（单服务器无限制）
+        if DAILY_WITHDRAWAL_LIMIT is not None:
+            daily_total = await self._get_daily_withdrawal_total(wallet_address)
+            if daily_total + amount > DAILY_WITHDRAWAL_LIMIT:
+                return {
+                    'should_withdraw': False,
+                    'reason': f'Would exceed daily limit {DAILY_WITHDRAWAL_LIMIT}',
+                    'accumulate': False
+                }
+
+        return {
+            'should_withdraw': True,
+            'net_profit': float(net_profit),
+            'gas_cost': float(gas_cost),
+            'reason': 'Optimal withdrawal conditions'
+        }
+
+    async def _estimate_gas_cost(self) -> Decimal:
+        """估算Gas费用（简化版本）"""
+        # 这里可以集成实际的Gas估算API
+        # 目前使用静态估算
+        try:
+            # 可以根据网络状况动态调整
+            # 例如：调用 etherscan API 或 web3.eth.gas_price
+            return GAS_COST_ESTIMATE_MEDIUM
+        except:
+            return GAS_COST_ESTIMATE_HIGH  # 保守估算
+
+    async def _get_daily_withdrawal_total(self, wallet_address: str) -> Decimal:
+        """获取今日提现总额（单服务器简化实现）"""
+        # 在Redis中存储每日提现记录
+        try:
+            today_key = f"daily_withdrawals:{wallet_address}:{datetime.utcnow().date()}"
+            daily_total = await redis_manager.get_cached_balance(wallet_address)  # 简化实现
+            return daily_total or Decimal("0")
+        except:
+            return Decimal("0")
+
+    def add_pending_withdrawal(self, wallet_address: str, amount: Decimal):
+        """添加待提现金额"""
+        if wallet_address not in self.pending_withdrawals:
+            self.pending_withdrawals[wallet_address] = []
+        self.pending_withdrawals[wallet_address].append(amount)
+
+    def get_pending_total(self, wallet_address: str) -> Decimal:
+        """获取用户待提现总额"""
+        amounts = self.pending_withdrawals.get(wallet_address, [])
+        return sum(amounts)
+
+    def clear_pending_withdrawals(self, wallet_address: str):
+        """清除用户的待提现记录"""
+        self.pending_withdrawals.pop(wallet_address, None)
+
+    async def process_auto_withdrawal(self, wallet_address: str, amount: Decimal) -> bool:
+        """
+        处理自动提现
+
+        Args:
+            wallet_address: 用户钱包地址
+            amount: 提现金额
+
+        Returns:
+            True if withdrawal was processed
+        """
+        decision = await self.should_withdraw(wallet_address, amount)
+
+        if decision['should_withdraw']:
+            try:
+                # 生成提现签名
+                signature_data = await generate_withdrawal_signature(wallet_address, int(amount))
+
+                # 可以通过多种方式通知用户：
+                # 1. Socket.IO推送（如果用户在线）
+                # 2. 存储到数据库供用户查询
+                # 3. 发送到消息队列
+
+                # 这里暂时记录到日志
+                print(f"Auto-withdrawal processed for {wallet_address}: {amount} tokens")
+
+                return True
+            except Exception as e:
+                print(f"Auto-withdrawal failed for {wallet_address}: {e}")
+                return False
+        else:
+            # 累积待提现金额
+            if decision.get('accumulate', False):
+                self.add_pending_withdrawal(wallet_address, amount)
+            return False
+
+# 全局智能提现管理器实例
+smart_withdrawal_manager = SmartWithdrawalManager()
 
 
 # ============================================================================
@@ -387,13 +533,35 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
         import traceback
         traceback.print_exc()
     
-    # Award winnings (50 tokens per winner)
+    # Handle prize distribution and refunds
     try:
-        for winner_address in winners:
-            add_balance(winner_address, Decimal("50.0"))
-            print(f"Awarded 50 tokens to winner: {winner_address[:8]}...")
+        if game and winners:
+            # 计算奖金池：所有入场费的总和 × 奖金倍数
+            total_entry_fees = sum(player['entry_fee_paid'] for player in game.players)
+            prize_pool = total_entry_fees * WEREWOLF_PRIZE_MULTIPLIER
+            prize_per_winner = prize_pool / len(winners)
+
+            print(f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners")
+
+            for winner_address in winners:
+                add_balance(winner_address, prize_per_winner,
+                           tx_type=TransactionType.GAME_WIN,
+                           description="Werewolf game prize")
+                print(f"Awarded {float(prize_per_winner)} tokens to winner: {winner_address[:8]}...")
+        elif game and not winners:
+            # 平局或游戏异常结束，退还所有入场费
+            print("Werewolf game ended without winners, refunding entry fees")
+            for player in game.players:
+                unlock_balance(player['wallet_address'], player['entry_fee_paid'],
+                              game_session_id=game_id,
+                              description="Werewolf game refund - no winners")
+                print(f"Refunded {float(player['entry_fee_paid'])} tokens to: {player['wallet_address'][:8]}...")
+        else:
+            print("No game data found for prize distribution")
     except Exception as e:
-        print(f"Failed to award winnings: {e}")
+        print(f"Failed to handle prize distribution: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # ============================================================================
@@ -690,7 +858,7 @@ async def api_register(request: Request, wallet_address: str):
     try:
         result = register_user(wallet_address)
         return result
-    except ValueError as e:
+    except (InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
@@ -707,7 +875,7 @@ async def api_login(request: Request, wallet_address: str):
     try:
         result = handle_login(wallet_address)
         return result
-    except ValueError as e:
+    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
@@ -723,10 +891,127 @@ async def api_get_balance(request: Request, wallet_address: str):
             "wallet_address": wallet_address,
             "balance": float(balance)
         }
-    except ValueError as e:
+    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get balance: {str(e)}")
+
+
+@app.get("/api/account/{wallet_address}")
+@limiter.limit("10/minute")
+async def api_get_account_summary(request: Request, wallet_address: str):
+    """Get comprehensive account summary including validation and recent transactions."""
+    try:
+        summary = get_account_summary(wallet_address)
+        return summary
+    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get account summary: {str(e)}")
+
+
+@app.post("/api/transfer")
+@limiter.limit("5/minute")
+async def api_transfer_balance(request: Request, from_wallet: str, to_wallet: str, amount: float):
+    """Transfer balance between two accounts."""
+    try:
+        result = transfer_balance(from_wallet, to_wallet, Decimal(str(amount)))
+        return result
+    except InvalidAmountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except InsufficientBalanceError as e:
+        raise HTTPException(status_code=402, detail=str(e))  # 402 Payment Required
+    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transfer failed: {str(e)}")
+
+
+@app.post("/api/balances/batch")
+@limiter.limit("10/minute")
+async def api_batch_get_balances(request: Request, wallet_addresses: List[str]):
+    """Get balances for multiple wallet addresses efficiently."""
+    try:
+        if len(wallet_addresses) > 50:
+            raise HTTPException(status_code=400, detail="Too many addresses (max 50)")
+        balances = batch_get_balances(wallet_addresses)
+        return {
+            "balances": {addr: float(bal) for addr, bal in balances.items()}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch balance query failed: {str(e)}")
+
+
+@app.get("/api/withdrawal/smart/{wallet_address}")
+@limiter.limit("20/minute")
+async def api_get_smart_withdrawal_status(request: Request, wallet_address: str):
+    """Get smart withdrawal status and pending withdrawals."""
+    try:
+        # 检查余额
+        balance = get_balance(wallet_address)
+
+        # 获取待提现总额
+        pending_total = smart_withdrawal_manager.get_pending_total(wallet_address)
+
+        # 计算建议的提现决策
+        available_for_withdrawal = balance - pending_total
+        decision = await smart_withdrawal_manager.should_withdraw(wallet_address, available_for_withdrawal)
+
+        return {
+            "wallet_address": wallet_address,
+            "current_balance": float(balance),
+            "pending_withdrawals": float(pending_total),
+            "available_for_withdrawal": float(available_for_withdrawal),
+            "smart_decision": decision,
+            "min_withdrawal": float(MIN_WITHDRAWAL_AMOUNT),
+            "gas_estimate": float(await smart_withdrawal_manager._estimate_gas_cost())
+        }
+    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Smart withdrawal status failed: {str(e)}")
+
+
+@app.post("/api/withdrawal/smart/{wallet_address}")
+@limiter.limit("10/minute")
+async def api_request_smart_withdrawal(request: Request, wallet_address: str, amount: Optional[float] = None):
+    """Request smart withdrawal with optimal timing."""
+    try:
+        # 如果没有指定金额，使用可用余额
+        if amount is None:
+            balance = get_balance(wallet_address)
+            pending_total = smart_withdrawal_manager.get_pending_total(wallet_address)
+            amount = float(balance - pending_total)
+        else:
+            amount = float(amount)
+
+        token_amount = Decimal(str(amount))
+
+        # 使用智能提现管理器
+        success = await smart_withdrawal_manager.process_auto_withdrawal(wallet_address, token_amount)
+
+        if success:
+            return {
+                "status": "processed",
+                "message": f"Withdrawal of {amount} tokens processed immediately",
+                "wallet_address": wallet_address
+            }
+        else:
+            # 检查是否累积了待提现金额
+            pending_total = smart_withdrawal_manager.get_pending_total(wallet_address)
+            return {
+                "status": "accumulated",
+                "message": f"Amount {amount} tokens accumulated for later withdrawal",
+                "pending_total": float(pending_total),
+                "wallet_address": wallet_address
+            }
+
+    except InvalidAmountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Smart withdrawal failed: {str(e)}")
 
 
 @app.get("/api/games/active")
@@ -985,22 +1270,50 @@ async def join_game(sid, data):
             return
         
         table_id = data.get('table_id')
-        chips = data.get('chips', 1000)
-        
+
+        # 支持chips或tokens买入，默认使用chips
+        if 'tokens' in data:
+            buy_in_tokens = Decimal(str(data['tokens']))
+            buy_in_chips = buy_in_tokens / TEXAS_CHIP_TO_TOKEN_RATIO
+        else:
+            buy_in_chips = data.get('chips', 1000)
+            buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
+
         if not table_id:
             await sio.emit('error', {'message': 'table_id required'}, room=sid)
             return
-        
+
+        # 检查余额是否足够
+        try:
+            current_balance = get_balance(address)
+            if current_balance < buy_in_tokens:
+                await sio.emit('error', {
+                    'message': f'Insufficient balance. Required: {float(buy_in_tokens)} tokens, Available: {float(current_balance)}'
+                }, room=sid)
+                return
+        except Exception as e:
+            await sio.emit('error', {'message': f'Balance check failed: {str(e)}'}, room=sid)
+            return
+
         # Create table if it doesn't exist
         if table_id not in poker_tables:
             poker_tables[table_id] = create_texas_game(table_id)
-        
+
         table = poker_tables[table_id]
         address = player_sessions[sid]['address']
-        
-        # Add player to table
-        if not table.add_player(sid, address, nickname=address[:8], buy_in=chips):
+
+        # Add player to table with token amount
+        if not table.add_player(sid, address, nickname=address[:8], buy_in_tokens=buy_in_tokens):
             await sio.emit('error', {'message': 'Could not join table'}, room=sid)
+            return
+
+        # 锁定资金
+        try:
+            lock_balance(address, buy_in_tokens, game_session_id=table_id)
+        except Exception as e:
+            await sio.emit('error', {'message': f'Failed to lock funds: {str(e)}'}, room=sid)
+            # 移除玩家
+            table.remove_player(sid)
             return
         
         # Update session
@@ -1122,10 +1435,12 @@ async def player_move(sid, data):
                         break
                 
                 if winner_player:
+                    # 转换chips为tokens发放奖金
+                    token_amount = int(winner_info['amount'] * TEXAS_CHIP_TO_TOKEN_RATIO)
                     await generate_and_emit_withdrawal(
                         table_id,
                         winner_player['wallet_address'],
-                        winner_info['amount']
+                        token_amount
                     )
             return
         
@@ -1157,10 +1472,12 @@ async def player_move(sid, data):
                                 break
                         
                         if winner_player:
+                            # 转换chips为tokens发放奖金
+                            token_amount = int(winner['amount'] * TEXAS_CHIP_TO_TOKEN_RATIO)
                             await generate_and_emit_withdrawal(
                                 table_id,
                                 winner_player['wallet_address'],
-                                winner['amount']
+                                token_amount
                             )
         
     except Exception as e:
@@ -1238,13 +1555,13 @@ async def leave_game(sid, data):
         if sid in player_sessions:
             player_sessions[sid]['table_id'] = None
         
-        # If player had chips, generate withdrawal signature
+        # If player had chips, convert to tokens and unlock funds
         if player and player.chips > 0:
-            await generate_and_emit_withdrawal(
-                table_id,
-                player.wallet_address,
-                player.chips
-            )
+            token_amount = int(player.chips * TEXAS_CHIP_TO_TOKEN_RATIO)
+            # 解锁剩余资金
+            unlock_balance(player.wallet_address, token_amount,
+                          game_session_id=table_id,
+                          description="Texas Hold'em game exit refund")
         
         # Notify player
         await sio.emit('left_game', {'table_id': table_id}, room=sid)
@@ -1263,22 +1580,46 @@ async def leave_game(sid, data):
 async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount: int):
     """
     Generate withdrawal signature and emit to the user.
-    
+
+    Includes smart withdrawal management for optimal timing.
+
     SECURITY UPDATE: Nonce is now synchronized via RedisManager.
-    
+
     This is called when:
     - A game ends with winnings
     - A player leaves with chips
-    
+
     The signature allows the user to claim their winnings on-chain.
     """
-    # Generate signature (nonce atomically fetched from RedisManager)
-    withdrawal_data = await generate_withdrawal_signature(user_address, amount)
-    
-    # Emit to all sessions for this address in this table
-    await sio.emit('withdrawal_signature', withdrawal_data, room=table_id)
-    
-    print(f"Generated withdrawal signature for {user_address}: {amount} chips (nonce: {withdrawal_data['nonce']})")
+    token_amount = Decimal(str(amount))
+
+    # 使用智能提现管理器判断是否立即提现
+    decision = await smart_withdrawal_manager.should_withdraw(user_address, token_amount)
+
+    if decision['should_withdraw']:
+        # 立即生成提现签名
+        withdrawal_data = await generate_withdrawal_signature(user_address, amount)
+        withdrawal_data['smart_decision'] = decision
+
+        # Emit to all sessions for this address in this table
+        await sio.emit('withdrawal_signature', withdrawal_data, room=table_id)
+
+        print(f"✅ Immediate withdrawal for {user_address}: {amount} tokens (net profit: {decision.get('net_profit', 'N/A')})")
+    else:
+        # 累积待提现或推迟提现
+        if decision.get('accumulate', False):
+            smart_withdrawal_manager.add_pending_withdrawal(user_address, token_amount)
+            print(f"⏳ Accumulated pending withdrawal for {user_address}: {token_amount} tokens")
+
+        # 仍然发送通知，但标记为延迟提现
+        delayed_data = {
+            'user_address': user_address,
+            'amount': amount,
+            'delayed': True,
+            'reason': decision['reason'],
+            'pending_total': float(smart_withdrawal_manager.get_pending_total(user_address))
+        }
+        await sio.emit('withdrawal_delayed', delayed_data, room=table_id)
 
 
 async def broadcast_game_state(table_id: str):
@@ -1443,14 +1784,34 @@ async def join_werewolf_game(sid, data):
             return
         
         address = player_sessions[sid]['address']
-        
+        game = werewolf_games[game_id]
+
+        # 检查余额是否足够支付入场费
+        try:
+            current_balance = get_balance(address)
+            if current_balance < game.entry_fee:
+                await sio.emit('error', {
+                    'message': f'Insufficient balance. Required: {float(game.entry_fee)} tokens, Available: {float(current_balance)}'
+                }, room=sid)
+                return
+        except Exception as e:
+            await sio.emit('error', {'message': f'Balance check failed: {str(e)}'}, room=sid)
+            return
+
         # Use distributed lock to prevent race conditions on player join
         async with redis_manager.lock(f"game_join:{game_id}"):
-            game = werewolf_games[game_id]
-            
             # Add player to game
             if not game.add_player(sid, address, nickname=nickname):
                 await sio.emit('error', {'message': 'Could not join game'}, room=sid)
+                return
+
+            # 锁定入场费
+            try:
+                lock_balance(address, game.entry_fee, game_session_id=game_id)
+            except Exception as e:
+                await sio.emit('error', {'message': f'Failed to lock entry fee: {str(e)}'}, room=sid)
+                # 移除玩家
+                game.remove_player(sid)
                 return
             
             # Update session

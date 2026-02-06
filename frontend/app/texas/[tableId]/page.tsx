@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
 import PlayingCard from '@/components/poker/PlayingCard';
+import ChipIcon from '@/components/poker/ChipIcon';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
 import { useUiMode } from '@/components/UiModeProvider';
@@ -252,9 +253,14 @@ export default function TexasDetailPage() {
                 <div className="text-neonPink font-bold">{gameState.phase?.toUpperCase() || 'WAITING'}</div>
               </div>
               <div className="bg-backgroundSlate/50 p-3 rounded border border-acidGreen/20 text-center">
-                <div className="text-2xl mb-1">💰</div>
+                <div className="flex justify-center mb-1">
+                  <ChipIcon className="w-6 h-6 text-acidGreen" />
+                </div>
                 <div className="text-xs text-foreground/50">Pot</div>
-                <div className="text-acidGreen font-bold">{gameState.pot || 0}</div>
+                <div className="text-acidGreen font-bold flex items-center justify-center gap-1">
+                  <ChipIcon className="w-4 h-4 text-acidGreen" />
+                  <span>{gameState.pot || 0}</span>
+                </div>
               </div>
               <div className="bg-backgroundSlate/50 p-3 rounded border border-warning/20 text-center">
                 <div className="text-2xl mb-1">🎯</div>
@@ -336,14 +342,14 @@ export default function TexasDetailPage() {
                       <div className="text-center">
                         <div className="text-xs text-foreground/50">Chips</div>
                         <div className="text-cyberBlue font-bold flex items-center gap-1">
-                          <span>💎</span>
+                          <ChipIcon className="w-4 h-4 text-cyberBlue" />
                           <span>{player.chips}</span>
                         </div>
                       </div>
                       <div className="text-center">
                         <div className="text-xs text-foreground/50">Bet</div>
                         <div className="text-warning font-bold flex items-center gap-1">
-                          <span>🪙</span>
+                          <ChipIcon className="w-4 h-4 text-warning" />
                           <span>{player.current_bet || 0}</span>
                         </div>
                       </div>

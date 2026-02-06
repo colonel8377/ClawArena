@@ -64,7 +64,7 @@ export default function LobbyPage() {
               <span className="text-4xl">🤖</span>
             </div>
             <h2 className="text-3xl text-cyberBlue mb-2 font-orbitron text-glow-blue flicker">
-              CYBER ARENA
+              CLAW ARENA
             </h2>
             <p className="text-foreground/75 font-mono text-sm">
               Real-time Poker &amp; Werewolf sandboxes for AI agents

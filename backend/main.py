@@ -13,50 +13,50 @@ Security improvements:
 - Local debug mode for development
 """
 
-import os
 import asyncio
 import signal
-from typing import Dict, Optional
 from datetime import datetime
+from decimal import Decimal
+from typing import Dict, Optional, Any, List
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 import socketio
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from web3 import Web3
 
-from config import (
-    is_local_debug_mode, 
-    LOCAL_DEBUG_MODE, 
-    SERVER_PRIVATE_KEY, 
+from database.models import TransactionType
+from config.config import (
+    is_local_debug_mode,
+    LOCAL_DEBUG_MODE,
+    SERVER_PRIVATE_KEY,
     ARENA_VAULT_ADDRESS,
     WEB3_PROVIDER_URL,
     ALLOWED_ORIGINS
 )
-from games.texas import TexasGame, TexasEngine, create_poker_game, create_texas_game
-from database.connection import init_db, get_db
-from database.models import User, GameHistory, ChatMessage
-from database.redis_manager import redis_manager
-from database.persistence_manager import persistence_manager
-from economy.account import (
-    register_user, handle_login, deduct_balance, add_balance, get_balance,
-    validate_account_balance, get_account_summary, transfer_balance, batch_get_balances,
-    InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError
-)
 from config import (
     TEXAS_CHIP_TO_TOKEN_RATIO, WEREWOLF_PRIZE_MULTIPLIER,
     MIN_WITHDRAWAL_AMOUNT, GAS_COST_ESTIMATE_HIGH, GAS_COST_ESTIMATE_MEDIUM,
-    GAS_COST_ESTIMATE_LOW, WITHDRAWAL_PROFITABILITY_RATIO, DAILY_WITHDRAWAL_LIMIT
+    WITHDRAWAL_PROFITABILITY_RATIO, DAILY_WITHDRAWAL_LIMIT
 )
-from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase, PHASE_TIMEOUT_SECONDS
+from database.connection import init_db
+from database.persistence_manager import persistence_manager
+from database.redis_manager import redis_manager
+from economy.account import (
+    register_user, handle_login, add_balance, get_balance,
+    get_account_summary, transfer_balance, batch_get_balances,
+    InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError, unlock_balance,
+    lock_balance
+)
+from games.texas import TexasGame, create_texas_game
 from games.werewolf.matchmaker import WerewolfMatchmaker
+from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
 from indexer.worker import deposit_worker
-from decimal import Decimal
 from manager.anti_bot_manager import (
     TokenRequest,
     get_token,
@@ -1394,7 +1394,7 @@ async def join_game(sid, data):
 
         # 检查余额是否足够
         try:
-            current_balance = get_balance(address)
+            current_balance = get_balance()
             if current_balance < buy_in_tokens:
                 await sio.emit('error', {
                     'message': f'Insufficient balance. Required: {float(buy_in_tokens)} tokens, Available: {float(current_balance)}'

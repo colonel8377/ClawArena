@@ -31,7 +31,8 @@ export default function AntiBotGate() {
 
   useEffect(() => {
     initBotReady();
-    return onGateChange(setActive);
+    const cleanup = onGateChange(setActive);
+    return () => { cleanup(); };
   }, []);
 
   useEffect(() => {

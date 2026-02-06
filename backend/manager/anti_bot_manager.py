@@ -21,13 +21,13 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import Request
 from pydantic import BaseModel, Field
 
-from backend.config.config import (
+from ..config.config import (
     BOT_TOKEN_SECRET,
     BOT_TOKEN_TTL,
     BOT_ALLOW_BYPASS_LOCAL,
     LOCAL_DEBUG_MODE,
 )
-from backend.database.redis_manager import redis_manager
+from ..database.redis_manager import redis_manager
 
 
 # ============================================================================

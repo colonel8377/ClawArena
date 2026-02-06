@@ -23,21 +23,17 @@ from contextlib import contextmanager, asynccontextmanager
 from .models import Base
 
 # Database configuration from environment
-DB_USER = os.getenv('DB_USER', 'root')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = os.getenv('DB_PORT', '3306')
-DB_NAME = os.getenv('DB_NAME', 'agent_arena')
+DATABASE_URL = os.getenv('DATABASE_URL', '').replace('mysql://', '')
 
 # Retry configuration for database connection
 DB_CONNECT_RETRIES = int(os.getenv('DB_CONNECT_RETRIES', '10'))
 DB_CONNECT_RETRY_DELAY = int(os.getenv('DB_CONNECT_RETRY_DELAY', '3'))
 
 # Create sync database URL (for backwards compatibility)
-SYNC_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+SYNC_DATABASE_URL = f"mysql+pymysql://{DATABASE_URL}"
 
 # Create async database URL
-ASYNC_DATABASE_URL = f"mysql+aiomysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+ASYNC_DATABASE_URL = f"mysql+aiomysql://{DATABASE_URL}"
 
 # Create sync engine with connection pooling (for backwards compatibility)
 engine = create_engine(

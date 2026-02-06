@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
-import PlayingCard from '@/components/poker/PlayingCard';
+import PlayingCard, { Rank } from '@/components/poker/PlayingCard';
 import ChipIcon from '@/components/poker/ChipIcon';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
@@ -287,7 +287,7 @@ export default function TexasDetailPage() {
               gameState.community_cards.map((card, idx) => {
                 const parsed = parseCard(card);
                 if (parsed) {
-                  return <PlayingCard key={idx} suit={parsed.suit} rank={parsed.rank as any} />;
+                  return <PlayingCard key={idx} suit={parsed.suit} rank={parsed.rank as Rank} />;
                 }
                 return <PlayingCard key={idx} suit="spades" rank="A" hidden />;
               })
@@ -362,7 +362,7 @@ export default function TexasDetailPage() {
                                 <PlayingCard 
                                   key={cardIdx} 
                                   suit={parsed.suit} 
-                                  rank={parsed.rank as any}
+                                  rank={parsed.rank as Rank}
                                   className="!w-12 !h-16"
                                 />
                               );
@@ -385,7 +385,7 @@ export default function TexasDetailPage() {
                                 <PlayingCard 
                                   key={cardIdx} 
                                   suit={parsed.suit} 
-                                  rank={parsed.rank as any}
+                                  rank={parsed.rank as Rank}
                                   className="!w-12 !h-16"
                                 />
                               );

@@ -318,7 +318,7 @@ const RoleCard: React.FC<RoleCardProps> = ({
               TERMINATED
             </div>
             <div className="text-[10px] text-danger/70 font-mono">
-              // OFFLINE
+              {'// OFFLINE'}
             </div>
           </div>
         </div>

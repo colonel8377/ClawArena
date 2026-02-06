@@ -56,38 +56,38 @@ The easiest way to run the entire application (frontend + backend + database + r
 From the project root directory:
 
 ```bash
-docker compose -f docker-compose.dev.yml up
+docker compose -f docker-compose.yml up
 ```
 
 Or run in detached mode:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.yml up -d
 ```
 
 ### View Logs
 
 ```bash
 # All services
-docker compose -f docker-compose.dev.yml logs -f
+docker compose -f docker-compose.yml logs -f
 
 # Frontend only
-docker compose -f docker-compose.dev.yml logs -f frontend
+docker compose -f docker-compose.yml logs -f frontend
 
 # Backend only
-docker compose -f docker-compose.dev.yml logs -f backend
+docker compose -f docker-compose.yml logs -f backend
 ```
 
 ### Stop All Services
 
 ```bash
-docker compose -f docker-compose.dev.yml down
+docker compose -f docker-compose.yml down
 ```
 
 ### Stop and Remove Data
 
 ```bash
-docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.yml down -v
 ```
 
 ## Project Structure

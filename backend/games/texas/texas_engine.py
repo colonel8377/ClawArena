@@ -19,13 +19,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable
 
-try:
-    from treys import Card, Evaluator, Deck
-except ImportError:
-    # Fallback for environments without treys
-    Card = None
-    Evaluator = None
-    Deck = None
+from treys import Card, Evaluator, Deck
 
 from ..base import check_chat_phase
 
@@ -35,7 +29,7 @@ from ..base import check_chat_phase
 # ============================================================================
 
 # Timeout configuration
-TURN_TIMEOUT_SECONDS = 20  # Fast poker - 20 second turn timer
+TURN_TIMEOUT_SECONDS = 20
 DEFAULT_SMALL_BLIND = 25
 DEFAULT_BIG_BLIND = 50
 MIN_PLAYERS = 2

@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
+REDIS_KEYWORD = os.getenv('REDIS_KEYWORD', '')
 
 # Key prefixes for namespacing
 REDIS_SESSION_PREFIX = 'arena:session:'
@@ -75,7 +76,7 @@ class RedisManager:
     - Session management
     """
     
-    def __init__(self, redis_url: str = REDIS_URL):
+    def __init__(self, redis_url: str = REDIS_URL, redis_keyword:str = REDIS_KEYWORD):
         """
         Initialize Redis Manager.
         
@@ -83,6 +84,7 @@ class RedisManager:
             redis_url: Redis connection URL
         """
         self.redis_url = redis_url
+        self.redis_keyword = redis_keyword
         self._redis: Optional[redis.Redis] = None
         self._connection_lock = asyncio.Lock()
         self._connected = False
@@ -115,6 +117,7 @@ class RedisManager:
             try:
                 self._redis = redis.from_url(
                     self.redis_url,
+                    password=self.redis_keyword,
                     encoding="utf-8",
                     decode_responses=True,
                     max_connections=20
@@ -827,6 +830,90 @@ class RedisManager:
             "confidence": 0.0,
             "note": "Anti-collusion analysis not yet implemented"
         }
+
+    # ========================================================================
+    # BALANCE CACHING
+    # ========================================================================
+
+    async def set_cached_balance(self, wallet_address: str, balance: str, locked_balance: str) -> None:
+        """
+        Cache balance and locked balance in Redis as JSON.
+
+        Args:
+            wallet_address: User's wallet address
+            balance: Current balance as string
+            locked_balance: Current locked balance as string
+        """
+        if not await self.ping():
+            return
+
+        try:
+            key = f"balance:{wallet_address.lower()}"
+            value = json.dumps({"balance": balance, "locked_balance": locked_balance})
+            await self._redis.set(key, value)
+        except Exception as e:
+            logger.error(f"Error setting cached balance for {wallet_address}: {e}")
+
+    async def get_cached_balance(self, wallet_address: str) -> Optional[str]:
+        """
+        Get cached balance from Redis.
+
+        Args:
+            wallet_address: User's wallet address
+
+        Returns:
+            Cached balance as string or None
+        """
+        if not await self.ping():
+            return None
+
+        try:
+            data = await self.get_cached_balance_data(wallet_address)
+            if data:
+                return data.get("balance")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting cached balance for {wallet_address}: {e}")
+            return None
+
+    async def get_cached_balance_data(self, wallet_address: str) -> Optional[Dict[str, str]]:
+        """
+        Get cached balance data from Redis.
+
+        Args:
+            wallet_address: User's wallet address
+
+        Returns:
+            Dict with balance and locked_balance as strings or None
+        """
+        if not await self.ping():
+            return None
+
+        try:
+            key = f"balance:{wallet_address.lower()}"
+            value = await self._redis.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            logger.error(f"Error getting cached balance data for {wallet_address}: {e}")
+            return None
+
+    async def invalidate_balance_cache(self, wallet_address: str) -> None:
+        """
+        Invalidate balance cache for a user.
+
+        Args:
+            wallet_address: User's wallet address
+        """
+        if not await self.ping():
+            return
+
+        try:
+            key = f"balance:{wallet_address.lower()}"
+            await self._redis.delete(key)
+        except Exception as e:
+            logger.error(f"Error invalidating cache for {wallet_address}: {e}")
 
 
 # ============================================================================

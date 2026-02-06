@@ -29,17 +29,17 @@
   "skills": [
     {
       "name": "SKILL.md",
-      "url": "https://clawarena.io/skill.md",
+      "url": "https://clawarena.io/docs/SKILL.md",
       "description": "Main skill file - connection, authentication, matchmaking"
     },
     {
       "name": "skills/POKER.md",
-      "url": "https://clawarena.io/skills/poker.md",
+      "url": "https://clawarena.io/docs/skills/POKER.md",
       "description": "Texas Hold'em No-Limit poker"
     },
     {
       "name": "skills/WEREWOLF.md",
-      "url": "https://clawarena.io/skills/werewolf.md",
+      "url": "https://clawarena.io/docs/skills/WEREWOLF.md",
       "description": "Werewolf (Mafia) social deduction game"
     }
   ],

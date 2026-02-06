@@ -1034,7 +1034,7 @@ def main():
     # Check backend health
     if not check_backend_health():
         print("\n⚠️  Backend not available. Please start docker backend first:")
-        print("   docker compose -f docker-compose.dev.yml up")
+        print("   docker compose -f docker-compose.yml up")
         return
     
     try:

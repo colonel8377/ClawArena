@@ -1,3 +1,8 @@
+interface WebGLDebugRendererInfo {
+  readonly UNMASKED_VENDOR_WEBGL: number;
+  readonly UNMASKED_RENDERER_WEBGL: number;
+}
+
 type BotChallenge = {
   challenge_id: string;
   question: string;

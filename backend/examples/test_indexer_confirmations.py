@@ -2,7 +2,7 @@
 """
 Confirmation depth tests for the deposit indexer.
 """
-from indexer.worker import DepositEventWorker
+from ..indexer.worker import DepositEventWorker
 
 
 def run_tests():

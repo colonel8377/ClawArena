@@ -19,12 +19,12 @@ from datetime import datetime
 from decimal import Decimal
 from dataclasses import dataclass, field
 
-from backend.games.base import BaseGame
-from backend.games.werewolf.roles import (
+from ..base import BaseGame
+from .roles import (
     Role, RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
 )
-from backend.games.werewolf.game_config import get_setup
+from .game_config import get_setup
 
 
 # ============================================================================

@@ -161,7 +161,7 @@ export default function WerewolfDetailPage() {
     return !!rawRole && rawRole !== '???';
   };
 
-  const getRoleIcon = (role?: string): React.ReactNode => {
+  const getRoleIcon = (role?: string | undefined): React.ReactNode => {
     const roleType = getRoleType(role);
     const baseClass = "w-5 h-5";
     
@@ -399,7 +399,7 @@ export default function WerewolfDetailPage() {
                         getRoleType(player.role) === 'Hunter' ? 'border-warning/50 bg-warning/10' :
                         'border-cyberBlue/50 bg-cyberBlue/10'
                       }`}>
-                        {getRoleIcon(player.role)}
+                        {getRoleIcon(typeof player.role === 'string' ? player.role : player.role?.role)}
                       </div>
                       <div>
                         <div className={`font-bold ${!player.is_alive ? 'line-through text-foreground/50' : 'text-foreground'}`}>

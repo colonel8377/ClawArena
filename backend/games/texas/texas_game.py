@@ -5,11 +5,11 @@ This module implements TexasGame which extends BaseGame and uses
 the poker_engine.PokerEngine for core game logic.
 """
 
-from typing import Dict, List, Optional, Any
-from decimal import Decimal
+from typing import Dict, List, Optional
+
+from .texas_engine import TexasEngine
 from ..base import BaseGame, GamePhase
-from .texas_engine import TexasEngine, PokerPhase
-from backend.config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
+from ...config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
 
 
 class TexasGame(BaseGame):
@@ -79,8 +79,7 @@ class TexasGame(BaseGame):
             'wallet_address': wallet_address,
             'nickname': nickname,
             'buy_in_chips': int(buy_in_chips),
-            'buy_in_tokens': float(buy_in_tokens),
-            'buy_in': int(buy_in_chips)  # 向后兼容，保留旧字段
+            'buy_in_tokens': float(buy_in_tokens)
         }
         self.players.append(player)
         
@@ -96,7 +95,7 @@ class TexasGame(BaseGame):
             sid=sid,
             wallet_address=wallet_address,
             nickname=nickname,
-            buy_in=buy_in
+            buy_in=int(buy_in_chips)
         )
         
         return success
@@ -272,63 +271,3 @@ class TexasGame(BaseGame):
         # This would save to GameSession.state_snapshot
         pass
     
-    # ========================================================================
-    # BACKWARD COMPATIBILITY METHODS (PokerEngine interface)
-    # ========================================================================
-    
-    def start_hand(self) -> Dict:
-        """
-        Start a new hand (backward compatible with PokerEngine).
-        
-        Returns:
-            Dict with success status
-        """
-        return self.engine.start_hand()
-    
-    def process_move(self, sid: str, action: str, amount: int = 0, 
-                    chat_message: Optional[str] = None) -> Dict:
-        """
-        Process a player move (backward compatible with PokerEngine).
-        
-        Args:
-            sid: Socket.IO session ID
-            action: Action type (fold, check, call, raise)
-            amount: Bet amount for raise
-            chat_message: Optional chat/bluff message
-            
-        Returns:
-            Dict with action result
-        """
-        # Update last action time for zombie tracking
-        self.update_player_action_time(sid)
-        
-        # Reset consecutive timeouts on successful action
-        self._reset_timeout_tracking(sid)
-        
-        # Delegate to engine
-        return self.engine.process_move(sid, action, amount, chat_message)
-    
-    def is_hand_over(self) -> bool:
-        """Check if current hand is over (backward compatible)."""
-        return self.engine.is_hand_over()
-    
-    def showdown(self) -> Dict:
-        """Get showdown results (backward compatible)."""
-        return self.engine.showdown()
-    
-    def advance_phase(self) -> Dict:
-        """Advance to next phase (backward compatible with PokerEngine)."""
-        return self.engine.advance_phase()
-    
-    def get_all_hole_cards(self) -> Dict:
-        """Get all players' hole cards for showdown (backward compatible)."""
-        return self.engine.get_all_hole_cards()
-    
-    def cards_to_strings(self, cards) -> list:
-        """Convert card integers to strings (backward compatible)."""
-        return self.engine.cards_to_strings(cards)
-    
-    @property
-    def community_cards(self):
-        """Get community cards (backward compatible)."""
-        return self.engine.community_cards

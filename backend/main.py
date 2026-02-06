@@ -57,7 +57,7 @@ from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase, PHASE_TIME
 from games.werewolf.matchmaker import WerewolfMatchmaker
 from indexer.worker import deposit_worker
 from decimal import Decimal
-from manager.anti_bot import (
+from manager.anti_bot_manager import (
     TokenRequest,
     get_token,
     verify_request_bot_token,

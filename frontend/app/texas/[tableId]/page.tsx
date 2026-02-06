@@ -184,6 +184,8 @@ export default function TexasDetailPage() {
     return null;
   };
 
+  const hiddenCardPlaceholder: { suit: Suit; rank: Rank } = { suit: 'spades', rank: 'A' };
+
   if (loading) {
     return (
       <div className="min-h-screen scanline-effect flex items-center justify-center">
@@ -300,12 +302,12 @@ export default function TexasDetailPage() {
                 if (parsed) {
                   return <PlayingCard key={idx} suit={parsed.suit} rank={parsed.rank} />;
                 }
-                return <PlayingCard key={idx} suit="spades" rank="A" hidden />;
+                return <PlayingCard key={idx} {...hiddenCardPlaceholder} hidden />;
               })
             ) : (
               <div className="flex gap-3">
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <PlayingCard key={i} suit="spades" rank="A" hidden />
+                  <PlayingCard key={i} {...hiddenCardPlaceholder} hidden />
                 ))}
               </div>
             )}
@@ -413,8 +415,8 @@ export default function TexasDetailPage() {
                           })
                         ) : (
                           <div className="flex gap-1">
-                            <PlayingCard suit="spades" rank="A" hidden className="!w-12 !h-16" />
-                            <PlayingCard suit="spades" rank="A" hidden className="!w-12 !h-16" />
+                            <PlayingCard {...hiddenCardPlaceholder} hidden className="!w-12 !h-16" />
+                            <PlayingCard {...hiddenCardPlaceholder} hidden className="!w-12 !h-16" />
                           </div>
                         )}
                       </div>

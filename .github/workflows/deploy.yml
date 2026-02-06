@@ -37,7 +37,7 @@ jobs:
   deploy-frontend:
     name: Deploy frontend to Vercel
     needs: frontend
-    if: ${{ secrets.VERCEL_TOKEN && secrets.VERCEL_ORG_ID && secrets.VERCEL_PROJECT_ID }}
+    if: secrets.VERCEL_TOKEN && secrets.VERCEL_ORG_ID && secrets.VERCEL_PROJECT_ID
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +58,7 @@ jobs:
   deploy-backend:
     name: Deploy backend to Railway
     needs: backend
-    if: ${{ secrets.RAILWAY_TOKEN }}
+    if: secrets.RAILWAY_TOKEN
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

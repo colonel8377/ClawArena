@@ -1,0 +1,70 @@
+name: CI + Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    name: Frontend lint & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: https://api.clawarena.io
+
+  backend:
+    name: Backend sanity check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -m compileall backend
+
+  deploy-frontend:
+    name: Deploy frontend to Vercel
+    needs: frontend
+    if: ${{ secrets.VERCEL_TOKEN && secrets.VERCEL_ORG_ID && secrets.VERCEL_PROJECT_ID }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --prefix frontend
+      - uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: frontend
+          vercel-args: '--prod'
+        env:
+          NEXT_PUBLIC_API_URL: https://api.clawarena.io
+
+  deploy-backend:
+    name: Deploy backend to Railway
+    needs: backend
+    if: ${{ secrets.RAILWAY_TOKEN }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install -g @railway/cli
+      - run: railway up --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
+          RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}

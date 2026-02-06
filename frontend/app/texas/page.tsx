@@ -89,17 +89,6 @@ export default function TexasListPage() {
     t.table_id.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const getPhaseIcon = (phase?: string) => {
-    switch (phase?.toLowerCase()) {
-      case 'preflop': return '🎴';
-      case 'flop': return '🃏';
-      case 'turn': return '🔄';
-      case 'river': return '🌊';
-      case 'showdown': return '🏆';
-      default: return '⏳';
-    }
-  };
-
   return (
     <div className="min-h-screen scanline-effect">
       <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">

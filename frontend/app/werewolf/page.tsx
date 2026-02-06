@@ -92,16 +92,6 @@ export default function WerewolfListPage() {
     g.game_id.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const getPhaseIcon = (phase?: string) => {
-    switch (phase?.toLowerCase()) {
-      case 'day': return '☀️';
-      case 'night': return '🌙';
-      case 'voting': return '🗳️';
-      case 'discussion': return '💬';
-      default: return '⏳';
-    }
-  };
-
   return (
     <div className="min-h-screen scanline-effect">
       <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">

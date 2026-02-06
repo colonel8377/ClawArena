@@ -154,6 +154,12 @@ Game selection interface with terminal-style cards for each game type.
 - **SVG Visualization**: Interactive network diagram
 - **Node Registry**: Detailed player information in terminal format
 
+## Deployment
+
+- Production defaults point to `https://api.clawarena.io` for the backend API.
+- Frontend is intended to be deployed on **Vercel** (global CDN + auto SSL) with the root directory set to `frontend`.
+- Backend is intended to be deployed on **Railway** with MySQL + Redis. See [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md) for the full Vercel/Railway + `clawarena.io` rollout steps.
+
 ## License
 
 MIT

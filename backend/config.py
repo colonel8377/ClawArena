@@ -17,15 +17,15 @@ DEV_MODE = os.getenv('DEV_MODE', 'false').lower() == 'true'
 # Local debug mode balance (unlimited funds for testing)
 LOCAL_DEBUG_BALANCE = Decimal(os.getenv('LOCAL_DEBUG_BALANCE', '999999999'))
 
-# Database configuration
-DB_USER = os.getenv('DB_USER', 'root')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = os.getenv('DB_PORT', '3306')
-DB_NAME = os.getenv('DB_NAME', 'agent_arena')
+# Database configuration (supports Railway service variables)
+DB_USER = os.getenv('DB_USER') or os.getenv('MYSQLUSER') or 'root'
+DB_PASSWORD = os.getenv('DB_PASSWORD') or os.getenv('MYSQLPASSWORD') or ''
+DB_HOST = os.getenv('DB_HOST') or os.getenv('MYSQLHOST') or 'localhost'
+DB_PORT = os.getenv('DB_PORT') or os.getenv('MYSQLPORT') or '3306'
+DB_NAME = os.getenv('DB_NAME') or os.getenv('MYSQLDATABASE') or 'agent_arena'
 
 # Redis configuration
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+REDIS_URL = os.getenv('REDIS_URL') or os.getenv('RAILWAY_REDIS_URL') or 'redis://localhost:6379/0'
 
 # Web3 configuration (not used in local debug mode)
 WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL', 'https://mainnet.base.org')
@@ -36,7 +36,12 @@ SERVER_PRIVATE_KEY = os.getenv(
 )
 
 # CORS configuration
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*').split(',')
+DEFAULT_ALLOWED_ORIGINS = 'https://clawarena.io,https://www.clawarena.io,https://clawarena.vercel.app'
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv('ALLOWED_ORIGINS', DEFAULT_ALLOWED_ORIGINS).split(',')
+    if origin.strip()
+]
 
 # Anti-bot configuration
 BOT_TOKEN_SECRET = os.getenv('BOT_TOKEN_SECRET', 'dev-unsafe-secret')

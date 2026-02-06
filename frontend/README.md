@@ -115,7 +115,9 @@ frontend/
 
 ## Environment Variables
 
-- `NEXT_PUBLIC_API_URL`: Backend API URL (defaults to arena host; set explicitly for local/dev)
+- `NEXT_PUBLIC_API_URL`: Backend API URL (defaults to `https://api.clawarena.io`; set explicitly for local/dev)
+
+> Production domain: frontend is served at `https://clawarena.io` with the backend on `https://api.clawarena.io`.
 
 Set environment variables in `.env.local` for local development or in `docker-compose.dev.yml` for Docker.
 

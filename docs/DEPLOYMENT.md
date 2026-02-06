@@ -27,3 +27,4 @@ Backend (Railway):
 
 - Railway builds use `backend/Dockerfile` via `railway.toml`.
 - The frontend build defaults `NEXT_PUBLIC_API_URL` to `https://api.clawarena.io`; override as needed via Vercel envs.
+- The deploy workflow will **skip** the frontend job if any Vercel secrets are missing, and **skip** the backend job if `RAILWAY_TOKEN` is missing. The preflight job still runs so you can confirm Actions is wired up.

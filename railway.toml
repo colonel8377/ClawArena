@@ -1,0 +1,16 @@
+# Railway Configuration File
+# This file tells Railway how to deploy your app
+# Place this in your backend directory or root
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "backend/Dockerfile.railway"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# Environment variables will be set in Railway dashboard
+# DO NOT put sensitive values here!

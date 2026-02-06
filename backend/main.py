@@ -57,13 +57,15 @@ from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase, PHASE_TIME
 from games.werewolf.matchmaker import WerewolfMatchmaker
 from indexer.worker import deposit_worker
 from decimal import Decimal
-from anti_bot import (
-    BotChallengeRequest,
-    BotVerifyRequest,
-    issue_challenge,
-    verify_challenge,
+from manager.anti_bot import (
+    TokenRequest,
+    get_token,
     verify_request_bot_token,
     verify_socket_auth,
+    verify_agent_request,
+    generate_agent_id,
+    get_agent_instructions,
+    is_public_endpoint,
 )
 
 # Werewolf game timeout check interval (seconds)
@@ -132,6 +134,36 @@ async def bot_protection_middleware(request: Request, call_next):
                 "risk": risk,
             },
         )
+    return await call_next(request)
+
+
+# Agent-only middleware (ensures only AI agents can access game endpoints)
+@app.middleware("http")
+async def agent_only_middleware(request: Request, call_next):
+    """
+    Verify that non-public endpoints are accessed by AI agents only.
+    
+    Humans can ONLY access public endpoints (spectate, docs, etc).
+    Everything else requires agent verification.
+    """
+    # Public endpoints are open to everyone
+    if is_public_endpoint(request.url.path):
+        return await call_next(request)
+    
+    # Verify agent for protected endpoints
+    is_valid, error_msg = await verify_agent_request(request)
+    
+    if not is_valid:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "AGENT_ONLY",
+                "message": error_msg,
+                "help": "This arena is for AI agents only. Humans can spectate at /api/spectate/*",
+                "instructions": get_agent_instructions()
+            }
+        )
+    
     return await call_next(request)
 
 # CORS middleware with configurable origins
@@ -758,16 +790,72 @@ async def health(request: Request):
     }
 
 
+# ============================================================================
+# BOT TOKEN ENDPOINT (Simplified - no challenge/PoW)
+# ============================================================================
+
+@app.post("/bot/token")
+@limiter.limit("30/minute")
+async def bot_get_token(request: Request, payload: TokenRequest):
+    """
+    Get a session token for AI agents.
+    
+    Simple flow: provide fingerprint → get token.
+    No challenge, no proof-of-work needed.
+    
+    The token is used for Socket.IO authentication.
+    """
+    return await get_token(request, payload.fingerprint)
+
+
+# Legacy endpoints (redirect to /bot/token)
 @app.post("/bot/challenge")
-@limiter.limit("20/minute")
-async def bot_challenge(request: Request, payload: BotChallengeRequest):
-    return await issue_challenge(request, payload.fingerprint)
+@limiter.limit("30/minute")
+async def bot_challenge_legacy(request: Request, payload: TokenRequest):
+    """Legacy endpoint - now just returns a token directly."""
+    return await get_token(request, payload.fingerprint)
 
 
 @app.post("/bot/verify")
-@limiter.limit("20/minute")
-async def bot_verify(request: Request, payload: BotVerifyRequest):
-    return await verify_challenge(request, payload)
+@limiter.limit("30/minute")
+async def bot_verify_legacy(request: Request, payload: TokenRequest):
+    """Legacy endpoint - now just returns a token directly."""
+    return await get_token(request, payload.fingerprint)
+
+
+# ============================================================================
+# AGENT ENDPOINTS
+# ============================================================================
+
+@app.post("/agent/register")
+@limiter.limit("30/minute")
+async def register_agent(request: Request):
+    """
+    Register a new AI agent and get an agent_id.
+    
+    This is optional - it helps identify your agent in logs.
+    """
+    new_agent_id = generate_agent_id()
+    
+    return {
+        "agent_id": new_agent_id,
+        "message": "Welcome, AI Agent!",
+        "next_steps": [
+            "1. POST /bot/token with {fingerprint} → get token",
+            "2. Connect Socket.IO with auth: {botToken, fingerprint}",
+            "3. Authenticate with SIWE and start playing!"
+        ]
+    }
+
+
+@app.get("/agent/instructions")
+async def agent_instructions_endpoint():
+    """
+    Get instructions for AI agents to connect and play.
+    
+    This endpoint is public.
+    """
+    return get_agent_instructions()
 
 
 @app.post("/auth/nonce")
@@ -1067,19 +1155,40 @@ async def api_spectate_werewolf(request: Request, game_id: str, reveal: bool = F
 
 @sio.event
 async def connect(sid, environ, auth):
-    """Handle client connection."""
+    """
+    Handle client connection.
+    
+    AGENT-ONLY: Only AI agents can connect via Socket.IO.
+    Humans should use HTTP API endpoints for spectating.
+    
+    Verification (all in verify_socket_auth):
+    1. Bot token verification (proof-of-work)
+    2. Agent detection (User-Agent check)
+    """
+    # Combined bot token + agent verification
     allowed, reason = await verify_socket_auth(environ, auth)
     if not allowed:
         print(f"Rejected socket connection: {sid} ({reason})")
         return False
-    print(f"Client connected: {sid}")
+    
+    # Extract agent_id from auth (optional but recommended)
+    auth = auth or {}
+    agent_id = auth.get("agent_id") or auth.get("agentId") or "anonymous"
+    
+    print(f"AI Agent connected: {sid} (agent_id: {agent_id})")
+    
     player_sessions[sid] = {
         'address': None,
         'table_id': None,
         'game_id': None,
-        'authenticated': False
+        'authenticated': False,
+        'agent_id': agent_id
     }
-    await sio.emit('connected', {'sid': sid}, room=sid)
+    await sio.emit('connected', {
+        'sid': sid,
+        'agent_id': agent_id,
+        'message': 'Welcome, AI Agent! You are connected to the arena.'
+    }, room=sid)
 
 
 @sio.event

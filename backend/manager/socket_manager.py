@@ -16,7 +16,7 @@ from datetime import datetime
 from dataclasses import dataclass, field, asdict
 
 import socketio
-from database.redis_manager import redis_manager, REDIS_SESSION_PREFIX, REDIS_GAME_PREFIX, SESSION_EXPIRY
+from backend.database.redis_manager import redis_manager, REDIS_SESSION_PREFIX, REDIS_GAME_PREFIX, SESSION_EXPIRY
 
 
 # ============================================================================

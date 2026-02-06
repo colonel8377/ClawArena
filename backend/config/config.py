@@ -38,13 +38,9 @@ SERVER_PRIVATE_KEY = os.getenv(
 # CORS configuration
 ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*').split(',')
 
-# Anti-bot configuration
+# Anti-bot configuration (simplified - no PoW)
 BOT_TOKEN_SECRET = os.getenv('BOT_TOKEN_SECRET', 'dev-unsafe-secret')
-BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '1800'))  # 30 minutes
-BOT_CHALLENGE_TTL = int(os.getenv('BOT_CHALLENGE_TTL', '300'))  # 5 minutes
-BOT_POW_DIFFICULTY = int(os.getenv('BOT_POW_DIFFICULTY', '16'))  # leading zero bits
-BOT_RISK_CHALLENGE_THRESHOLD = int(os.getenv('BOT_RISK_CHALLENGE_THRESHOLD', '25'))
-BOT_RISK_BLOCK_THRESHOLD = int(os.getenv('BOT_RISK_BLOCK_THRESHOLD', '60'))
+BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '3600'))  # 1 hour
 
 # Game economy configuration
 # 德州扑克筹码/Token比例：1 Token = 10 Chips，让用户感觉更值钱
@@ -68,6 +64,18 @@ WITHDRAWAL_PROFITABILITY_RATIO = Decimal("3.0")  # 提现收益至少是Gas费�
 DAILY_WITHDRAWAL_LIMIT = None  # None = 无上限
 
 BOT_ALLOW_BYPASS_LOCAL = os.getenv('BOT_ALLOW_BYPASS_LOCAL', 'true').lower() == 'true'
+
+# ============================================================================
+# AGENT-ONLY POLICY (Simplified)
+# ============================================================================
+# This arena is designed for AI Agents ONLY. Humans can only spectate.
+#
+# How it works:
+# 1. User-Agent detection: Block browsers, allow programmatic clients
+# 2. Simple token-based sessions: Track agents
+# 3. Rate limiting: Prevent abuse
+#
+# No challenge/PoW needed - we just want to filter out casual web scrapers.
 
 
 def is_local_debug_mode() -> bool:

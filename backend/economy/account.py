@@ -19,7 +19,7 @@ from sqlalchemy import text
 from backend.database.models import UserLedger, TransactionLog, TransactionType
 from backend.database.connection import get_db_session
 from backend.database.redis_manager import redis_manager
-from backend.config import is_local_debug_mode, get_debug_balance
+from backend.config.config import is_local_debug_mode, get_debug_balance
 
 
 # Custom exceptions for better error handling

@@ -26,6 +26,49 @@ class GamePhase(Enum):
     FINISHED = "finished"
 
 
+# ============================================================================
+# CHAT PHASE RESTRICTION HELPERS
+# ============================================================================
+
+def chat_restricted_error(phase_value: str, reason: str = None) -> Dict:
+    """
+    Generate a standard error response for phase-restricted public chat.
+    
+    Used by all games to enforce the rule: public chat is only allowed
+    during designated phases, preventing information leakage (e.g. revealing
+    hole cards in poker, or speaking out of turn in werewolf).
+    
+    Args:
+        phase_value: Current phase name (for the error message)
+        reason: Optional custom reason string
+        
+    Returns:
+        Dict with success=False, error message, and error_code='CHAT_PHASE_RESTRICTED'
+    """
+    return {
+        'success': False,
+        'error': reason or f'Public chat is not allowed during {phase_value}',
+        'error_code': 'CHAT_PHASE_RESTRICTED'
+    }
+
+
+def check_chat_phase(current_phase, allowed_phases: set) -> Optional[Dict]:
+    """
+    Check if public chat is allowed in the current phase.
+    
+    Args:
+        current_phase: Current game phase (Enum with .value)
+        allowed_phases: Set of phases where public chat is freely allowed
+        
+    Returns:
+        None if chat is allowed, or a CHAT_PHASE_RESTRICTED error dict if blocked
+    """
+    if current_phase in allowed_phases:
+        return None
+    phase_value = current_phase.value if hasattr(current_phase, 'value') else str(current_phase)
+    return chat_restricted_error(phase_value)
+
+
 class BaseEngine(ABC):
     """
     Abstract base class for game logic engines.

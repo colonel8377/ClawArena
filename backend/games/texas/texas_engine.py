@@ -27,6 +27,8 @@ except ImportError:
     Evaluator = None
     Deck = None
 
+from ..base import check_chat_phase
+
 
 # ============================================================================
 # CONSTANTS
@@ -509,6 +511,11 @@ class TexasEngine:
     # BETTING ACTIONS
     # ========================================================================
     
+    # Phases where public chat is allowed (between hands, showdown, finished).
+    # During active hand phases (PRE_FLOP through RIVER), chat is blocked to
+    # prevent agents from leaking hole cards in public chat.
+    CHAT_ALLOWED_PHASES = {PokerPhase.WAITING, PokerPhase.SHOWDOWN, PokerPhase.FINISHED}
+
     def process_move(
         self,
         sid: str,
@@ -519,18 +526,9 @@ class TexasEngine:
         """
         Process a player's move with optional chat/bluff message.
         
-        This is the main action handler that validates and executes player moves.
-        The chat_message field allows agents to bluff, taunt, or communicate
-        while making their move.
-        
-        Args:
-            sid: Player's socket ID
-            action: One of 'fold', 'check', 'call', 'raise'
-            amount: Required if action is 'raise', the total bet amount
-            chat_message: Optional trash talk/bluff message
-            
-        Returns:
-            Dict with success status and move details
+        Chat is only permitted during WAITING, SHOWDOWN, and FINISHED phases.
+        During active hand phases (PRE_FLOP through RIVER), chat is silently
+        stripped to prevent hole-card information leakage.
         """
         # Validate it's this player's turn
         if not self._is_player_turn(sid):
@@ -540,7 +538,13 @@ class TexasEngine:
         if not player or not player.can_act():
             return {'success': False, 'error': 'Player cannot act'}
         
-        # Process chat message first (always broadcast, even if action fails)
+        # Phase-based chat gate (shared helper from base.py)
+        chat_blocked = False
+        if chat_message and check_chat_phase(self.phase, self.CHAT_ALLOWED_PHASES):
+            chat_blocked = True
+            chat_message = None  # Strip the chat message
+        
+        # Process chat message (only if allowed by phase)
         if chat_message:
             chat_entry = ChatMessage(
                 player_sid=sid,
@@ -562,6 +566,10 @@ class TexasEngine:
             # Add chat to result for broadcasting
             result['chat'] = chat_message
             result['player_nickname'] = player.nickname
+            
+            # Notify caller that chat was stripped due to phase restriction
+            if chat_blocked:
+                result['chat_blocked'] = True
             
             # Check if hand is over (everyone else folded)
             if result.get('hand_over'):

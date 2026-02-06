@@ -20,7 +20,7 @@ from .roles import (
     RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
 )
-from ..base import BaseGame
+from ..base import BaseGame, chat_restricted_error, check_chat_phase
 
 # ============================================================================
 # CONSTANTS
@@ -569,7 +569,7 @@ class WerewolfGame(BaseGame):
         """
         player = self._get_player_by_sid(sid)
         
-        # Chat actions are always allowed
+        # Chat actions are phase-restricted (see _handle_public_chat)
         if action == 'chat':
             return self._handle_public_chat(sid, kwargs.get('message', ''))
         
@@ -627,14 +627,43 @@ class WerewolfGame(BaseGame):
     # CHAT HANDLERS
     # ========================================================================
     
+    # Phases where public chat is freely allowed (pre-game lobby and post-game discussion)
+    CHAT_ALLOWED_PHASES = {WerewolfPhase.WAITING, WerewolfPhase.FINISHED}
+
+    def _check_public_chat_allowed(self, sid: str) -> Optional[Dict]:
+        """
+        Check if this player can send public chat right now.
+        
+        Returns None if allowed, or a CHAT_PHASE_RESTRICTED error dict if blocked.
+        
+        Rules (matching real werewolf):
+        - WAITING / FINISHED: free chat
+        - DAY_SPEAKING: only current speaker
+        - Everything else (night, announcement, voting): blocked
+        """
+        # DAY_SPEAKING: only the current speaker
+        if self.phase == WerewolfPhase.DAY_SPEAKING:
+            if self.speaking_order and self.current_speaker_index < len(self.speaking_order):
+                if sid == self.speaking_order[self.current_speaker_index]:
+                    return None  # Current speaker is allowed
+            return chat_restricted_error(self.phase.value, 'Only the current speaker can chat during speaking phase')
+        
+        # All other phases: use the shared check
+        return check_chat_phase(self.phase, self.CHAT_ALLOWED_PHASES)
+
     def _handle_public_chat(self, sid: str, message: str) -> Dict:
-        """Handle public chat message."""
+        """Handle public chat message with phase-based restrictions."""
         player = self._get_player_by_sid(sid)
         if not player:
             return {'success': False, 'error': 'Player not found'}
         
         if not message:
             return {'success': False, 'error': 'Message required'}
+        
+        # Phase-based chat gate
+        gate = self._check_public_chat_allowed(sid)
+        if gate:
+            return gate
         
         chat_msg = ChatMessage(
             sid=sid,
@@ -645,9 +674,6 @@ class WerewolfGame(BaseGame):
             is_wolf_chat=False
         )
         self.public_chat.append(chat_msg)
-        
-        # Note: Persistence is handled by PersistenceManager in main.py
-        # Channel event bus is no longer used for chat
         
         return {'success': True, 'chat': chat_msg.to_dict()}
     

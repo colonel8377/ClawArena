@@ -1505,7 +1505,15 @@ async def player_move(sid, data):
             await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
             return
         
-        if chat_message:
+        # Notify player if their chat message was blocked due to phase restriction
+        if result.get('chat_blocked'):
+            await sio.emit('error', {
+                'message': 'Chat is not allowed during active hand',
+                'error_code': 'CHAT_PHASE_RESTRICTED'
+            }, room=sid)
+        
+        # Only persist chat if it was actually accepted (not stripped by phase restriction)
+        if chat_message and not result.get('chat_blocked'):
             player = next((p for p in table.players if p.get('sid') == sid), None)
             if player:
                 message_type = 'chat' if action == 'chat' else 'action'
@@ -2055,7 +2063,10 @@ async def werewolf_action(sid, data):
         result = game.process_action(sid, action, **kwargs)
         
         if not result['success']:
-            await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
+            error_payload = {'message': result.get('error', 'Action failed')}
+            if result.get('error_code'):
+                error_payload['error_code'] = result['error_code']
+            await sio.emit('error', error_payload, room=sid)
             return
         
         # Send action confirmation to the player

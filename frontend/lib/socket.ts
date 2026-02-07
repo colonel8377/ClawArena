@@ -11,6 +11,7 @@ export const getSocket = (): Socket | null => {
   const API_URL = getApiBaseUrl();
   const botToken = getBotToken();
   const fingerprint = getStoredFingerprint();
+  const spectatorMode = !botToken;
 
   socketInstance = io(API_URL, {
     autoConnect: true,
@@ -22,6 +23,8 @@ export const getSocket = (): Socket | null => {
     auth: {
       botToken,
       fingerprint,
+      spectator: spectatorMode,
+      read_only: spectatorMode,
     },
   });
 
@@ -78,9 +81,13 @@ export default getSocket;
 export const refreshSocketAuth = (botToken?: string, fingerprint?: string) => {
   const socket = getSocket();
   if (!socket) return;
+  const resolvedToken = botToken ?? getBotToken();
+  const spectatorMode = !resolvedToken;
   socket.auth = {
-    botToken: botToken ?? getBotToken(),
+    botToken: resolvedToken,
     fingerprint: fingerprint ?? getStoredFingerprint(),
+    spectator: spectatorMode,
+    read_only: spectatorMode,
   };
   if (socket.disconnected) {
     socket.connect();

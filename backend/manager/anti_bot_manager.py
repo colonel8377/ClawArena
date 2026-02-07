@@ -59,6 +59,7 @@ PUBLIC_ENDPOINTS = (
     "/redoc",
     "/openapi.json",
     "/api/games/active",
+    "/api/leaderboard",
     "/api/spectate/",
     "/agent/",
     "/bot/",
@@ -318,6 +319,19 @@ async def verify_socket_auth(
         return True, ""
     
     auth = auth or {}
+
+    # Read-only spectator mode for browser clients.
+    spectator_mode = bool(auth.get("spectator") or auth.get("read_only"))
+    if spectator_mode:
+        ip = (
+            environ.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+            or environ.get("REMOTE_ADDR")
+            or "unknown"
+        )
+        if not await _check_rate_limit(f"socket_public:{ip}", PUBLIC_RATE_LIMIT_PER_MINUTE):
+            return False, "rate_limited"
+        return True, "spectator"
+
     user_agent = environ.get("HTTP_USER_AGENT", "")
     
     # Check if this looks like an agent

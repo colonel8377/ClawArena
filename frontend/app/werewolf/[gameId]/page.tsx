@@ -49,6 +49,7 @@ export default function WerewolfDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [gameLog, setGameLog] = useState<string[]>([]);
   const lastSocketUpdateRef = useRef(0);
+  const lastRevealFetchRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
@@ -74,6 +75,7 @@ export default function WerewolfDetailPage() {
 
     function onConnect() {
       setConnected(true);
+      socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
     }
 
     function onDisconnect() {
@@ -85,11 +87,28 @@ export default function WerewolfDetailPage() {
 
     const onGameState = (data: GameState) => {
       if (data.game_id === gameId) {
+        lastSocketUpdateRef.current = Date.now();
         if (revealAll && !hasRevealedRoles(data)) {
+          const now = Date.now();
+          // Room broadcasts are spectator-safe (masked). Use them to trigger a throttled HTTP reveal refresh.
+          if (now - lastRevealFetchRef.current > 800) {
+            lastRevealFetchRef.current = now;
+            void botFetch(apiUrl)
+              .then((res) => (res.ok ? res.json() : null))
+              .then((fullState) => {
+                if (fullState && fullState.game_id === gameId) {
+                  setGameState(fullState as GameState);
+                  setError(null);
+                }
+              })
+              .catch(() => {
+                // Polling loop remains as fallback.
+              });
+          }
           return;
         }
-        lastSocketUpdateRef.current = Date.now();
         setGameState(data);
+        setError(null);
       }
     };
 
@@ -102,7 +121,7 @@ export default function WerewolfDetailPage() {
       }
     });
 
-    socket.emit('join_spectate', { game_id: gameId });
+    socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
 
     return () => {
       socket.off('connect', onConnect);
@@ -112,7 +131,7 @@ export default function WerewolfDetailPage() {
       socket.off('game_event');
       socket.emit('leave_spectate', { game_id: gameId });
     };
-  }, [gameId, revealAll]);
+  }, [apiUrl, gameId, revealAll]);
 
   useEffect(() => {
     const fetchGameState = async (isInitial = false) => {

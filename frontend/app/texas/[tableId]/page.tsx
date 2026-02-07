@@ -50,6 +50,7 @@ export default function TexasDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const lastSocketUpdateRef = useRef(0);
+  const lastRevealFetchRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
@@ -75,6 +76,7 @@ export default function TexasDetailPage() {
 
     function onConnect() {
       setConnected(true);
+      socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
     }
 
     function onDisconnect() {
@@ -86,18 +88,35 @@ export default function TexasDetailPage() {
 
     const onGameState = (data: GameState) => {
       if (data.game_id === tableId) {
+        lastSocketUpdateRef.current = Date.now();
         if (revealAll && !hasRevealedCards(data)) {
+          const now = Date.now();
+          // In reveal mode, Socket.IO room updates are masked; use them as a trigger for HTTP full-state sync.
+          if (now - lastRevealFetchRef.current > 800) {
+            lastRevealFetchRef.current = now;
+            void botFetch(apiUrl)
+              .then((res) => (res.ok ? res.json() : null))
+              .then((fullState) => {
+                if (fullState && fullState.game_id === tableId) {
+                  setGameState(fullState as GameState);
+                  setError(null);
+                }
+              })
+              .catch(() => {
+                // Polling loop remains as fallback.
+              });
+          }
           return;
         }
-        lastSocketUpdateRef.current = Date.now();
         setGameState(data);
+        setError(null);
       }
     };
 
     socket.on('game_state', onGameState);
     socket.on('game_update', onGameState);
 
-    socket.emit('join_spectate', { table_id: tableId });
+    socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
 
     return () => {
       socket.off('connect', onConnect);
@@ -106,7 +125,7 @@ export default function TexasDetailPage() {
       socket.off('game_update', onGameState);
       socket.emit('leave_spectate', { table_id: tableId });
     };
-  }, [revealAll, tableId]);
+  }, [apiUrl, revealAll, tableId]);
 
   useEffect(() => {
     const fetchGameState = async (isInitial = false) => {

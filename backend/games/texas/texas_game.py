@@ -103,8 +103,17 @@ class TexasGame(BaseGame):
     
     def remove_player(self, sid: str) -> bool:
         """Remove a player from the game."""
-        self.players = [p for p in self.players if p['sid'] != sid]
-        return self.engine.remove_player(sid)
+        removed = self.engine.remove_player(sid)
+        if not removed:
+            return False
+
+        # Engine keeps players during active hands (marks as folded), so only
+        # remove from wrapper state if engine fully removed the seat.
+        if sid not in self.engine.players:
+            self.players = [p for p in self.players if p['sid'] != sid]
+            self.channel.remove_participant(sid)
+
+        return True
     
     def can_start(self) -> bool:
         """Check if game can start."""
@@ -154,12 +163,6 @@ class TexasGame(BaseGame):
         - all_in: Go all-in
         - chat: Send a chat message (message in kwargs)
         """
-        # Update last action time for zombie tracking
-        self.update_player_action_time(sid)
-        
-        # Reset consecutive timeouts on successful action
-        self._reset_timeout_tracking(sid)
-        
         if action == 'chat':
             # Reuse shared phase gate to keep wrapper and engine chat rules consistent.
             gate = check_chat_phase(self.engine.phase, self.engine.CHAT_ALLOWED_PHASES)
@@ -168,14 +171,23 @@ class TexasGame(BaseGame):
 
             # Handle chat through BaseGame
             message = kwargs.get('message', '')
-            return {'success': True, 'chat': self.add_chat_message(sid, message)}
+            result = {'success': True, 'chat': self.add_chat_message(sid, message)}
+            self.update_player_action_time(sid)
+            self._reset_timeout_tracking(sid)
+            return result
         
         # Delegate to poker engine
         if action == 'raise':
             amount = kwargs.get('amount', self.big_blind)
-            return self.engine.process_move(sid, action, amount=amount)
+            result = self.engine.process_move(sid, action, amount=amount)
         else:
-            return self.engine.process_move(sid, action)
+            result = self.engine.process_move(sid, action)
+
+        if result.get('success'):
+            self.update_player_action_time(sid)
+            self._reset_timeout_tracking(sid)
+
+        return result
     
     def get_game_state(
         self,
@@ -205,12 +217,9 @@ class TexasGame(BaseGame):
     
     def is_game_over(self) -> bool:
         """Check if the game is over."""
-        # Poker games continue until explicitly ended or all but one player leaves
-        if len(self.players) < 2:
-            return True
-        
-        # Check if hand is finished
-        return self.engine.is_hand_over()
+        # A finished hand is not a finished table. The table only ends when it
+        # can no longer start a hand (fewer than 2 chip-positive players).
+        return not self.engine.can_start()
     
     def get_winners(self) -> List[str]:
         """

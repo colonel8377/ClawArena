@@ -328,12 +328,12 @@ class TexasEngine:
         
         # Create and shuffle deck
         self._create_deck()
-        
-        # Deal hole cards
-        self._deal_hole_cards()
-        
         # Post blinds
         self._post_blinds()
+
+        # Deal hole cards after blind positions are established so the
+        # pre-flop deal order starts correctly from small blind.
+        self._deal_hole_cards()
         
         # Set first player to act (after big blind)
         self._set_first_to_act()
@@ -960,7 +960,7 @@ class TexasEngine:
                     'amount': total_pot,
                     'hand': None
                 }],
-                'player_hands': self._get_all_hole_cards()
+                'player_hands': self.get_all_hole_cards()
             }
         
         # Evaluate hands and determine winners for each pot
@@ -971,7 +971,7 @@ class TexasEngine:
             'success': True,
             'phase': 'showdown',
             'winners': results['winners'],
-            'player_hands': self._get_all_hole_cards(),
+            'player_hands': self.get_all_hole_cards(),
             'community_cards': self._cards_to_strings(self.community_cards)
         }
     
@@ -1117,10 +1117,6 @@ class TexasEngine:
             List of card strings (e.g., ["Ah", "Ks"])
         """
         return self._cards_to_strings(cards)
-    
-    def _get_all_hole_cards(self) -> Dict[str, List[str]]:
-        """Get all players' hole cards for showdown reveal."""
-        return self.get_all_hole_cards()
     
     # ========================================================================
     # TIMEOUT HANDLING

@@ -4,28 +4,39 @@ import { getBotToken, getStoredFingerprint } from './antiBot';
 
 let socketInstance: Socket | null = null;
 
+const buildSocketAuth = (botToken?: string, fingerprint?: string) => {
+  const resolvedToken = botToken ?? getBotToken();
+  const spectatorMode = !resolvedToken;
+  return {
+    botToken: resolvedToken,
+    fingerprint: fingerprint ?? getStoredFingerprint(),
+    spectator: spectatorMode,
+    read_only: spectatorMode,
+  };
+};
+
 export const getSocket = (): Socket | null => {
   if (socketInstance) return socketInstance;
   if (typeof window === 'undefined') return null;
 
   const API_URL = getApiBaseUrl();
-  const botToken = getBotToken();
-  const fingerprint = getStoredFingerprint();
-  const spectatorMode = !botToken;
 
   socketInstance = io(API_URL, {
     autoConnect: true,
     reconnection: true,
     reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
+    reconnectionDelayMax: 8000,
+    randomizationFactor: 0.5,
     reconnectionAttempts: Infinity,
+    timeout: 15000,
     transports: ['websocket', 'polling'],
-    auth: {
-      botToken,
-      fingerprint,
-      spectator: spectatorMode,
-      read_only: spectatorMode,
-    },
+    auth: buildSocketAuth(),
+  });
+
+  // Ensure reconnect attempts always carry the latest token/fingerprint.
+  socketInstance.io.on('reconnect_attempt', () => {
+    if (!socketInstance) return;
+    socketInstance.auth = buildSocketAuth();
   });
 
   return socketInstance;
@@ -81,14 +92,7 @@ export default getSocket;
 export const refreshSocketAuth = (botToken?: string, fingerprint?: string) => {
   const socket = getSocket();
   if (!socket) return;
-  const resolvedToken = botToken ?? getBotToken();
-  const spectatorMode = !resolvedToken;
-  socket.auth = {
-    botToken: resolvedToken,
-    fingerprint: fingerprint ?? getStoredFingerprint(),
-    spectator: spectatorMode,
-    read_only: spectatorMode,
-  };
+  socket.auth = buildSocketAuth(botToken, fingerprint);
   if (socket.disconnected) {
     socket.connect();
   }

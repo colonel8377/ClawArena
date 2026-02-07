@@ -578,6 +578,17 @@ class WerewolfGame(BaseGame):
     # ========================================================================
     # ACTION PROCESSING
     # ========================================================================
+
+    def _mark_player_active(self, sid: str):
+        """Mark a player as active after a successful user action."""
+        player = self._get_player_by_sid(sid)
+        if not player or not player['is_alive']:
+            return
+
+        if player.get('status') == 'zombie':
+            player['status'] = 'alive'
+        player['consecutive_timeouts'] = 0
+        self.update_player_action_time(sid)
     
     def process_action(self, sid: str, action: str, **kwargs) -> Dict:
         """
@@ -599,23 +610,20 @@ class WerewolfGame(BaseGame):
         
         # Chat actions are phase-restricted (see _handle_public_chat)
         if action == 'chat':
-            return self._handle_public_chat(sid, kwargs.get('message', ''))
+            result = self._handle_public_chat(sid, kwargs.get('message', ''))
+            if result.get('success'):
+                self._mark_player_active(sid)
+            return result
         
         if action == 'wolf_chat':
-            return self._handle_wolf_chat(sid, kwargs.get('message', ''))
+            result = self._handle_wolf_chat(sid, kwargs.get('message', ''))
+            if result.get('success'):
+                self._mark_player_active(sid)
+            return result
         
         # Other actions require being alive
         if not player or not player['is_alive']:
             return {'success': False, 'error': 'Player not found or dead'}
-        
-        # Zombie recovery on valid action
-        if player.get('status') == 'zombie':
-            player['status'] = 'alive'
-            player['consecutive_timeouts'] = 0
-        
-        # Reset timeout counter
-        player['consecutive_timeouts'] = 0
-        self.update_player_action_time(sid)
         
         # Route to handler
         handlers = {
@@ -634,6 +642,9 @@ class WerewolfGame(BaseGame):
             return {'success': False, 'error': f'Unknown action: {action}'}
         
         result = handler(sid, **kwargs)
+
+        if result.get('success'):
+            self._mark_player_active(sid)
         
         # Mark action complete if successful
         if result.get('success') and sid in self._pending_actions:
@@ -1124,6 +1135,8 @@ class WerewolfGame(BaseGame):
     
     def is_game_over(self) -> bool:
         """Public method to check if game is over."""
+        if self.phase in (WerewolfPhase.FINISHED, WerewolfPhase.ABORTED):
+            return True
         return self._check_game_over()
     
     def get_winners(self) -> List[str]:
@@ -1301,6 +1314,8 @@ class WerewolfGame(BaseGame):
         """
         requesting_player = self._get_player_by_sid(sid) if sid else None
         is_wolf = requesting_player and isinstance(requesting_player.get('role'), Wolf)
+        # In this codebase, spectator means a non-player context (typically
+        # HTTP /api/spectate requests where sid is not provided).
         is_spectator = sid is None
         allow_full_reveal = reveal_all and is_spectator
         
@@ -1313,8 +1328,9 @@ class WerewolfGame(BaseGame):
             'chat_messages': [c.to_dict() for c in self.public_chat[-50:]],
         }
         
-        # Add wolf chat for wolves
-        if is_wolf or is_spectator:
+        # Wolf chat is visible to wolves, and to spectator requests that
+        # explicitly ask for full reveal.
+        if is_wolf or allow_full_reveal:
             state['wolf_chat'] = [c.to_dict() for c in self.wolf_chat[-50:]]
         
         # Add player info

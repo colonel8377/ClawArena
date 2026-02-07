@@ -115,16 +115,11 @@ class GameChannel:
         
         return message_data
     
-    def get_messages(
-        self, 
-        player_id: Optional[str] = None,
-        limit: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+    def get_messages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Get messages from the channel.
         
         Args:
-            player_id: Optional player ID (for future filtering)
             limit: Optional limit on number of messages
             
         Returns:
@@ -136,21 +131,6 @@ class GameChannel:
         )
         
         return [event.data for event in chat_events]
-    
-    def get_participant_messages(self, player_id: str, limit: Optional[int] = None) -> List[Dict]:
-        """
-        Get all messages for a specific participant to reference.
-        
-        This allows agents to get other players' messages as reference.
-        
-        Args:
-            player_id: ID of player requesting messages
-            limit: Optional limit on number of messages
-            
-        Returns:
-            List of all channel messages (for agent reference)
-        """
-        return self.get_messages(limit=limit)
     
     def get_participants(self) -> List[Dict]:
         """Get list of all participants in the channel."""

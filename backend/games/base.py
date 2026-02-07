@@ -315,15 +315,13 @@ class BaseGame(ABC):
         Each agent can retrieve messages as reference for decision making.
         
         Args:
-            player_id: Optional player ID requesting messages (for future filtering)
+            player_id: Optional player ID requesting messages (currently unused)
             limit: Optional limit on number of recent messages
             
         Returns:
             List of chat messages (most recent first if limit is set)
         """
-        if player_id:
-            # Get messages for specific agent (includes all messages for reference)
-            return self.channel.get_participant_messages(player_id, limit=limit)
+        _ = player_id  # reserved for future per-player chat filtering
         return self.channel.get_messages(limit=limit)
     
     def get_event_bus(self):

@@ -436,13 +436,27 @@ class WerewolfGame(BaseGame):
         
         self.current_speaker_index = 0
         self.speakers_done.clear()
-        
-        # First speaker needs to speak
-        if self.speaking_order:
-            first_speaker = self.speaking_order[0]
-            player = self._get_player_by_sid(first_speaker)
-            if player and player.get('status') != 'zombie':
-                self._pending_actions[first_speaker] = False
+
+        # Prepare first actionable speaker (skip zombie/dead placeholders).
+        self._advance_speaking_turn()
+
+    def _advance_speaking_turn(self) -> bool:
+        """Advance to the next non-zombie alive speaker and set pending action."""
+        self._pending_actions.clear()
+
+        while self.current_speaker_index < len(self.speaking_order):
+            speaker_sid = self.speaking_order[self.current_speaker_index]
+            player = self._get_player_by_sid(speaker_sid)
+
+            if player and player['is_alive'] and player.get('status') != 'zombie':
+                self._pending_actions[speaker_sid] = False
+                return True
+
+            # Auto-skip speakers who can no longer speak (dead/zombie/disconnected).
+            self.speakers_done.add(speaker_sid)
+            self.current_speaker_index += 1
+
+        return False
     
     def _init_day_voting(self):
         """Initialize voting phase."""
@@ -916,14 +930,9 @@ class WerewolfGame(BaseGame):
         
         # Move to next speaker
         self.current_speaker_index += 1
-        
-        # If more speakers, set up next pending action
-        if self.current_speaker_index < len(self.speaking_order):
-            next_speaker = self.speaking_order[self.current_speaker_index]
-            next_player = self._get_player_by_sid(next_speaker)
-            if next_player and next_player.get('status') != 'zombie':
-                self._pending_actions.clear()
-                self._pending_actions[next_speaker] = False
+
+        # Prepare next actionable speaker; auto-skip zombie/dead entries.
+        self._advance_speaking_turn()
         
         return {
             'success': True,
@@ -1172,6 +1181,18 @@ class WerewolfGame(BaseGame):
         # Check abort condition
         if self.get_zombie_ratio() > ABORT_ZOMBIE_THRESHOLD:
             return await self.abort_game("More than 50% of players are inactive")
+
+        # Day speaking timeout is per speaker; continue same phase when another
+        # speaker is pending rather than jumping directly to voting.
+        if self.phase == WerewolfPhase.DAY_SPEAKING and self._pending_actions:
+            self._phase_start_time = datetime.utcnow()
+            return {
+                'success': True,
+                'old_phase': self.phase.value,
+                'new_phase': self.phase.value,
+                'day_count': self.day_count,
+                'timed_out_players': [p['nickname'] for p in timed_out_players]
+            }
         
         # Advance phase
         result = self.advance_phase()
@@ -1215,6 +1236,7 @@ class WerewolfGame(BaseGame):
             # Skip speech, move to next
             self.speakers_done.add(sid)
             self.current_speaker_index += 1
+            self._advance_speaking_turn()
         
         elif self.phase == WerewolfPhase.DAY_VOTING:
             # Random vote

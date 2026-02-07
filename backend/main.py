@@ -181,9 +181,46 @@ werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
 player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
 nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
 # NOTE: withdrawal_nonces removed - now queried from blockchain
+# Spectator reveal subscriptions by sid. Shape:
+# {
+#   sid: {
+#     'poker': {table_id: reveal_bool},
+#     'werewolf': {game_id: reveal_bool}
+#   }
+# }
+spectator_subscriptions: Dict[str, Dict[str, Dict[str, bool]]] = {}
 
 # Matchmaker for Werewolf games
 werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
+
+
+def _set_spectator_subscription(sid: str, game_type: str, room_id: str, reveal: bool) -> None:
+    """Track spectator reveal preference per room."""
+    sid_subs = spectator_subscriptions.setdefault(sid, {'poker': {}, 'werewolf': {}})
+    room_subs = sid_subs.setdefault(game_type, {})
+    room_subs[room_id] = bool(reveal)
+
+
+def _remove_spectator_subscription(sid: str, game_type: str, room_id: Optional[str] = None) -> None:
+    """Remove one or all spectator subscriptions for a sid/game type."""
+    sid_subs = spectator_subscriptions.get(sid)
+    if not sid_subs:
+        return
+
+    if room_id:
+        sid_subs.get(game_type, {}).pop(room_id, None)
+    else:
+        sid_subs[game_type] = {}
+
+    if not sid_subs.get('poker') and not sid_subs.get('werewolf'):
+        spectator_subscriptions.pop(sid, None)
+
+
+def _iter_reveal_spectators(game_type: str, room_id: str):
+    """Yield sids that subscribed with reveal=True for this room."""
+    for sid, sid_subs in spectator_subscriptions.items():
+        if sid_subs.get(game_type, {}).get(room_id):
+            yield sid
 
 
 # ============================================================================
@@ -1215,6 +1252,9 @@ async def disconnect(sid):
         
         del player_sessions[sid]
 
+    # Always clear spectator reveal subscriptions for disconnected sockets.
+    spectator_subscriptions.pop(sid, None)
+
 
 @sio.event
 async def authenticate(sid, data):
@@ -1644,6 +1684,56 @@ async def get_state(sid, data):
 
 
 @sio.event
+async def join_spectate(sid, data):
+    """
+    Join spectator room for poker or werewolf.
+
+    Expected data:
+      - Poker: {'table_id': str, 'reveal': bool (optional)}
+      - Werewolf: {'game_id': str, 'reveal': bool (optional)}
+    """
+    try:
+        reveal = bool((data or {}).get('reveal', False))
+        table_id = (data or {}).get('table_id')
+        game_id = (data or {}).get('game_id')
+
+        if table_id and table_id in poker_tables:
+            await sio.enter_room(sid, table_id)
+            _set_spectator_subscription(sid, 'poker', table_id, reveal)
+            table = poker_tables[table_id]
+            state = table.get_game_state(for_spectator=True, reveal_all=reveal)
+            await sio.emit('game_state', state, room=sid)
+
+        if game_id and game_id in werewolf_games:
+            await sio.enter_room(sid, game_id)
+            _set_spectator_subscription(sid, 'werewolf', game_id, reveal)
+            game = werewolf_games[game_id]
+            state = game.get_game_state(reveal_all=reveal)
+            await sio.emit('werewolf_state', state, room=sid)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Join spectate failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def leave_spectate(sid, data):
+    """Leave spectator room for poker or werewolf."""
+    try:
+        table_id = (data or {}).get('table_id')
+        game_id = (data or {}).get('game_id')
+
+        if table_id:
+            await sio.leave_room(sid, table_id)
+            _remove_spectator_subscription(sid, 'poker', table_id)
+        if game_id:
+            await sio.leave_room(sid, game_id)
+            _remove_spectator_subscription(sid, 'werewolf', game_id)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Leave spectate failed: {str(e)}'}, room=sid)
+
+
+@sio.event
 async def leave_game(sid, data):
     """
     Leave the current table.
@@ -1808,6 +1898,11 @@ async def broadcast_game_state(table_id: str):
     
     # STEP 1: Broadcast public state to all players in the room (game_update)
     await sio.emit('game_update', public_state, room=table_id)
+
+    # STEP 1b: Push reveal-mode spectator payloads directly via Socket.IO.
+    for spectator_sid in _iter_reveal_spectators('poker', table_id):
+        reveal_state = table.get_game_state(for_spectator=True, reveal_all=True)
+        await sio.emit('game_update', reveal_state, room=spectator_sid)
     
     # STEP 2: Send private_hand to each agent (their own hole cards only)
     if not is_showdown:
@@ -2097,6 +2192,10 @@ async def werewolf_action(sid, data):
             for wolf_sid in wolf_sids:
                 if wolf_sid != sid:
                     await sio.emit('wolf_chat_message', result.get('chat'), room=wolf_sid)
+
+            # Reveal spectators should observe wolf dialogue in realtime.
+            for spectator_sid in _iter_reveal_spectators('werewolf', game_id):
+                await sio.emit('wolf_chat_message', result.get('chat'), room=spectator_sid)
         
         # Handle public chat broadcast
         # (Chat stored in-memory in WerewolfGame, broadcast via Socket.IO)
@@ -2257,6 +2356,15 @@ async def broadcast_werewolf_state(game_id: str):
     for player in game.players:
         state = game.get_game_state(player['sid'])
         await sio.emit('werewolf_state', state, room=player['sid'])
+
+    # Also broadcast a spectator-safe state to the game room for realtime viewers.
+    spectator_state = game.get_game_state(reveal_all=False)
+    await sio.emit('werewolf_state', spectator_state, room=game_id)
+
+    # Push reveal-mode spectator state directly to subscribed sockets.
+    for spectator_sid in _iter_reveal_spectators('werewolf', game_id):
+        reveal_state = game.get_game_state(reveal_all=True)
+        await sio.emit('werewolf_state', reveal_state, room=spectator_sid)
     
     # Refresh TTL for active game (non-blocking)
     asyncio.create_task(redis_manager.refresh_game_ttl(game_id))

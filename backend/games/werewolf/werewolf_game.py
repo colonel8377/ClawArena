@@ -400,6 +400,9 @@ class WerewolfGame(BaseGame):
     def _init_day_announcement(self):
         """Initialize death announcement phase."""
         self.last_night_deaths = self.pending_deaths.copy()
+        # Apply deaths immediately when entering announcement so alive/dead state
+        # is already correct during speaking/voting setup.
+        self._apply_deaths(self.last_night_deaths)
         self.pending_deaths.clear()
         # No actions needed - just display deaths
     
@@ -450,8 +453,19 @@ class WerewolfGame(BaseGame):
     
     def get_current_timeout(self) -> int:
         """Get timeout for current phase."""
-        phase_name = self.phase.value.replace('night_', '').replace('day_', '')
-        return PHASE_TIMEOUTS.get(phase_name, DEFAULT_TIMEOUT)
+        timeout_map = {
+            WerewolfPhase.NIGHT_WOLF_DISCUSSION: 'wolf_discussion',
+            WerewolfPhase.NIGHT_WOLF_VOTING: 'wolf_voting',
+            WerewolfPhase.NIGHT_SEER: 'seer_action',
+            WerewolfPhase.NIGHT_WITCH: 'witch_action',
+            WerewolfPhase.NIGHT_HUNTER: 'hunter_action',
+            WerewolfPhase.DAY_ANNOUNCEMENT: 'death_announcement',
+            WerewolfPhase.DAY_SPEAKING: 'speaking',
+            WerewolfPhase.DAY_VOTING: 'voting',
+            WerewolfPhase.DAY_HUNTER: 'hunter_action',
+        }
+        phase_key = timeout_map.get(self.phase)
+        return PHASE_TIMEOUTS.get(phase_key, DEFAULT_TIMEOUT)
     
     def get_time_remaining(self) -> float:
         """Get time remaining in current phase."""
@@ -486,8 +500,8 @@ class WerewolfGame(BaseGame):
             self._resolve_hunter_shot()
             self._hunter_death_pending = False
         elif self.phase == WerewolfPhase.DAY_ANNOUNCEMENT:
-            # Apply pending deaths
-            self._apply_pending_deaths()
+            # Deaths are already applied on entering announcement
+            pass
         elif self.phase == WerewolfPhase.DAY_SPEAKING:
             # Speaking done, nothing to resolve
             pass
@@ -682,6 +696,9 @@ class WerewolfGame(BaseGame):
         player = self._get_player_by_sid(sid)
         if not player:
             return {'success': False, 'error': 'Player not found'}
+
+        if not player['is_alive']:
+            return {'success': False, 'error': 'Dead players cannot chat'}
         
         if not isinstance(player.get('role'), Wolf):
             return {'success': False, 'error': 'Only wolves can use wolf chat'}
@@ -1060,13 +1077,17 @@ class WerewolfGame(BaseGame):
                 if eliminated['role'].can_shoot():
                     self._hunter_death_pending = True
     
-    def _apply_pending_deaths(self):
-        """Apply all pending deaths to players."""
-        for death in self.pending_deaths:
+    def _apply_deaths(self, deaths: List[DeathEvent]):
+        """Apply a list of death events to player states."""
+        for death in deaths:
             player = self._get_player_by_sid(death.sid)
             if player:
                 player['is_alive'] = False
                 player['status'] = 'dead'
+
+    def _apply_pending_deaths(self):
+        """Apply all pending deaths to players."""
+        self._apply_deaths(self.pending_deaths)
     
     # ========================================================================
     # WIN CONDITIONS

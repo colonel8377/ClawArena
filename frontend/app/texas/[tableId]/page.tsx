@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
@@ -49,6 +49,7 @@ export default function TexasDetailPage() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastSocketUpdateRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
@@ -70,6 +71,8 @@ export default function TexasDetailPage() {
     const socket = getSocket();
     if (!socket) return;
 
+    setConnected(socket.connected);
+
     function onConnect() {
       setConnected(true);
     }
@@ -86,6 +89,7 @@ export default function TexasDetailPage() {
         if (revealAll && !hasRevealedCards(data)) {
           return;
         }
+        lastSocketUpdateRef.current = Date.now();
         setGameState(data);
       }
     };
@@ -105,9 +109,10 @@ export default function TexasDetailPage() {
   }, [revealAll, tableId]);
 
   useEffect(() => {
-    const fetchGameState = async () => {
-      setLoading(true);
-      setError(null);
+    const fetchGameState = async (isInitial = false) => {
+      if (isInitial) {
+        setLoading(true);
+      }
       try {
         const res = await botFetch(apiUrl);
         if (!res.ok) {
@@ -116,19 +121,47 @@ export default function TexasDetailPage() {
           return;
         }
         const data = await res.json();
+        setError(null);
         setGameState(data);
       } catch {
-        setError('Failed to load game state');
-        setGameState(null);
+        if (!connected) {
+          setError('Failed to load game state');
+          setGameState(null);
+        }
       } finally {
-        setLoading(false);
+        if (isInitial) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchGameState();
-    const interval = setInterval(fetchGameState, 3000);
-    return () => clearInterval(interval);
-  }, [apiUrl, tableId]);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    const loop = async () => {
+      const socketHealthy = connected && Date.now() - lastSocketUpdateRef.current < 10_000;
+      if (!socketHealthy) {
+        await fetchGameState(false);
+      }
+      const nextDelay = socketHealthy ? 10_000 : 3_000;
+      if (!cancelled) {
+        timer = setTimeout(loop, nextDelay);
+      }
+    };
+
+    fetchGameState(true).finally(() => {
+      if (!cancelled) {
+        loop();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [apiUrl, connected]);
 
   const getStatusIcon = (status: string) => {
     switch (status) {

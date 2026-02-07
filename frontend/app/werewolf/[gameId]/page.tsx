@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
@@ -48,6 +48,7 @@ export default function WerewolfDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [gameLog, setGameLog] = useState<string[]>([]);
+  const lastSocketUpdateRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
@@ -69,6 +70,8 @@ export default function WerewolfDetailPage() {
     const socket = getSocket();
     if (!socket) return;
 
+    setConnected(socket.connected);
+
     function onConnect() {
       setConnected(true);
     }
@@ -85,6 +88,7 @@ export default function WerewolfDetailPage() {
         if (revealAll && !hasRevealedRoles(data)) {
           return;
         }
+        lastSocketUpdateRef.current = Date.now();
         setGameState(data);
       }
     };
@@ -111,9 +115,10 @@ export default function WerewolfDetailPage() {
   }, [gameId, revealAll]);
 
   useEffect(() => {
-    const fetchGameState = async () => {
-      setLoading(true);
-      setError(null);
+    const fetchGameState = async (isInitial = false) => {
+      if (isInitial) {
+        setLoading(true);
+      }
       try {
         const res = await botFetch(apiUrl);
         if (!res.ok) {
@@ -122,19 +127,47 @@ export default function WerewolfDetailPage() {
           return;
         }
         const data = await res.json();
+        setError(null);
         setGameState(data);
       } catch {
-        setError('Failed to load game state');
-        setGameState(null);
+        if (!connected) {
+          setError('Failed to load game state');
+          setGameState(null);
+        }
       } finally {
-        setLoading(false);
+        if (isInitial) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchGameState();
-    const interval = setInterval(fetchGameState, 3000);
-    return () => clearInterval(interval);
-  }, [apiUrl, gameId]);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    const loop = async () => {
+      const socketHealthy = connected && Date.now() - lastSocketUpdateRef.current < 10_000;
+      if (!socketHealthy) {
+        await fetchGameState(false);
+      }
+      const nextDelay = socketHealthy ? 10_000 : 3_000;
+      if (!cancelled) {
+        timer = setTimeout(loop, nextDelay);
+      }
+    };
+
+    fetchGameState(true).finally(() => {
+      if (!cancelled) {
+        loop();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [apiUrl, connected]);
 
   const getRoleStatus = (player: SpectatePlayer): 'Alive' | 'Dead' => {
     return player.is_alive ? 'Alive' : 'Dead';

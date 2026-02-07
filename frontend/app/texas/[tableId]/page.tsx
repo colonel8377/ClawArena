@@ -116,7 +116,9 @@ export default function TexasDetailPage() {
     socket.on('game_state', onGameState);
     socket.on('game_update', onGameState);
 
-    socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
+    if (socket.connected) {
+      socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
+    }
 
     return () => {
       socket.off('connect', onConnect);

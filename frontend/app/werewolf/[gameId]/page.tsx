@@ -121,7 +121,9 @@ export default function WerewolfDetailPage() {
       }
     });
 
-    socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
+    if (socket.connected) {
+      socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
+    }
 
     return () => {
       socket.off('connect', onConnect);

@@ -218,6 +218,9 @@ class TexasEngine:
         
         # Hand number
         self.hand_number = 0
+
+        # Winners of the most recently completed hand (SIDs)
+        self.last_hand_winners: List[str] = []
     
     # ========================================================================
     # PLAYER MANAGEMENT
@@ -307,6 +310,7 @@ class TexasEngine:
             return {'success': False, 'error': 'Not enough players'}
         
         self.hand_number += 1
+        self.last_hand_winners = []
         
         # Reset players
         for player in self.players.values():
@@ -614,6 +618,7 @@ class TexasEngine:
             total_pot = self.get_total_pot()
             winner.chips += total_pot
             self.phase = PokerPhase.FINISHED
+            self.last_hand_winners = [winner.sid]
             
             result['hand_over'] = True
             result['winner'] = {
@@ -960,6 +965,7 @@ class TexasEngine:
         
         # Evaluate hands and determine winners for each pot
         results = self._evaluate_and_distribute_pots(showdown_players)
+        self.last_hand_winners = list(dict.fromkeys(w['sid'] for w in results['winners']))
         
         return {
             'success': True,

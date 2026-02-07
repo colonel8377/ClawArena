@@ -8,7 +8,7 @@ the poker_engine.PokerEngine for core game logic.
 from typing import Dict, List, Optional
 
 from .texas_engine import TexasEngine
-from ..base import BaseGame, GamePhase
+from ..base import BaseGame, GamePhase, check_chat_phase
 from ...config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
 
 
@@ -73,7 +73,17 @@ class TexasGame(BaseGame):
             buy_in_chips = TEXAS_DEFAULT_BUY_IN_CHIPS
             buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
         
-        # Add to BaseGame player list
+        # Add to poker engine
+        success = self.engine.add_player(
+            sid=sid,
+            wallet_address=wallet_address,
+            nickname=nickname,
+            buy_in=int(buy_in_chips)
+        )
+        if not success:
+            return False
+
+        # Keep wrapper state in sync only after engine accepts the player.
         player = {
             'sid': sid,
             'wallet_address': wallet_address,
@@ -82,23 +92,14 @@ class TexasGame(BaseGame):
             'buy_in_tokens': float(buy_in_tokens)
         }
         self.players.append(player)
-        
-        # Register with game channel
+
         self.channel.add_participant(
             player_id=sid,
             wallet_address=wallet_address,
             nickname=nickname
         )
         
-        # Add to poker engine
-        success = self.engine.add_player(
-            sid=sid,
-            wallet_address=wallet_address,
-            nickname=nickname,
-            buy_in=int(buy_in_chips)
-        )
-        
-        return success
+        return True
     
     def remove_player(self, sid: str) -> bool:
         """Remove a player from the game."""
@@ -160,6 +161,11 @@ class TexasGame(BaseGame):
         self._reset_timeout_tracking(sid)
         
         if action == 'chat':
+            # Reuse shared phase gate to keep wrapper and engine chat rules consistent.
+            gate = check_chat_phase(self.engine.phase, self.engine.CHAT_ALLOWED_PHASES)
+            if gate:
+                return gate
+
             # Handle chat through BaseGame
             message = kwargs.get('message', '')
             return {'success': True, 'chat': self.add_chat_message(sid, message)}
@@ -215,9 +221,7 @@ class TexasGame(BaseGame):
         if not self.engine.is_hand_over():
             return []
         
-        # Get winners from showdown results
-        showdown = self.engine.showdown()
-        winners = showdown.get('winners', [])
+        winners = self.engine.last_hand_winners
         
         # Convert sids to wallet addresses
         winner_wallets = []

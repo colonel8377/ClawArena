@@ -9,7 +9,7 @@ import asyncio
 import signal
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 
 import socketio
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -246,6 +246,83 @@ async def _emit_werewolf_event(game_id: str, event: str, payload: Dict) -> None:
     """Emit an event to werewolf players and spectator room."""
     await sio.emit(event, payload, room=game_id)
     await sio.emit(event, payload, room=_werewolf_spectator_room(game_id))
+
+
+def _is_night_phase(phase: str) -> bool:
+    return phase.startswith('night_')
+
+
+def _build_werewolf_action_trace(
+    game: WerewolfGame,
+    sid: str,
+    action: str,
+    result: Dict[str, Any],
+    target_sid: Optional[str],
+    message: Optional[str],
+    reveal: bool,
+) -> Dict[str, Any]:
+    """Build spectator action trace payload with masked/reveal variants."""
+    actor = next((p for p in game.players if p.get('sid') == sid), None)
+    actor_nickname = actor.get('nickname', 'Unknown') if actor else 'Unknown'
+    phase = game.phase.value
+    target_player = next((p for p in game.players if p.get('sid') == target_sid), None) if target_sid else None
+    target_nickname = target_player.get('nickname') if target_player else None
+
+    payload: Dict[str, Any] = {
+        'game_id': game.game_id,
+        'phase': phase,
+        'actor_sid': sid,
+        'actor_nickname': actor_nickname,
+        'action': action,
+        'timestamp': datetime.utcnow().isoformat(),
+    }
+
+    # Hide hidden-information targets during night actions in masked mode.
+    hide_target = _is_night_phase(phase) and not reveal
+    if action == 'wolf_chat':
+        payload['message'] = (message or '') if reveal else '[hidden wolf chat]'
+        payload['visibility'] = 'reveal_only' if reveal else 'hidden'
+    elif action in {'chat', 'speak'}:
+        payload['message'] = message or ''
+        payload['visibility'] = 'public'
+    elif action in {'night_kill', 'seer_check', 'witch_poison', 'hunter_shoot', 'vote'}:
+        if target_sid is None:
+            payload['target'] = None
+        elif hide_target:
+            payload['target'] = {'sid': target_sid, 'nickname': 'Hidden Target'}
+        else:
+            payload['target'] = {'sid': target_sid, 'nickname': target_nickname or 'Unknown'}
+    elif action == 'witch_save':
+        payload['target'] = None if hide_target else {
+            'sid': game.pending_wolf_kill,
+            'nickname': (next((p.get('nickname') for p in game.players if p.get('sid') == game.pending_wolf_kill), None) or 'Unknown')
+            if game.pending_wolf_kill else None
+        }
+
+    # Include seer result only for reveal subscribers.
+    if action == 'seer_check' and reveal and result.get('result'):
+        payload['seer_result'] = result.get('result')
+
+    return payload
+
+
+async def _emit_werewolf_action_trace(
+    game: WerewolfGame,
+    sid: str,
+    action: str,
+    result: Dict[str, Any],
+    target_sid: Optional[str],
+    message: Optional[str],
+) -> None:
+    """Emit action timeline events to spectators (masked + reveal modes)."""
+    game_id = game.game_id
+    masked_payload = _build_werewolf_action_trace(game, sid, action, result, target_sid, message, reveal=False)
+    await sio.emit('werewolf_action_trace', masked_payload, room=_werewolf_spectator_room(game_id))
+
+    reveal_sids = list(_iter_reveal_spectators('werewolf', game_id))
+    if reveal_sids:
+        reveal_payload = _build_werewolf_action_trace(game, sid, action, result, target_sid, message, reveal=True)
+        await _emit_to_sids('werewolf_action_trace', reveal_payload, reveal_sids)
 
 
 async def _emit_to_sids(event: str, payload: Dict, sids: List[str]) -> None:
@@ -1902,6 +1979,9 @@ async def werewolf_action(sid, data):
         
         # Send action confirmation to the player
         await sio.emit('werewolf_action_result', result, room=sid)
+
+        # Emit spectator timeline event (masked public feed + reveal-only enrichment).
+        await _emit_werewolf_action_trace(game, sid, action, result, target_sid, message)
         
         if action in ['chat', 'wolf_chat'] and message:
             player = next((p for p in game.players if p['sid'] == sid), None)

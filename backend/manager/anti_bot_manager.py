@@ -37,7 +37,7 @@ from ..database.redis_manager import redis_manager
 # User-Agent keywords that indicate a programmatic client (AI agent)
 AGENT_UA_KEYWORDS = (
     # Python
-    "python", "aiohttp", "httpx", "requests",
+    "python", "aiohttp", "httpx", "requests", "postman", "urllib",
     # JavaScript/Node
     "node", "axios", "got", "node-fetch",
     # Other
@@ -52,14 +52,19 @@ BROWSER_UA_KEYWORDS = (
 )
 
 # Endpoints that everyone can access (including humans for spectating)
-PUBLIC_ENDPOINTS = (
+# Keep exact and prefix routes separate to avoid "/" prefixing everything.
+PUBLIC_EXACT_ENDPOINTS = {
     "/",
     "/health",
-    "/docs",
-    "/redoc",
     "/openapi.json",
     "/api/games/active",
     "/api/leaderboard",
+    "/agent/instructions",
+}
+
+PUBLIC_PREFIX_ENDPOINTS = (
+    "/docs",
+    "/redoc",
     "/api/spectate/",
     "/agent/",
     "/bot/",
@@ -200,9 +205,15 @@ def detect_agent(user_agent: str, agent_id: Optional[str] = None) -> Tuple[bool,
 
 def is_public_endpoint(path: str) -> bool:
     """Check if endpoint is public (accessible by everyone)."""
-    for allowed in PUBLIC_ENDPOINTS:
-        if path.startswith(allowed):
+    normalized_path = (path or "/").split("?", 1)[0]
+
+    if normalized_path in PUBLIC_EXACT_ENDPOINTS:
+        return True
+
+    for prefix in PUBLIC_PREFIX_ENDPOINTS:
+        if normalized_path.startswith(prefix):
             return True
+
     return False
 
 

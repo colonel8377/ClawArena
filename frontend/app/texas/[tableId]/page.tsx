@@ -52,6 +52,9 @@ export default function TexasDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [tableLog, setTableLog] = useState<string[]>([]);
   const lastSocketUpdateRef = useRef(0);
+  const isFetchInFlightRef = useRef(false);
+  const pendingStateRef = useRef<GameState | null>(null);
+  const rafFlushRef = useRef<number | null>(null);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
@@ -82,7 +85,16 @@ export default function TexasDetailPage() {
     const onGameState = (data: GameState) => {
       if (data.game_id === tableId) {
         lastSocketUpdateRef.current = Date.now();
-        setGameState(data);
+        // Batch bursts of socket updates into one paint frame to reduce UI jitter.
+        pendingStateRef.current = data;
+        if (rafFlushRef.current == null) {
+          rafFlushRef.current = window.requestAnimationFrame(() => {
+            rafFlushRef.current = null;
+            if (pendingStateRef.current) {
+              setGameState(pendingStateRef.current);
+            }
+          });
+        }
         setError(null);
       }
     };
@@ -110,6 +122,10 @@ export default function TexasDetailPage() {
     }
 
     return () => {
+      if (rafFlushRef.current != null) {
+        window.cancelAnimationFrame(rafFlushRef.current);
+        rafFlushRef.current = null;
+      }
       activeSocket.off('connect', onConnect);
       activeSocket.off('disconnect', onDisconnect);
       activeSocket.off('game_state', onGameState);
@@ -122,6 +138,10 @@ export default function TexasDetailPage() {
 
   useEffect(() => {
     const fetchGameState = async (isInitial = false) => {
+      if (isFetchInFlightRef.current) {
+        return;
+      }
+      isFetchInFlightRef.current = true;
       if (isInitial) {
         setLoading(true);
       }
@@ -141,6 +161,7 @@ export default function TexasDetailPage() {
           setGameState(null);
         }
       } finally {
+        isFetchInFlightRef.current = false;
         if (isInitial) {
           setLoading(false);
         }

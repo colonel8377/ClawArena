@@ -607,6 +607,15 @@ class WerewolfGame(BaseGame):
         - chat: Public chat message
         """
         player = self._get_player_by_sid(sid)
+
+        # Zombie players are treated as fully inactive and cannot actively send
+        # any actions/chat; they only advance via timeout default behavior.
+        if player and player.get('status') == 'zombie':
+            return {
+                'success': False,
+                'error': 'Inactive (zombie) players cannot act',
+                'error_code': 'PLAYER_ZOMBIE'
+            }
         
         # Chat actions are phase-restricted (see _handle_public_chat)
         if action == 'chat':

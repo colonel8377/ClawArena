@@ -55,6 +55,7 @@ export default function TexasDetailPage() {
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
+  const revealModeLabel = revealAll ? 'REVEAL VIEW' : 'MASKED VIEW';
   // HTTP spectator endpoint is always masked by design.
   // Full reveal is delivered only through read-only Socket.IO subscriptions.
   const apiUrl = useMemo(() => `${getApiBaseUrl()}/api/spectate/poker/${tableId}`, [tableId]);
@@ -62,20 +63,21 @@ export default function TexasDetailPage() {
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
+    const activeSocket = socket;
 
-    setConnected(socket.connected);
+    setConnected(activeSocket.connected);
 
     function onConnect() {
       setConnected(true);
-      socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
+      activeSocket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
     }
 
     function onDisconnect() {
       setConnected(false);
     }
 
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
+    activeSocket.on('connect', onConnect);
+    activeSocket.on('disconnect', onDisconnect);
 
     const onGameState = (data: GameState) => {
       if (data.game_id === tableId) {
@@ -98,23 +100,23 @@ export default function TexasDetailPage() {
       setTableLog((prev) => [...prev.slice(-19), winners ? `Showdown: ${winners}` : 'Showdown reached']);
     };
 
-    socket.on('game_state', onGameState);
-    socket.on('game_update', onGameState);
-    socket.on('hand_winner', onHandWinner);
-    socket.on('showdown_reveal', onShowdown);
+    activeSocket.on('game_state', onGameState);
+    activeSocket.on('game_update', onGameState);
+    activeSocket.on('hand_winner', onHandWinner);
+    activeSocket.on('showdown_reveal', onShowdown);
 
-    if (socket.connected) {
-      socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
+    if (activeSocket.connected) {
+      activeSocket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
     }
 
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('game_state', onGameState);
-      socket.off('game_update', onGameState);
-      socket.off('hand_winner', onHandWinner);
-      socket.off('showdown_reveal', onShowdown);
-      socket.emit('leave_spectate', { table_id: tableId });
+      activeSocket.off('connect', onConnect);
+      activeSocket.off('disconnect', onDisconnect);
+      activeSocket.off('game_state', onGameState);
+      activeSocket.off('game_update', onGameState);
+      activeSocket.off('hand_winner', onHandWinner);
+      activeSocket.off('showdown_reveal', onShowdown);
+      activeSocket.emit('leave_spectate', { table_id: tableId });
     };
   }, [apiUrl, revealAll, tableId]);
 
@@ -274,6 +276,9 @@ export default function TexasDetailPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <div className={`status-badge ${revealAll ? 'status-badge-live' : 'status-badge-offline'}`}>
+                {revealModeLabel}
+              </div>
               <div className={`status-badge ${connected ? 'status-badge-live' : 'status-badge-offline'}`}>
                 {connected ? '📡 LIVE' : '📴 POLLING'}
               </div>

@@ -53,6 +53,7 @@ export default function WerewolfDetailPage() {
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
+  const revealModeLabel = revealAll ? 'REVEAL VIEW' : 'MASKED VIEW';
   const apiUrl = useMemo(() => {
     const url = new URL(`${getApiBaseUrl()}/api/spectate/werewolf/${gameId}`);
     // HTTP spectator endpoint is always masked by backend policy.
@@ -67,20 +68,21 @@ export default function WerewolfDetailPage() {
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
+    const activeSocket = socket;
 
-    setConnected(socket.connected);
+    setConnected(activeSocket.connected);
 
     function onConnect() {
       setConnected(true);
-      socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
+      activeSocket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
     }
 
     function onDisconnect() {
       setConnected(false);
     }
 
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
+    activeSocket.on('connect', onConnect);
+    activeSocket.on('disconnect', onDisconnect);
 
     const onGameState = (data: GameState) => {
       if (data.game_id === gameId) {
@@ -90,8 +92,8 @@ export default function WerewolfDetailPage() {
       }
     };
 
-    socket.on('game_state', onGameState);
-    socket.on('werewolf_state', onGameState);
+    activeSocket.on('game_state', onGameState);
+    activeSocket.on('werewolf_state', onGameState);
 
     const onPhaseChange = (data: {
       phase?: string;
@@ -129,25 +131,25 @@ export default function WerewolfDetailPage() {
       appendGameLog(`Wolf chat: ${chat.nickname || 'Unknown'} -> ${chat.message || ''}`);
     };
 
-    socket.on('werewolf_phase_change', onPhaseChange);
-    socket.on('player_thinking', onPlayerThinking);
-    socket.on('chat_message', onPublicChat);
-    socket.on('wolf_chat_message', onWolfChat);
+    activeSocket.on('werewolf_phase_change', onPhaseChange);
+    activeSocket.on('player_thinking', onPlayerThinking);
+    activeSocket.on('chat_message', onPublicChat);
+    activeSocket.on('wolf_chat_message', onWolfChat);
 
-    if (socket.connected) {
-      socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
+    if (activeSocket.connected) {
+      activeSocket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
     }
 
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('game_state', onGameState);
-      socket.off('werewolf_state', onGameState);
-      socket.off('werewolf_phase_change', onPhaseChange);
-      socket.off('player_thinking', onPlayerThinking);
-      socket.off('chat_message', onPublicChat);
-      socket.off('wolf_chat_message', onWolfChat);
-      socket.emit('leave_spectate', { game_id: gameId });
+      activeSocket.off('connect', onConnect);
+      activeSocket.off('disconnect', onDisconnect);
+      activeSocket.off('game_state', onGameState);
+      activeSocket.off('werewolf_state', onGameState);
+      activeSocket.off('werewolf_phase_change', onPhaseChange);
+      activeSocket.off('player_thinking', onPlayerThinking);
+      activeSocket.off('chat_message', onPublicChat);
+      activeSocket.off('wolf_chat_message', onWolfChat);
+      activeSocket.emit('leave_spectate', { game_id: gameId });
     };
   }, [apiUrl, gameId, revealAll]);
 
@@ -368,6 +370,9 @@ export default function WerewolfDetailPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <div className={`status-badge ${revealAll ? 'status-badge-live' : 'status-badge-offline'}`}>
+                {revealModeLabel}
+              </div>
               <div className={`status-badge ${connected ? 'status-badge-live' : 'status-badge-offline'}`}>
                 {connected ? '📡 LIVE' : '📴 POLLING'}
               </div>
@@ -563,7 +568,11 @@ export default function WerewolfDetailPage() {
             <span>WOLF CHAT</span>
           </div>
           <div className="max-h-48 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-            {gameState.wolf_chat && gameState.wolf_chat.length > 0 ? (
+            {!revealAll ? (
+              <div className="text-xs text-foreground/60">
+                Hidden in masked mode. Switch to human reading mode for reveal-only wolf chat.
+              </div>
+            ) : gameState.wolf_chat && gameState.wolf_chat.length > 0 ? (
               gameState.wolf_chat.map((msg, idx) => (
                 <div
                   key={`${msg.timestamp || 'time'}-${idx}`}

@@ -43,6 +43,7 @@ from economy.account import (
 )
 from games.texas import TexasGame, create_texas_game
 from games.texas.texas_engine import PokerPhase
+from games.texas.matchmaker import TexasMatchmaker
 from games.werewolf.matchmaker import WerewolfMatchmaker
 from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
 from manager.anti_bot_manager import (
@@ -175,6 +176,7 @@ WEREWOLF_SPECTATOR_ROOM_PREFIX = "spectate:werewolf:"
 
 # Matchmaker for Werewolf games
 werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
+texas_matchmaker: Optional[TexasMatchmaker] = None
 werewolf_timeout_task: Optional[asyncio.Task] = None
 poker_timeout_task: Optional[asyncio.Task] = None
 
@@ -970,7 +972,7 @@ async def connect(sid, environ, auth):
 @sio.event
 async def disconnect(sid):
     """Handle client disconnection."""
-    global werewolf_matchmaker
+    global werewolf_matchmaker, texas_matchmaker
     
     print(f"Client disconnected: {sid}")
     
@@ -994,6 +996,8 @@ async def disconnect(sid):
         # Remove from matchmaking queue if in one
         if werewolf_matchmaker:
             werewolf_matchmaker.remove_player(sid)
+        if texas_matchmaker:
+            texas_matchmaker.remove_player(sid)
         
         del player_sessions[sid]
 
@@ -1584,11 +1588,11 @@ async def broadcast_game_state(table_id: str):
         }
         public_players.append(player_info)
     
-    # Get current player
-    active_sids = [s for s in engine.player_order if engine.players[s].can_act()]
+    # Get current player from source-of-truth SID to avoid legacy index drift.
     current_player = None
-    if active_sids and engine.current_player_index < len(active_sids):
-        current_player = active_sids[engine.current_player_index]
+    if engine.current_player_sid and engine.current_player_sid in engine.players:
+        if engine.players[engine.current_player_sid].can_act():
+            current_player = engine.current_player_sid
     
     # Build public game state (game_update event)
     public_state = {
@@ -2114,6 +2118,137 @@ async def broadcast_werewolf_state(game_id: str):
 # MATCHMAKING
 # ============================================================================
 
+async def on_texas_matchmaking_fallback(players, target_size: int):
+    """Callback before Texas matchmaker starts a short-handed fallback table."""
+    for player in players:
+        await sio.emit('texas_matchmaking_fallback_warning', {
+            'message': f'Starting {target_size}-player table after wait timeout',
+            'player_count': target_size,
+            'preferred_target': TexasMatchmaker.PREFERRED_GAME_SIZE,
+            'full_ring_target': TexasMatchmaker.FULL_RING_SIZE,
+        }, room=player.sid)
+
+
+async def on_texas_game_matched(players, game_size: int):
+    """Callback when Texas matchmaker creates and fills a poker table."""
+    import uuid
+
+    # 1) Pre-validate balances to quickly drop obviously unfundable players.
+    eligible_players = []
+    for queued_player in players:
+        try:
+            current_balance = await get_balance(queued_player.wallet_address)
+            if current_balance < queued_player.buy_in_tokens:
+                await sio.emit('error', {
+                    'message': (
+                        f'Insufficient balance for matchmaking buy-in. '
+                        f'Required: {float(queued_player.buy_in_tokens)} tokens, '
+                        f'Available: {float(current_balance)}'
+                    )
+                }, room=queued_player.sid)
+                continue
+
+            eligible_players.append(queued_player)
+        except Exception as e:
+            await sio.emit('error', {
+                'message': f'Matchmaking buy-in lock failed: {str(e)}'
+            }, room=queued_player.sid)
+
+    # Need at least 2 potentially fundable players to start a legal table.
+    if len(eligible_players) < 2:
+        return
+
+    # 2) Create table and persist creation metadata.
+    table_id = f"poker_auto_{uuid.uuid4().hex[:8]}"
+    table = create_texas_game(table_id)
+    poker_tables[table_id] = table
+
+    try:
+        await persistence_manager.on_game_created(
+            game_id=table_id,
+            game_type="texas",
+            entry_fee=Decimal("0")
+        )
+    except Exception as e:
+        print(f"[TexasMatchmaking] Persist game create failed: {e}")
+
+    # 3) Seat players and lock funds directly to table session id (single lock op).
+    seated_players = []
+    for p in eligible_players:
+        add_ok = table.add_player(
+            p.sid,
+            p.wallet_address,
+            nickname=p.nickname,
+            buy_in_tokens=p.buy_in_tokens,
+        )
+        if not add_ok:
+            await sio.emit('error', {
+                'message': 'Could not join auto-matched poker table'
+            }, room=p.sid)
+            continue
+
+        try:
+            await lock_balance(
+                p.wallet_address,
+                p.buy_in_tokens,
+                game_session_id=table_id,
+            )
+        except Exception as e:
+            table.remove_player(p.sid)
+            await sio.emit('error', {
+                'message': f'Failed to finalize matchmaking seat lock: {str(e)}'
+            }, room=p.sid)
+            continue
+
+        try:
+            await persistence_manager.on_player_joined(
+                game_id=table_id,
+                player_id=p.wallet_address,
+                socket_sid=p.sid,
+                nickname=p.nickname,
+            )
+        except Exception as e:
+            print(f"[TexasMatchmaking] Persist player join failed: {e}")
+
+        if p.sid in player_sessions:
+            player_sessions[p.sid]['table_id'] = table_id
+
+        await sio.enter_room(p.sid, table_id)
+        seated_players.append(p)
+
+    # If seating dropped under minimum, refund and abort table creation.
+    if len(seated_players) < 2:
+        for p in seated_players:
+            table.remove_player(p.sid)
+            try:
+                await unlock_balance(
+                    p.wallet_address,
+                    p.buy_in_tokens,
+                    game_session_id=table_id,
+                    description='Texas matchmaking cancelled after seat failures'
+                )
+            except Exception:
+                pass
+            if p.sid in player_sessions:
+                player_sessions[p.sid]['table_id'] = None
+        poker_tables.pop(table_id, None)
+        return
+
+    # 4) Auto-start first hand, then notify so client state does not run ahead.
+    hand_started = table.start_game()
+    if hand_started:
+        asyncio.create_task(table.save_checkpoint('hand_start'))
+
+    for p in seated_players:
+        await sio.emit('texas_matchmaking_game_started', {
+            'table_id': table_id,
+            'player_count': len(seated_players),
+            'requested_group_size': game_size,
+            'hand_started': hand_started,
+        }, room=p.sid)
+
+    await broadcast_game_state(table_id)
+
 async def on_matchmaking_fallback(players, target_size: int):
     """
     Callback before matchmaker downgrades from 9-player to 6-8 player game.
@@ -2204,6 +2339,105 @@ async def on_game_matched(players, game_size: int):
     
     # Broadcast initial game state
     await broadcast_werewolf_state(game_id)
+
+
+@sio.event
+async def join_texas_matchmaking(sid, data):
+    """Join Texas Hold'em matchmaking queue for auto-seating."""
+    global texas_matchmaker
+
+    try:
+        if await _reject_if_read_only(sid, 'join_texas_matchmaking'):
+            return
+
+        if sid not in player_sessions or not player_sessions[sid]['authenticated']:
+            await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
+            return
+
+        data = data or {}
+        requested_name = str(data.get('nickname', '')).strip()
+        player_id = player_sessions[sid]['player_id']
+        player_name = player_sessions[sid]['player_name'] or 'Player'
+        nickname = requested_name[:32] if requested_name else player_name
+
+        if 'tokens' in data:
+            buy_in_tokens = Decimal(str(data['tokens']))
+        else:
+            buy_in_chips = int(data.get('chips', 1000))
+            buy_in_tokens = Decimal(str(buy_in_chips)) * TEXAS_CHIP_TO_TOKEN_RATIO
+
+        if buy_in_tokens <= 0:
+            await sio.emit('error', {'message': 'Invalid buy-in amount'}, room=sid)
+            return
+
+        if texas_matchmaker is None:
+            texas_matchmaker = TexasMatchmaker(
+                game_start_callback=on_texas_game_matched,
+                fallback_warning_callback=on_texas_matchmaking_fallback,
+            )
+            texas_matchmaker.start()
+
+        if texas_matchmaker.add_player(sid, player_id, nickname, buy_in_tokens):
+            queue_info = texas_matchmaker.get_queue_info()
+            await sio.emit('texas_matchmaking_joined', {
+                'queue_size': queue_info['size'],
+                'buy_in_tokens': float(buy_in_tokens),
+                'message': 'Joined Texas matchmaking queue'
+            }, room=sid)
+        else:
+            await sio.emit('error', {'message': 'Already in Texas matchmaking queue'}, room=sid)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Join Texas matchmaking failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def leave_texas_matchmaking(sid, data):
+    """Leave Texas Hold'em matchmaking queue."""
+    global texas_matchmaker
+
+    try:
+        if texas_matchmaker is None:
+            await sio.emit('error', {'message': 'Texas matchmaker not initialized'}, room=sid)
+            return
+
+        if texas_matchmaker.remove_player(sid):
+            await sio.emit('texas_matchmaking_left', {
+                'message': 'Left Texas matchmaking queue'
+            }, room=sid)
+        else:
+            await sio.emit('error', {'message': 'Not in Texas matchmaking queue'}, room=sid)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Leave Texas matchmaking failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def get_texas_matchmaking_status(sid, data):
+    """Get Texas matchmaking queue status for the requesting socket."""
+    global texas_matchmaker
+
+    try:
+        if texas_matchmaker is None:
+            await sio.emit('texas_matchmaking_status', {
+                'queue_size': 0,
+                'in_queue': False,
+                'is_running': False,
+            }, room=sid)
+            return
+
+        queue_info = texas_matchmaker.get_queue_info()
+        in_queue = texas_matchmaker.is_player_in_queue(sid)
+        await sio.emit('texas_matchmaking_status', {
+            'queue_size': queue_info['size'],
+            'oldest_wait_time': queue_info['oldest_wait_time'],
+            'average_wait_time': queue_info['average_wait_time'],
+            'in_queue': in_queue,
+            'is_running': texas_matchmaker.is_running(),
+        }, room=sid)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Get Texas matchmaking status failed: {str(e)}'}, room=sid)
 
 
 @sio.event
@@ -2315,13 +2549,15 @@ async def graceful_shutdown():
     
     Security improvement: Save active game states before shutdown.
     """
-    global werewolf_matchmaker, werewolf_timeout_task, poker_timeout_task
+    global werewolf_matchmaker, texas_matchmaker, werewolf_timeout_task, poker_timeout_task
     
     print("\nGraceful shutdown initiated...")
     
     # Stop matchmaker
     if werewolf_matchmaker:
         werewolf_matchmaker.stop()
+    if texas_matchmaker:
+        texas_matchmaker.stop()
 
     # Stop background timeout task cleanly.
     if werewolf_timeout_task and not werewolf_timeout_task.done():

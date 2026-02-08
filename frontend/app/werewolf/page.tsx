@@ -21,6 +21,13 @@ export default function WerewolfListPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
+  const formatPhaseLabel = (phase?: string) => {
+    if (!phase) return 'UNKNOWN';
+    return phase.replace(/_/g, ' ').toUpperCase();
+  };
+
+  const isDayPhase = (phase?: string) => (phase || '').toLowerCase().startsWith('day_');
+
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
@@ -84,7 +91,7 @@ export default function WerewolfListPage() {
     };
 
     fetchGames();
-    const interval = setInterval(fetchGames, 5000);
+    const interval = setInterval(fetchGames, 7000);
     return () => clearInterval(interval);
   }, []);
 
@@ -250,11 +257,11 @@ export default function WerewolfListPage() {
                           )}
                           {game.phase && (
                             <div className={`text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border ${
-                              game.phase === 'day' ? 'border-warning/20' : 'border-electricPurple/20'
+                              isDayPhase(game.phase) ? 'border-warning/20' : 'border-electricPurple/20'
                             }`}>
                               <div className="text-[10px] text-foreground/40 uppercase">Phase</div>
-                              <div className={`font-bold ${game.phase === 'day' ? 'text-warning' : 'text-electricPurple'}`}>
-                                {game.phase.toUpperCase()}
+                              <div className={`font-bold ${isDayPhase(game.phase) ? 'text-warning' : 'text-electricPurple'}`}>
+                                {formatPhaseLabel(game.phase)}
                               </div>
                             </div>
                           )}

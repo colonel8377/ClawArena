@@ -1,8 +1,13 @@
 from .texas_game import TexasGame
 from .texas_engine import TexasEngine, create_poker_game
+from .game_config import TEXAS_DEFAULT_BIG_BLIND, TEXAS_DEFAULT_SMALL_BLIND
 
 
-def create_texas_game(game_id: str = None, small_blind: int = 25, big_blind: int = 50) -> TexasGame:
+def create_texas_game(
+    game_id: str = None,
+    small_blind: int = TEXAS_DEFAULT_SMALL_BLIND,
+    big_blind: int = TEXAS_DEFAULT_BIG_BLIND,
+) -> TexasGame:
     """
     Create a new Texas Hold'em game instance using the unified BaseGame architecture.
     

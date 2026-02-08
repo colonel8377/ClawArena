@@ -525,8 +525,23 @@ class WerewolfGame(BaseGame):
             self._resolve_hunter_shot()
             self._hunter_death_pending = False
         
+        # If a hunter death trigger is pending, defer win check until hunter
+        # resolves their final shot in the dedicated hunter phase.
+        defer_win_check_for_hunter = self._hunter_death_pending and self.phase in {
+            WerewolfPhase.NIGHT_WITCH,
+            WerewolfPhase.DAY_VOTING,
+        }
+
+        # Materialize finalized day-elimination deaths before moving into night
+        # so voted-out players cannot act in subsequent night phases.
+        if not defer_win_check_for_hunter and self.phase in {
+            WerewolfPhase.DAY_VOTING,
+            WerewolfPhase.DAY_HUNTER,
+        }:
+            self._apply_pending_deaths()
+
         # Check win conditions
-        if self._check_game_over():
+        if not defer_win_check_for_hunter and self._check_game_over():
             self.phase = WerewolfPhase.FINISHED
             self.finished_at = datetime.utcnow()
             result['game_over'] = True
@@ -1115,8 +1130,20 @@ class WerewolfGame(BaseGame):
                 player['status'] = 'dead'
 
     def _apply_pending_deaths(self):
-        """Apply all pending deaths to players."""
+        """Apply and clear all pending deaths."""
+        if not self.pending_deaths:
+            return
         self._apply_deaths(self.pending_deaths)
+        self.pending_deaths.clear()
+
+    def _get_effective_alive_players(self) -> List[Dict]:
+        """Get alive players excluding those already queued to die."""
+        pending_death_sids = {death.sid for death in self.pending_deaths}
+        return [
+            player
+            for player in self.players
+            if player['is_alive'] and player['sid'] not in pending_death_sids
+        ]
     
     # ========================================================================
     # WIN CONDITIONS
@@ -1124,7 +1151,9 @@ class WerewolfGame(BaseGame):
     
     def _check_game_over(self) -> bool:
         """Check if game is over."""
-        alive_players = self._get_alive_players()
+        # Count with pending deaths excluded so winner checks stay correct even
+        # before announcement phase consumes the pending list.
+        alive_players = self._get_effective_alive_players()
         
         if not alive_players:
             return True
@@ -1153,7 +1182,7 @@ class WerewolfGame(BaseGame):
         if not self._check_game_over():
             return []
         
-        alive_players = self._get_alive_players()
+        alive_players = self._get_effective_alive_players()
         if not alive_players:
             return []  # Draw
         

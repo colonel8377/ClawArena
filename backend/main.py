@@ -25,6 +25,8 @@ from config.config import (
     LOCAL_DEBUG_MODE,
     ALLOWED_ORIGINS,
     ALLOWED_HOSTS,
+    SOCKET_IO_LOGGER,
+    SOCKET_ENGINEIO_LOGGER,
 )
 from config import (
     TEXAS_CHIP_TO_TOKEN_RATIO,
@@ -76,8 +78,8 @@ socketio_origins = '*' if '*' in ALLOWED_ORIGINS else ALLOWED_ORIGINS
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins=socketio_origins,
-    logger=True,
-    engineio_logger=True,  # Enable Engine.IO logging to debug WebSocket messages
+    logger=SOCKET_IO_LOGGER,
+    engineio_logger=SOCKET_ENGINEIO_LOGGER,
     ping_timeout=60,
     ping_interval=25
 )
@@ -242,6 +244,16 @@ async def _emit_werewolf_event(game_id: str, event: str, payload: Dict) -> None:
     """Emit an event to werewolf players and spectator room."""
     await sio.emit(event, payload, room=game_id)
     await sio.emit(event, payload, room=_werewolf_spectator_room(game_id))
+
+
+async def _emit_to_sids(event: str, payload: Dict, sids: List[str]) -> None:
+    """Emit same payload to many sockets concurrently."""
+    if not sids:
+        return
+    await asyncio.gather(
+        *(sio.emit(event, payload, room=target_sid) for target_sid in sids),
+        return_exceptions=True,
+    )
 
 
 # ============================================================================
@@ -1428,7 +1440,12 @@ async def join_spectate(sid, data):
             }, room=sid)
 
         if table_id and table_id in poker_tables:
-            await sio.enter_room(sid, _poker_spectator_room(table_id))
+            poker_room = _poker_spectator_room(table_id)
+            if reveal_allowed:
+                # Avoid duplicate masked+reveal payloads for reveal subscribers.
+                await sio.leave_room(sid, poker_room)
+            else:
+                await sio.enter_room(sid, poker_room)
             _set_spectator_subscription(sid, 'poker', table_id, reveal_allowed)
             table = poker_tables[table_id]
             state = table.get_game_state(for_spectator=True, reveal_all=reveal_allowed)
@@ -1436,7 +1453,12 @@ async def join_spectate(sid, data):
             joined_any = True
 
         if game_id and game_id in werewolf_games:
-            await sio.enter_room(sid, _werewolf_spectator_room(game_id))
+            werewolf_room = _werewolf_spectator_room(game_id)
+            if reveal_allowed:
+                # Avoid duplicate masked+reveal payloads for reveal subscribers.
+                await sio.leave_room(sid, werewolf_room)
+            else:
+                await sio.enter_room(sid, werewolf_room)
             _set_spectator_subscription(sid, 'werewolf', game_id, reveal_allowed)
             game = werewolf_games[game_id]
             state = game.get_game_state(reveal_all=reveal_allowed)
@@ -1596,9 +1618,10 @@ async def broadcast_game_state(table_id: str):
     await sio.emit('game_update', public_state, room=_poker_spectator_room(table_id))
 
     # STEP 1b: Push reveal-mode spectator payloads directly via Socket.IO.
-    for spectator_sid in _iter_reveal_spectators('poker', table_id):
+    reveal_sids = list(_iter_reveal_spectators('poker', table_id))
+    if reveal_sids:
         reveal_state = table.get_game_state(for_spectator=True, reveal_all=True)
-        await sio.emit('game_update', reveal_state, room=spectator_sid)
+        await _emit_to_sids('game_update', reveal_state, reveal_sids)
     
     # STEP 2: Send private_hand to each agent (their own hole cards only)
     if not is_showdown:
@@ -1903,8 +1926,8 @@ async def werewolf_action(sid, data):
                     await sio.emit('wolf_chat_message', result.get('chat'), room=wolf_sid)
 
             # Reveal spectators should observe wolf dialogue in realtime.
-            for spectator_sid in _iter_reveal_spectators('werewolf', game_id):
-                await sio.emit('wolf_chat_message', result.get('chat'), room=spectator_sid)
+            reveal_sids = list(_iter_reveal_spectators('werewolf', game_id))
+            await _emit_to_sids('wolf_chat_message', result.get('chat'), reveal_sids)
         
         # Handle public chat broadcast
         # (Chat stored in-memory in WerewolfGame, broadcast via Socket.IO)
@@ -2078,9 +2101,10 @@ async def broadcast_werewolf_state(game_id: str):
     await sio.emit('werewolf_state', spectator_state, room=_werewolf_spectator_room(game_id))
 
     # Push reveal-mode spectator state directly to subscribed sockets.
-    for spectator_sid in _iter_reveal_spectators('werewolf', game_id):
+    reveal_sids = list(_iter_reveal_spectators('werewolf', game_id))
+    if reveal_sids:
         reveal_state = game.get_game_state(reveal_all=True)
-        await sio.emit('werewolf_state', reveal_state, room=spectator_sid)
+        await _emit_to_sids('werewolf_state', reveal_state, reveal_sids)
     
     # Refresh TTL for active game (non-blocking)
     asyncio.create_task(redis_manager.refresh_game_ttl(game_id))

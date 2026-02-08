@@ -11,9 +11,17 @@ import os
 import warnings
 from decimal import Decimal
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse common boolean env values with a safe fallback."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
 # Load from environment
-LOCAL_DEBUG_MODE = os.getenv('LOCAL_DEBUG_MODE', 'false').lower() == 'true'
-DEV_MODE = os.getenv('DEV_MODE', 'false').lower() == 'true'
+LOCAL_DEBUG_MODE = _env_bool('LOCAL_DEBUG_MODE', False)
+DEV_MODE = _env_bool('DEV_MODE', False)
 
 # Local debug mode balance (unlimited funds for testing)
 LOCAL_DEBUG_BALANCE = Decimal(os.getenv('LOCAL_DEBUG_BALANCE', '999999999'))
@@ -118,6 +126,10 @@ WITHDRAWAL_PROFITABILITY_RATIO = Decimal("3.0")  # 提现收益至少是Gas费�
 DAILY_WITHDRAWAL_LIMIT = None  # None = 无上限
 
 BOT_ALLOW_BYPASS_LOCAL = os.getenv('BOT_ALLOW_BYPASS_LOCAL', 'true').lower() == 'true'
+
+# Socket.IO logging (chatty in production if enabled, especially Engine.IO frame logs)
+SOCKET_IO_LOGGER = _env_bool('SOCKET_IO_LOGGER', LOCAL_DEBUG_MODE or DEV_MODE)
+SOCKET_ENGINEIO_LOGGER = _env_bool('SOCKET_ENGINEIO_LOGGER', LOCAL_DEBUG_MODE)
 
 # ============================================================================
 # AGENT-ONLY POLICY (Simplified)

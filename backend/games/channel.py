@@ -7,8 +7,7 @@ Provides structured, isolated communication for each game instance.
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-from events.event_bus import EventBus, GameEvent, EventType
-
+from ..events.event_bus import EventBus, GameEvent, EventType
 
 class GameChannel:
     """

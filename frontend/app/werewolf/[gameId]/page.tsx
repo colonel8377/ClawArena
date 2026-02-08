@@ -37,6 +37,7 @@ interface GameState {
   votes?: Record<string, string>;
   chat_messages?: ChatMessage[];
   wolf_chat?: ChatMessage[];
+  current_speaker?: string;
 }
 
 export default function WerewolfDetailPage() {
@@ -49,23 +50,19 @@ export default function WerewolfDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [gameLog, setGameLog] = useState<string[]>([]);
   const lastSocketUpdateRef = useRef(0);
-  const lastRevealFetchRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
   const apiUrl = useMemo(() => {
     const url = new URL(`${getApiBaseUrl()}/api/spectate/werewolf/${gameId}`);
-    if (revealAll) {
-      url.searchParams.set('reveal', 'true');
-    }
+    // HTTP spectator endpoint is always masked by backend policy.
+    // Full role visibility for authorized observers comes from read-only socket events.
     return url.toString();
-  }, [gameId, revealAll]);
+  }, [gameId]);
 
-  const hasRevealedRoles = (data: GameState) =>
-    data.players?.some((player) => {
-      const roleValue = typeof player.role === 'string' ? player.role : player.role?.role;
-      return !!roleValue && roleValue !== '???';
-    });
+  const appendGameLog = (message: string) => {
+    setGameLog((prev) => [...prev.slice(-39), message]);
+  };
 
   useEffect(() => {
     const socket = getSocket();
@@ -88,25 +85,6 @@ export default function WerewolfDetailPage() {
     const onGameState = (data: GameState) => {
       if (data.game_id === gameId) {
         lastSocketUpdateRef.current = Date.now();
-        if (revealAll && !hasRevealedRoles(data)) {
-          const now = Date.now();
-          // Room broadcasts are spectator-safe (masked). Use them to trigger a throttled HTTP reveal refresh.
-          if (now - lastRevealFetchRef.current > 800) {
-            lastRevealFetchRef.current = now;
-            void botFetch(apiUrl)
-              .then((res) => (res.ok ? res.json() : null))
-              .then((fullState) => {
-                if (fullState && fullState.game_id === gameId) {
-                  setGameState(fullState as GameState);
-                  setError(null);
-                }
-              })
-              .catch(() => {
-                // Polling loop remains as fallback.
-              });
-          }
-          return;
-        }
         setGameState(data);
         setError(null);
       }
@@ -115,11 +93,46 @@ export default function WerewolfDetailPage() {
     socket.on('game_state', onGameState);
     socket.on('werewolf_state', onGameState);
 
-    socket.on('game_event', (data: { game_id: string; event: string }) => {
-      if (data.game_id === gameId) {
-        setGameLog((prev) => [...prev.slice(-19), data.event]);
+    const onPhaseChange = (data: {
+      phase?: string;
+      day_count?: number;
+      deaths?: string[];
+      eliminated?: string;
+      game_over?: boolean;
+      winners?: string[];
+    }) => {
+      appendGameLog(
+        `Phase -> ${data.phase || 'unknown'} (Day ${data.day_count || '?'})`
+      );
+      if (data.deaths && data.deaths.length > 0) {
+        appendGameLog(`Deaths: ${data.deaths.join(', ')}`);
       }
-    });
+      if (data.eliminated) {
+        appendGameLog(`Eliminated: ${data.eliminated}`);
+      }
+      if (data.game_over) {
+        appendGameLog(`Game Over${data.winners?.length ? ` | Winners: ${data.winners.join(', ')}` : ''}`);
+      }
+    };
+
+    const onPlayerThinking = (data: { player_sid?: string; action_type?: string }) => {
+      appendGameLog(
+        `Agent ${data.player_sid || 'unknown'} is thinking (${data.action_type || 'action'})`
+      );
+    };
+
+    const onPublicChat = (chat: ChatMessage) => {
+      appendGameLog(`Public chat: ${chat.nickname || 'Unknown'} -> ${chat.message || ''}`);
+    };
+
+    const onWolfChat = (chat: ChatMessage) => {
+      appendGameLog(`Wolf chat: ${chat.nickname || 'Unknown'} -> ${chat.message || ''}`);
+    };
+
+    socket.on('werewolf_phase_change', onPhaseChange);
+    socket.on('player_thinking', onPlayerThinking);
+    socket.on('chat_message', onPublicChat);
+    socket.on('wolf_chat_message', onWolfChat);
 
     if (socket.connected) {
       socket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
@@ -130,7 +143,10 @@ export default function WerewolfDetailPage() {
       socket.off('disconnect', onDisconnect);
       socket.off('game_state', onGameState);
       socket.off('werewolf_state', onGameState);
-      socket.off('game_event');
+      socket.off('werewolf_phase_change', onPhaseChange);
+      socket.off('player_thinking', onPlayerThinking);
+      socket.off('chat_message', onPublicChat);
+      socket.off('wolf_chat_message', onWolfChat);
       socket.emit('leave_spectate', { game_id: gameId });
     };
   }, [apiUrl, gameId, revealAll]);
@@ -276,6 +292,16 @@ export default function WerewolfDetailPage() {
     }
   };
 
+  const sidToName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const player of gameState?.players || []) {
+      if (player.sid) {
+        map.set(player.sid, player.nickname || 'Player');
+      }
+    }
+    return map;
+  }, [gameState?.players]);
+
   if (loading) {
     return (
       <div className="min-h-screen scanline-effect flex items-center justify-center">
@@ -312,6 +338,11 @@ export default function WerewolfDetailPage() {
 
   const alivePlayers = gameState.players?.filter((p) => p.is_alive) || [];
   const deadPlayers = gameState.players?.filter((p) => !p.is_alive) || [];
+
+  const resolveVoteTargetName = (voteTarget: string) => {
+    // Never leak raw socket identifiers in spectator UI.
+    return sidToName.get(voteTarget) || 'Unknown Player';
+  };
 
   return (
     <div className="min-h-screen scanline-effect">
@@ -483,7 +514,7 @@ export default function WerewolfDetailPage() {
                           <svg viewBox="0 0 24 24" className="w-3 h-3 text-electricPurple">
                             <path fill="currentColor" d="M5 21V4h14v17l-7-3-7 3z"/>
                           </svg>
-                          <span className="text-electricPurple">{player.voted_for}</span>
+                          <span className="text-electricPurple">{resolveVoteTargetName(player.voted_for)}</span>
                         </span>
                       )}
                     </div>

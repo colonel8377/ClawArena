@@ -8,7 +8,6 @@ import { botFetch } from '@/lib/antiBot';
 type HealthResponse = {
   status: string;
   active_tables: number;
-  web3_connected: boolean;
   local_debug_mode: boolean;
 };
 
@@ -88,10 +87,7 @@ export default function BackendStatus() {
             Tables: <span className="text-cyberBlue">{health?.active_tables ?? '-'}</span>
           </span>
           <span className="text-foreground opacity-70">
-            Web3:{' '}
-            <span className={health?.web3_connected ? 'status-active' : 'status-inactive'}>
-              {health?.web3_connected ? 'CONNECTED' : 'OFFLINE'}
-            </span>
+            Mode: <span className={health?.local_debug_mode ? 'status-inactive' : 'status-active'}>{health?.local_debug_mode ? 'DEBUG' : 'PROD'}</span>
           </span>
         </div>
         {error && (

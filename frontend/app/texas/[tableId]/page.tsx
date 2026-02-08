@@ -18,6 +18,7 @@ interface SpectatorPlayer {
   cards?: string[];
   hole_cards?: string[];
   current_bet?: number;
+  last_action?: string;
 }
 
 interface ChatMessage {
@@ -49,24 +50,14 @@ export default function TexasDetailPage() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tableLog, setTableLog] = useState<string[]>([]);
   const lastSocketUpdateRef = useRef(0);
-  const lastRevealFetchRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
-  const apiUrl = useMemo(() => {
-    const url = new URL(`${getApiBaseUrl()}/api/spectate/poker/${tableId}`);
-    if (revealAll) {
-      url.searchParams.set('reveal', 'true');
-    }
-    return url.toString();
-  }, [revealAll, tableId]);
-
-  const hasRevealedCards = (data: GameState) =>
-    data.players?.some((player) => {
-      const cards = player.hole_cards ?? player.cards;
-      return Array.isArray(cards) && cards.some((card) => card !== '??' && card !== '**');
-    });
+  // HTTP spectator endpoint is always masked by design.
+  // Full reveal is delivered only through read-only Socket.IO subscriptions.
+  const apiUrl = useMemo(() => `${getApiBaseUrl()}/api/spectate/poker/${tableId}`, [tableId]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -89,32 +80,28 @@ export default function TexasDetailPage() {
     const onGameState = (data: GameState) => {
       if (data.game_id === tableId) {
         lastSocketUpdateRef.current = Date.now();
-        if (revealAll && !hasRevealedCards(data)) {
-          const now = Date.now();
-          // In reveal mode, Socket.IO room updates are masked; use them as a trigger for HTTP full-state sync.
-          if (now - lastRevealFetchRef.current > 800) {
-            lastRevealFetchRef.current = now;
-            void botFetch(apiUrl)
-              .then((res) => (res.ok ? res.json() : null))
-              .then((fullState) => {
-                if (fullState && fullState.game_id === tableId) {
-                  setGameState(fullState as GameState);
-                  setError(null);
-                }
-              })
-              .catch(() => {
-                // Polling loop remains as fallback.
-              });
-          }
-          return;
-        }
         setGameState(data);
         setError(null);
       }
     };
 
+    const onHandWinner = (data: { winner?: { nickname?: string }; reason?: string; pot?: number }) => {
+      const winnerName = data?.winner?.nickname || 'Unknown';
+      const pot = typeof data?.pot === 'number' ? data.pot : 0;
+      setTableLog((prev) => [...prev.slice(-19), `Hand winner: ${winnerName} (+${pot})${data?.reason ? ` - ${data.reason}` : ''}`]);
+    };
+
+    const onShowdown = (data: { winners?: Array<{ nickname?: string; amount?: number }> }) => {
+      const winners = (data?.winners || [])
+        .map((w) => `${w.nickname || 'Unknown'}(+${w.amount || 0})`)
+        .join(', ');
+      setTableLog((prev) => [...prev.slice(-19), winners ? `Showdown: ${winners}` : 'Showdown reached']);
+    };
+
     socket.on('game_state', onGameState);
     socket.on('game_update', onGameState);
+    socket.on('hand_winner', onHandWinner);
+    socket.on('showdown_reveal', onShowdown);
 
     if (socket.connected) {
       socket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
@@ -125,6 +112,8 @@ export default function TexasDetailPage() {
       socket.off('disconnect', onDisconnect);
       socket.off('game_state', onGameState);
       socket.off('game_update', onGameState);
+      socket.off('hand_winner', onHandWinner);
+      socket.off('showdown_reveal', onShowdown);
       socket.emit('leave_spectate', { table_id: tableId });
     };
   }, [apiUrl, revealAll, tableId]);
@@ -390,6 +379,9 @@ export default function TexasDetailPage() {
                             <span className="ml-2 text-acidGreen">⟵ TURN</span>
                           )}
                         </div>
+                        {player.last_action && (
+                          <div className="text-[10px] text-warning mt-1">Action: {player.last_action}</div>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-6 text-sm">
@@ -499,6 +491,23 @@ export default function TexasDetailPage() {
             )}
           </div>
         </div>
+
+        {/* Table Log */}
+        {tableLog.length > 0 && (
+          <div className="cyber-card p-4 rounded-lg mb-4">
+            <div className="flex items-center gap-2 text-acidGreen text-sm mb-3 font-orbitron">
+              <span>📜</span>
+              <span>TABLE EVENTS</span>
+            </div>
+            <div className="max-h-40 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
+              {tableLog.map((log, idx) => (
+                <div key={idx} className="text-xs font-mono text-foreground/70 py-1 border-b border-border/20 last:border-0">
+                  <span className="text-acidGreen">▸</span> {log}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="cyber-card p-3 rounded-lg text-center">

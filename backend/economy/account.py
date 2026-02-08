@@ -13,13 +13,14 @@ This module handles:
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
-from sqlalchemy import text, select
+import uuid
+from sqlalchemy import text, select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import UserLedger, TransactionLog, TransactionType
-from database.connection import get_async_db_session
-from database.redis_manager import redis_manager
-from config.config import is_local_debug_mode, get_debug_balance
+from ..database.models import UserLedger, TransactionLog, TransactionType
+from ..database.connection import get_async_db_session
+from ..database.redis_manager import redis_manager
+from ..config.config import is_local_debug_mode, get_debug_balance
 
 
 # Custom exceptions for better error handling
@@ -44,12 +45,92 @@ class InvalidAmountError(AccountError):
 
 
 class InvalidWalletAddressError(AccountError):
-    """Raised when an invalid wallet address is provided."""
+    """Raised when an invalid player identifier is provided."""
+    pass
+
+
+class AmbiguousLoginIdentifierError(AccountError):
+    """Raised when a login key matches multiple accounts."""
     pass
 
 
 # Configuration
-DAILY_LOGIN_REWARD = Decimal("100.0")  # 100 tokens per day
+DAILY_LOGIN_REWARD = Decimal("1000.0")  # 1000 tokens per day
+LEADERBOARD_LIMIT = 10
+
+
+def _validate_player_id(player_id: str) -> str:
+    """Validate and normalize backend player identifier.
+
+    We keep using the legacy wallet_address column as a generic player id store,
+    so identifiers must fit in the existing DB column width.
+    """
+    normalized = (player_id or "").strip()
+    if not normalized:
+        raise InvalidWalletAddressError("Player ID is required")
+    if len(normalized) > 42:
+        raise InvalidWalletAddressError("Player ID too long (max 42 characters)")
+    return normalized
+
+
+def _normalize_optional_address(address: Optional[str]) -> Optional[str]:
+    """Normalize optional external address (wallet/chain/etc.)."""
+    normalized = (address or "").strip()
+    if not normalized:
+        return None
+    if len(normalized) > 128:
+        raise InvalidWalletAddressError("Address too long (max 128 characters)")
+    return normalized
+
+
+def _normalize_login_key(login_key: str) -> str:
+    """Normalize generic login key (player_id or external address)."""
+    normalized = (login_key or "").strip()
+    if not normalized:
+        raise InvalidWalletAddressError("Login key is required")
+    if len(normalized) > 128:
+        raise InvalidWalletAddressError("Login key too long (max 128 characters)")
+    return normalized
+
+
+def _normalize_player_name(player_name: str) -> str:
+    """Normalize required player display name."""
+    normalized = (player_name or "").strip()
+    if not normalized:
+        raise ValueError("player_name is required")
+    if len(normalized) > 50:
+        raise ValueError("player_name too long (max 50 characters)")
+    return normalized
+
+
+def _generate_player_id() -> str:
+    """Generate a short system player id that fits current DB column width."""
+    return f"p_{uuid.uuid4().hex[:16]}"
+
+
+def _serialize_user(user: UserLedger) -> Dict[str, Any]:
+    """Serialize user payload with canonical identity fields."""
+    return {
+        'player_id': user.wallet_address,
+        'player_name': user.player_name,
+        'address': user.address,
+        'balance': float(user.offchain_balance),
+        'locked_balance': float(user.locked_balance),
+        'created_at': user.created_at.isoformat() if user.created_at else None,
+        'last_login_date': user.last_login_date.isoformat() if user.last_login_date else None,
+    }
+
+
+def _to_decimal_safe(value: Any) -> Decimal:
+    """Best-effort Decimal conversion for cache/DB values."""
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
 
 
 async def get_cached_balance(wallet_address: str) -> Optional[Decimal]:
@@ -365,6 +446,78 @@ async def batch_get_balances(wallet_addresses: List[str]) -> Dict[str, Decimal]:
     return result
 
 
+async def get_leaderboard(limit: int = LEADERBOARD_LIMIT) -> List[Dict[str, Any]]:
+    """
+    Get top players by token balance.
+
+    Uses Redis cache for the default top-10 leaderboard with 60s TTL.
+
+    Args:
+        limit: Number of players to return
+
+    Returns:
+        List of leaderboard entries sorted by offchain balance descending
+    """
+    if limit <= 0:
+        raise InvalidAmountError("Leaderboard limit must be positive")
+
+    # Cache only the canonical top-10 query.
+    if limit == LEADERBOARD_LIMIT:
+        try:
+            cached_entries = await redis_manager.get_cached_leaderboard()
+            if cached_entries:
+                entries = []
+                for idx, row in enumerate(cached_entries, start=1):
+                    balance = _to_decimal_safe(row.get("offchain_balance", "0"))
+                    entries.append({
+                        "rank": idx,
+                        "player_id": row.get("player_id", ""),
+                        "player_name": row.get("player_name", "Player"),
+                        "balance": float(balance),
+                    })
+                return entries
+        except Exception:
+            # Fall through to DB query on cache errors.
+            pass
+
+    async with get_async_db_session() as db:
+        stmt = (
+            select(UserLedger.wallet_address, UserLedger.player_name, UserLedger.offchain_balance)
+            .order_by(desc(UserLedger.offchain_balance), UserLedger.wallet_address)
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+    entries: List[Dict[str, Any]] = []
+    cache_payload: List[Dict[str, str]] = []
+
+    for idx, row in enumerate(rows, start=1):
+        player_id = row[0] if len(row) > 0 else ""
+        player_name = row[1] if len(row) > 1 else "Player"
+        balance = _to_decimal_safe(row[2] if len(row) > 2 else None)
+        entries.append({
+            "rank": idx,
+            "player_id": player_id or "",
+            "player_name": player_name or "Player",
+            "balance": float(balance),
+        })
+        cache_payload.append({
+            "player_id": player_id or "",
+            "player_name": player_name or "Player",
+            "offchain_balance": str(balance),
+        })
+
+    if limit == LEADERBOARD_LIMIT:
+        try:
+            await redis_manager.set_cached_leaderboard(cache_payload)
+        except Exception:
+            # Cache write failure should not affect response.
+            pass
+
+    return entries
+
+
 async def get_user_with_validation(wallet_address: str, db_session: AsyncSession) -> UserLedger:
     """
     Get user from database with validation.
@@ -380,8 +533,7 @@ async def get_user_with_validation(wallet_address: str, db_session: AsyncSession
         UserNotFoundError: If user not found
         InvalidWalletAddressError: If wallet address is invalid
     """
-    if not wallet_address or len(wallet_address) != 42 or not wallet_address.startswith('0x'):
-        raise InvalidWalletAddressError(f"Invalid wallet address format: {wallet_address}")
+    wallet_address = _validate_player_id(wallet_address)
 
     stmt = select(UserLedger).filter_by(wallet_address=wallet_address)
     result = await db_session.execute(stmt)
@@ -389,6 +541,40 @@ async def get_user_with_validation(wallet_address: str, db_session: AsyncSession
     if not user:
         raise UserNotFoundError(f"User not found: {wallet_address}")
     return user
+
+
+async def resolve_player_id(login_key: str, db_session: AsyncSession) -> str:
+    """Resolve a login key to canonical player_id.
+
+    Login key priority:
+    1. Exact player_id match (legacy wallet_address field)
+    2. Unique address match (case-insensitive)
+    """
+    normalized_key = _normalize_login_key(login_key)
+
+    # Fast path: treat key as player_id first.
+    if len(normalized_key) <= 42:
+        by_id_stmt = select(UserLedger.wallet_address).filter_by(wallet_address=normalized_key)
+        by_id_result = await db_session.execute(by_id_stmt)
+        player_id = by_id_result.scalar_one_or_none()
+        if player_id:
+            return player_id
+
+    # Fallback: treat key as user-defined external address.
+    by_address_stmt = select(UserLedger.wallet_address).where(
+        UserLedger.address.isnot(None),
+        func.lower(UserLedger.address) == normalized_key.lower(),
+    )
+    by_address_result = await db_session.execute(by_address_stmt)
+    matches = by_address_result.scalars().all()
+
+    if not matches:
+        raise UserNotFoundError(f"User not found: {normalized_key}")
+    if len(matches) > 1:
+        raise AmbiguousLoginIdentifierError(
+            "Address matches multiple users, please login with player_id"
+        )
+    return matches[0]
 
 
 async def log_transaction(
@@ -470,53 +656,58 @@ async def log_transaction(
             pass
 
 
-async def register_user(wallet_address: str) -> Dict:
+async def register_user(player_name: str, address: Optional[str] = None) -> Dict:
     """
     Register a new user in the database using UserLedger.
     
     In local debug mode, users get unlimited funds (configured via LOCAL_DEBUG_BALANCE).
     
     Args:
-        wallet_address: Ethereum wallet address (should be checksummed)
+        player_name: User-defined display name
+        address: Optional external address
         
     Returns:
         Dict with status and user information
         
     Raises:
-        ValueError: If wallet address is invalid
+        ValueError: If player data is invalid
     """
-    if not wallet_address or len(wallet_address) != 42 or not wallet_address.startswith('0x'):
-        raise InvalidWalletAddressError("Invalid wallet address format")
+    player_name = _normalize_player_name(player_name)
+    address = _normalize_optional_address(address)
     
     # Use debug balance in local debug mode
     initial_balance = get_debug_balance() if is_local_debug_mode() else DAILY_LOGIN_REWARD
     
     async with get_async_db_session() as db:
-        # Check if user already exists
-        stmt = select(UserLedger).filter_by(wallet_address=wallet_address)
-        result = await db.execute(stmt)
-        existing_user = result.scalar_one_or_none()
-
-        if existing_user:
-            # In local debug mode, always ensure user has unlimited funds
-            if is_local_debug_mode() and existing_user.offchain_balance < get_debug_balance():
-                existing_user.offchain_balance = get_debug_balance()
-                await db.commit()
-                await db.refresh(existing_user)
-            
-            return {
-                'status': 'already_registered',
-                'user': {
-                    'wallet_address': existing_user.wallet_address,
-                    'balance': float(existing_user.offchain_balance),
-                    'locked_balance': float(existing_user.locked_balance),
-                    'created_at': existing_user.created_at.isoformat()
+        # Address can be used as re-login identifier, so keep it unique when provided.
+        if address:
+            existing_stmt = select(UserLedger).where(
+                UserLedger.address.isnot(None),
+                func.lower(UserLedger.address) == address.lower(),
+            )
+            existing_result = await db.execute(existing_stmt)
+            existing_user = existing_result.scalar_one_or_none()
+            if existing_user:
+                return {
+                    'status': 'exists',
+                    'user': _serialize_user(existing_user),
+                    'local_debug_mode': is_local_debug_mode()
                 }
-            }
+
+        # Generate collision-safe system player id
+        player_id = _generate_player_id()
+        while True:
+            stmt = select(UserLedger).filter_by(wallet_address=player_id)
+            result = await db.execute(stmt)
+            if not result.scalar_one_or_none():
+                break
+            player_id = _generate_player_id()
         
         # Create new user with initial balance
         new_user = UserLedger(
-            wallet_address=wallet_address,
+            wallet_address=player_id,
+            player_name=player_name,
+            address=address,
             offchain_balance=initial_balance,
             locked_balance=Decimal("0"),
             last_login_date=datetime.utcnow(),
@@ -546,17 +737,12 @@ async def register_user(wallet_address: str) -> Dict:
 
         return {
             'status': 'registered',
-            'user': {
-                'wallet_address': new_user.wallet_address,
-                'balance': float(new_user.offchain_balance),
-                'locked_balance': float(new_user.locked_balance),
-                'created_at': new_user.created_at.isoformat()
-            },
+            'user': _serialize_user(new_user),
             'local_debug_mode': is_local_debug_mode()
         }
 
 
-async def handle_login(wallet_address: str) -> Dict:
+async def handle_login(login_key: str) -> Dict:
     """
     Handle user login with daily reward check using UserLedger.
     
@@ -566,7 +752,7 @@ async def handle_login(wallet_address: str) -> Dict:
     to virtual balance and updates last_login_date.
     
     Args:
-        wallet_address: Ethereum wallet address
+        login_key: player_id or optional address specified at registration
         
     Returns:
         Dict with login status and reward information
@@ -576,8 +762,9 @@ async def handle_login(wallet_address: str) -> Dict:
     """
     async with get_async_db_session() as db:
         try:
-            user = await get_user_with_validation(wallet_address, db)
-        except (UserNotFoundError, InvalidWalletAddressError) as e:
+            player_id = await resolve_player_id(login_key, db)
+            user = await get_user_with_validation(player_id, db)
+        except (UserNotFoundError, InvalidWalletAddressError, AmbiguousLoginIdentifierError) as e:
             raise ValueError(str(e)) from e
 
         now_utc = datetime.utcnow()
@@ -596,12 +783,7 @@ async def handle_login(wallet_address: str) -> Dict:
                 'reward_granted': True,
                 'reward_amount': float(get_debug_balance()),
                 'local_debug_mode': True,
-                'user': {
-                    'wallet_address': user.wallet_address,
-                    'balance': float(user.offchain_balance),
-                    'locked_balance': float(user.locked_balance),
-                    'last_login_date': user.last_login_date.isoformat() if user.last_login_date else None
-                }
+                'user': _serialize_user(user)
             }
         
         # Check if last login was on a different day
@@ -611,7 +793,7 @@ async def handle_login(wallet_address: str) -> Dict:
             balance_before = user.offchain_balance
             await db.execute(
                 text("UPDATE user_ledger SET offchain_balance = offchain_balance + :reward WHERE wallet_address = :wallet"),
-                {"reward": str(DAILY_LOGIN_REWARD), "wallet": wallet_address}
+                {"reward": str(DAILY_LOGIN_REWARD), "wallet": player_id}
             )
             user.last_login_date = now_utc
             reward_granted = True
@@ -637,12 +819,7 @@ async def handle_login(wallet_address: str) -> Dict:
             'status': 'success',
             'reward_granted': reward_granted,
             'reward_amount': float(DAILY_LOGIN_REWARD) if reward_granted else 0,
-            'user': {
-                'wallet_address': user.wallet_address,
-                'balance': float(user.offchain_balance),
-                'locked_balance': float(user.locked_balance),
-                'last_login_date': user.last_login_date.isoformat() if user.last_login_date else None
-            }
+            'user': _serialize_user(user)
         }
 
 

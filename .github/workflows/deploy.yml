@@ -27,19 +27,19 @@ jobs:
             echo "Target: PRODUCTION"
             export RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN_PROD }}
             export RAILWAY_ENV="production"
-            export SERVICE_NAME="backend"
+            export SERVICE_NAME="backend_prod"
           
           elif [ "${{ github.ref_name }}" = "pre" ]; then
             echo "Target: PREVIEW"
             export RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN_PRE }}
             export RAILWAY_ENV="preview"
-            export SERVICE_NAME="backend"
+            export SERVICE_NAME="backend_prev"
           
           else
             echo "Target: DEVELOPMENT"
             export RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN_DEV }}
             export RAILWAY_ENV="development"
-            export SERVICE_NAME="backend"
+            export SERVICE_NAME="backend_dev"
           fi
 
 

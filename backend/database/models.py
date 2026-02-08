@@ -63,6 +63,9 @@ class UserLedger(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     wallet_address = Column(String(42), unique=True, nullable=False, index=True)
+    # Canonical agent identity fields (wallet_address kept as legacy identifier storage)
+    player_name = Column(String(50), nullable=False, default="Player")
+    address = Column(String(128), nullable=True, index=True)
     offchain_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     locked_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))  # For in-game funds
     nonce = Column(Integer, nullable=False, default=0)  # For withdrawal signatures
@@ -70,9 +73,15 @@ class UserLedger(Base):
     last_daily_checkin = Column(DateTime, nullable=True)  # For daily rewards
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        Index('idx_user_ledger_balance_wallet', offchain_balance.desc(), wallet_address),
+    )
     
     def __repr__(self):
-        return f"<UserLedger(wallet_address='{self.wallet_address}', balance={self.offchain_balance}, locked={self.locked_balance})>"
+        return (
+            f"<UserLedger(wallet_address='{self.wallet_address}', player_name='{self.player_name}', "
+            f"balance={self.offchain_balance}, locked={self.locked_balance})>"
+        )
     
     def get_available_balance(self) -> Decimal:
         """Get balance available for withdrawal or game entry."""

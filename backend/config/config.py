@@ -8,6 +8,7 @@ This module provides:
 """
 
 import os
+import warnings
 from decimal import Decimal
 
 # Load from environment
@@ -38,6 +39,58 @@ SERVER_PRIVATE_KEY = os.getenv(
 # CORS configuration
 ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*').split(',')
 
+
+def _parse_allowed_hosts(raw_value: str):
+    """Parse and sanitize host patterns for Starlette TrustedHostMiddleware."""
+    valid_hosts = []
+    invalid_hosts = []
+
+    for item in raw_value.split(','):
+        host = item.strip().lower()
+        if not host:
+            continue
+
+        # Starlette accepts:
+        # 1) "*"
+        # 2) exact hosts without wildcard
+        # 3) wildcard subdomain patterns like "*.example.com"
+        if host == '*':
+            valid_hosts.append(host)
+            continue
+
+        if '*' not in host:
+            valid_hosts.append(host)
+            continue
+
+        if host.startswith('*.') and host.count('*') == 1 and len(host) > 2:
+            valid_hosts.append(host)
+            continue
+
+        invalid_hosts.append(host)
+
+    if invalid_hosts:
+        warnings.warn(
+            f"Ignored invalid ALLOWED_HOSTS patterns: {', '.join(invalid_hosts)}. "
+            "Wildcard entries must be '*' or '*.example.com'.",
+            RuntimeWarning,
+        )
+
+    # Keep service bootable even if env is misconfigured.
+    if not valid_hosts:
+        warnings.warn(
+            "No valid ALLOWED_HOSTS found. Falling back to '*' to avoid startup failure.",
+            RuntimeWarning,
+        )
+        return ['*']
+
+    return valid_hosts
+
+
+# Trusted host configuration (for TrustedHostMiddleware)
+ALLOWED_HOSTS = _parse_allowed_hosts(
+    os.getenv('ALLOWED_HOSTS', '*.railway.app, *.*.railway.app,*.clawarena.io,localhost,127.0.0.1')
+)
+
 # Anti-bot configuration (simplified - no PoW)
 BOT_TOKEN_SECRET = os.getenv('BOT_TOKEN_SECRET', 'dev-unsafe-secret')
 BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '3600'))  # 1 hour
@@ -49,7 +102,8 @@ TEXAS_DEFAULT_BUY_IN_CHIPS = 1000  # 默认买入1000筹码
 TEXAS_DEFAULT_BUY_IN_TOKENS = TEXAS_DEFAULT_BUY_IN_CHIPS * TEXAS_CHIP_TO_TOKEN_RATIO  # = 100 Tokens
 
 # 狼人杀奖金倍数：奖金池 = 入场费总和 × 奖金倍数
-WEREWOLF_PRIZE_MULTIPLIER = Decimal("1.5")  # 1.5倍奖金池，更有吸引力
+# 平台不抽成/不抽水：默认按 1.0 全额返还给胜利阵营
+WEREWOLF_PRIZE_MULTIPLIER = Decimal("1.0")
 
 # 提现配置
 MIN_WITHDRAWAL_AMOUNT = Decimal("1.0")  # 最小提现金额：1 Token
@@ -100,7 +154,6 @@ def get_debug_balance() -> Decimal:
 
 # Print warning if local debug mode is enabled
 if LOCAL_DEBUG_MODE:
-    import warnings
     warnings.warn(
         "LOCAL DEBUG MODE ENABLED - Security features DISABLED. DO NOT USE IN PRODUCTION!",
         RuntimeWarning
@@ -114,7 +167,6 @@ if LOCAL_DEBUG_MODE:
     print("- DO NOT USE IN PRODUCTION!")
     print("=" * 70)
 elif BOT_TOKEN_SECRET == 'dev-unsafe-secret':
-    import warnings
     warnings.warn(
         "BOT_TOKEN_SECRET is using a default value. Set BOT_TOKEN_SECRET in production!",
         RuntimeWarning

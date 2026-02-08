@@ -252,6 +252,7 @@ class TransactionLog(Base):
     created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
     __table_args__ = (
+        Index('idx_transaction_log_user_created_at', 'user_id', 'created_at'),
         Index('uk_transaction_log_tx_hash', 'tx_hash', unique=True),
     )
     

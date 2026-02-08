@@ -48,6 +48,7 @@ REDIS_LOCK_PREFIX = 'arena:lock:'
 REDIS_PERSISTENCE_PREFIX = 'arena:persist:'  # Legacy, for full state
 REDIS_GAME_CORE_PREFIX = 'arena:core:'       # Core game state (frequent updates)
 REDIS_INDEXER_PREFIX = 'arena:indexer:'      # Indexer state and dedup
+REDIS_BALANCE_PREFIX = 'arena:balance:'      # User balance cache
 
 # Timeouts and TTLs (seconds)
 SESSION_EXPIRY = 3600           # 1 hour
@@ -60,6 +61,7 @@ EVENT_PROCESSING_LOCK_EXPIRY = 300  # 5 minutes
 PROCESSED_EVENT_EXPIRY = 86400 * 30  # 30 days
 LEADERBOARD_CACHE_EXPIRY = 60      # 1 minute
 REDIS_LEADERBOARD_KEY = 'arena:leaderboard:top10'
+BALANCE_CACHE_EXPIRY = int(os.getenv('BALANCE_CACHE_EXPIRY', '300'))  # 5 minutes
 
 
 # ============================================================================
@@ -850,9 +852,9 @@ class RedisManager:
             return
 
         try:
-            key = f"balance:{wallet_address}"
+            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
             value = json.dumps({"balance": balance, "locked_balance": locked_balance})
-            await self._redis.set(key, value)
+            await self._redis.setex(key, BALANCE_CACHE_EXPIRY, value)
         except Exception as e:
             logger.error(f"Error setting cached balance for {wallet_address}: {e}")
 
@@ -892,7 +894,7 @@ class RedisManager:
             return None
 
         try:
-            key = f"balance:{wallet_address}"
+            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
             value = await self._redis.get(key)
             if value:
                 return json.loads(value)
@@ -900,6 +902,38 @@ class RedisManager:
         except Exception as e:
             logger.error(f"Error getting cached balance data for {wallet_address}: {e}")
             return None
+
+    async def get_cached_balances_data(self, wallet_addresses: List[str]) -> Dict[str, Dict[str, str]]:
+        """
+        Bulk get cached balance data for multiple users.
+
+        Args:
+            wallet_addresses: Canonical player identifiers
+
+        Returns:
+            Mapping of wallet_address -> {balance, locked_balance}
+        """
+        if not wallet_addresses:
+            return {}
+        if not await self.ping():
+            return {}
+
+        try:
+            keys = [f"{REDIS_BALANCE_PREFIX}{wallet}" for wallet in wallet_addresses]
+            values = await self._redis.mget(keys)
+            result: Dict[str, Dict[str, str]] = {}
+
+            for wallet, raw in zip(wallet_addresses, values):
+                if not raw:
+                    continue
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    result[wallet] = parsed
+
+            return result
+        except Exception as e:
+            logger.error(f"Error bulk getting cached balances: {e}")
+            return {}
 
     async def invalidate_balance_cache(self, wallet_address: str) -> None:
         """
@@ -912,7 +946,7 @@ class RedisManager:
             return
 
         try:
-            key = f"balance:{wallet_address}"
+            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
             await self._redis.delete(key)
         except Exception as e:
             logger.error(f"Error invalidating cache for {wallet_address}: {e}")
@@ -959,6 +993,16 @@ class RedisManager:
         except Exception as e:
             logger.error(f"Error getting cached leaderboard: {e}")
             return None
+
+    async def invalidate_leaderboard_cache(self) -> None:
+        """Invalidate cached leaderboard payload."""
+        if not await self.ping():
+            return
+
+        try:
+            await self._redis.delete(REDIS_LEADERBOARD_KEY)
+        except Exception as e:
+            logger.error(f"Error invalidating cached leaderboard: {e}")
 
 
 # ============================================================================

@@ -14,7 +14,7 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
 import uuid
-from sqlalchemy import text, select, desc, func
+from sqlalchemy import text, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database.models import UserLedger, TransactionLog, TransactionType
@@ -180,6 +180,15 @@ async def invalidate_balance_cache(wallet_address: str) -> None:
         await redis_manager.invalidate_balance_cache(wallet_address)
     except Exception:
         # Cache invalidation failure, continue
+        pass
+
+
+async def invalidate_leaderboard_cache() -> None:
+    """Invalidate leaderboard cache after ranking-impacting balance updates."""
+    try:
+        await redis_manager.invalidate_leaderboard_cache()
+    except Exception:
+        # Cache invalidation failure should not block core transaction flow.
         pass
 
 
@@ -359,6 +368,7 @@ async def transfer_balance(
             # Update caches
             await set_cached_balance(from_wallet, from_user.offchain_balance, from_user.locked_balance)
             await set_cached_balance(to_wallet, to_user.offchain_balance, to_user.locked_balance)
+            await invalidate_leaderboard_cache()
 
             # Log transactions
             await log_transaction(
@@ -410,22 +420,24 @@ async def batch_get_balances(wallet_addresses: List[str]) -> Dict[str, Decimal]:
     Returns:
         Dict mapping wallet addresses to their balances
     """
-    result = {}
-    uncached_addresses = []
+    result: Dict[str, Decimal] = {}
+    uncached_addresses: List[str] = []
 
-    # Check cache first
+    # Check cache first in bulk (single Redis roundtrip via MGET).
+    cached_rows = await redis_manager.get_cached_balances_data(wallet_addresses)
     for wallet in wallet_addresses:
-        cached_balance = await get_cached_balance(wallet)
-        if cached_balance is not None:
-            result[wallet] = cached_balance
+        cached_data = cached_rows.get(wallet)
+        if cached_data and cached_data.get("balance") is not None:
+            result[wallet] = _to_decimal_safe(cached_data.get("balance"))
         else:
             uncached_addresses.append(wallet)
 
     # Fetch uncached balances from database
     if uncached_addresses:
+        unique_uncached = list(dict.fromkeys(uncached_addresses))
         async with get_async_db_session() as db:
             stmt = select(UserLedger).filter(
-                UserLedger.wallet_address.in_(uncached_addresses)
+                UserLedger.wallet_address.in_(unique_uncached)
             )
             users_result = await db.execute(stmt)
             users = users_result.scalars().all()
@@ -563,7 +575,7 @@ async def resolve_player_id(login_key: str, db_session: AsyncSession) -> str:
     # Fallback: treat key as user-defined external address.
     by_address_stmt = select(UserLedger.wallet_address).where(
         UserLedger.address.isnot(None),
-        func.lower(UserLedger.address) == normalized_key.lower(),
+        UserLedger.address == normalized_key,
     )
     by_address_result = await db_session.execute(by_address_stmt)
     matches = by_address_result.scalars().all()
@@ -683,7 +695,7 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
         if address:
             existing_stmt = select(UserLedger).where(
                 UserLedger.address.isnot(None),
-                func.lower(UserLedger.address) == address.lower(),
+                UserLedger.address == address,
             )
             existing_result = await db.execute(existing_stmt)
             existing_user = existing_result.scalar_one_or_none()
@@ -721,6 +733,7 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
 
         # Update cache
         await set_cached_balance(new_user.wallet_address, new_user.offchain_balance, new_user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         # Log initial balance transaction
         if not is_local_debug_mode():
@@ -772,11 +785,17 @@ async def handle_login(login_key: str) -> Dict:
         
         # In local debug mode, always ensure user has unlimited funds
         if is_local_debug_mode():
+            balance_changed = False
             if user.offchain_balance < get_debug_balance():
                 user.offchain_balance = get_debug_balance()
+                balance_changed = True
             user.last_login_date = now_utc
             await db.commit()
             await db.refresh(user)
+
+            await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+            if balance_changed:
+                await invalidate_leaderboard_cache()
             
             return {
                 'status': 'success',
@@ -802,6 +821,7 @@ async def handle_login(login_key: str) -> Dict:
 
             # Update cache
             await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+            await invalidate_leaderboard_cache()
 
             # Log daily reward transaction
             await log_transaction(
@@ -891,6 +911,7 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
 
         # Update cache
         await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         # Log deduction transaction
         await log_transaction(
@@ -953,6 +974,7 @@ async def add_balance(wallet_address: str, amount: Decimal, tx_type: Transaction
 
         # Update cache
         await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         # Log addition transaction
         await log_transaction(
@@ -1074,6 +1096,7 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
 
         # Update cache
         await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         # Log lock transaction (this moves funds to locked state)
         await log_transaction(
@@ -1158,6 +1181,7 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
 
         # Update cache
         await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         # Log unlock transaction (this returns funds from locked state)
         await log_transaction(

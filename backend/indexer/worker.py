@@ -21,7 +21,7 @@ from web3 import Web3
 
 from web3.contract import Contract
 
-from sqlalchemy import text, func
+from sqlalchemy import text
 
 from ..config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
 from ..database.connection import get_db_session
@@ -361,7 +361,7 @@ class DepositEventWorker:
                 db.query(UserLedger)
                 .filter(
                     UserLedger.address.isnot(None),
-                    func.lower(UserLedger.address) == normalized_address.lower(),
+                    UserLedger.address == normalized_address,
                 )
                 .first()
             )

@@ -170,6 +170,7 @@ CREATE TABLE transaction_log (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Transaction timestamp',
     
     INDEX idx_user (user_id),
+    INDEX idx_transaction_log_user_created_at (user_id, created_at),
     INDEX idx_wallet (wallet_address),
     INDEX idx_tx_type (tx_type),
     INDEX idx_game_session (game_session_id),

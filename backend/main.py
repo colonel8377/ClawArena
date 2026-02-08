@@ -1,62 +1,50 @@
 """
 main.py - The Server
 
-FastAPI + Socket.IO server with SIWE authentication, game management,
-and withdrawal signature generation.
-
-Security improvements:
-- Rate limiting on API endpoints
-- CORS whitelist configuration
-- Blockchain as source of truth for nonces
-- Redis persistence configuration
-- Graceful shutdown handling
-- Local debug mode for development
+FastAPI + Socket.IO server with agent authentication, game management,
+and in-app token economy settlement.
 """
 
-import os
 import asyncio
 import signal
-from typing import Dict, Optional
 from datetime import datetime
-
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-import socketio
-from eth_account import Account
-from eth_account.messages import encode_defunct
-from web3 import Web3
-
-from config import (
-    is_local_debug_mode, 
-    LOCAL_DEBUG_MODE, 
-    SERVER_PRIVATE_KEY, 
-    ARENA_VAULT_ADDRESS,
-    WEB3_PROVIDER_URL,
-    ALLOWED_ORIGINS
-)
-from games.texas import TexasGame, TexasEngine, create_poker_game, create_texas_game
-from database.connection import init_db, get_db
-from database.models import User, GameHistory, ChatMessage
-from database.redis_manager import redis_manager
-from database.persistence_manager import persistence_manager
-from economy.account import (
-    register_user, handle_login, deduct_balance, add_balance, get_balance,
-    validate_account_balance, get_account_summary, transfer_balance, batch_get_balances,
-    InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError
-)
-from config import (
-    TEXAS_CHIP_TO_TOKEN_RATIO, WEREWOLF_PRIZE_MULTIPLIER,
-    MIN_WITHDRAWAL_AMOUNT, GAS_COST_ESTIMATE_HIGH, GAS_COST_ESTIMATE_MEDIUM,
-    GAS_COST_ESTIMATE_LOW, WITHDRAWAL_PROFITABILITY_RATIO, DAILY_WITHDRAWAL_LIMIT
-)
-from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase, PHASE_TIMEOUT_SECONDS
-from games.werewolf.matchmaker import WerewolfMatchmaker
-from indexer.worker import deposit_worker
 from decimal import Decimal
+from typing import Dict, Optional, List
+
+import socketio
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+from database.models import TransactionType
+from config.config import (
+    LOCAL_DEBUG_MODE,
+    ALLOWED_ORIGINS,
+    ALLOWED_HOSTS,
+    SOCKET_IO_LOGGER,
+    SOCKET_ENGINEIO_LOGGER,
+)
+from config import (
+    TEXAS_CHIP_TO_TOKEN_RATIO,
+    WEREWOLF_PRIZE_MULTIPLIER,
+)
+from database.connection import init_db
+from database.persistence_manager import persistence_manager
+from database.redis_manager import redis_manager
+from economy.account import (
+    register_user, handle_login, add_balance, get_balance,
+    get_account_summary, transfer_balance, batch_get_balances,
+    InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError, unlock_balance,
+    lock_balance, get_leaderboard
+)
+from games.texas import TexasGame, create_texas_game
+from games.texas.texas_engine import PokerPhase
+from games.werewolf.matchmaker import WerewolfMatchmaker
+from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
 from manager.anti_bot_manager import (
     TokenRequest,
     get_token,
@@ -70,29 +58,17 @@ from manager.anti_bot_manager import (
 
 # Werewolf game timeout check interval (seconds)
 WEREWOLF_TIMEOUT_CHECK_INTERVAL = 5
+WEREWOLF_SIGNIFICANT_PHASES = {'day_announcement', 'day_voting', 'finished', 'aborted'}
 
+# Poker timeout check interval (seconds)
+POKER_TIMEOUT_CHECK_INTERVAL = 1
+POKER_ACTIVE_PHASES = {
+    PokerPhase.PRE_FLOP,
+    PokerPhase.FLOP,
+    PokerPhase.TURN,
+    PokerPhase.RIVER,
+}
 
-# ============================================================================
-# ENVIRONMENT CONFIGURATION
-# ============================================================================
-
-# Validate private key is set in production (not in local debug mode)
-if not LOCAL_DEBUG_MODE and SERVER_PRIVATE_KEY == '0x0000000000000000000000000000000000000000000000000000000000000001':
-    import warnings
-    warnings.warn(
-        "WARNING: Using default private key! Set SERVER_PRIVATE_KEY environment variable in production!",
-        RuntimeWarning
-    )
-
-# Initialize Web3 connection (skip in local debug mode)
-if LOCAL_DEBUG_MODE:
-    w3 = None
-    print("⚠️  LOCAL DEBUG MODE: Web3 connection disabled")
-else:
-    w3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER_URL)) if WEB3_PROVIDER_URL else Web3()
-
-# Initialize server account for signing
-server_account = Account.from_key(SERVER_PRIVATE_KEY)
 
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
@@ -102,8 +78,8 @@ socketio_origins = '*' if '*' in ALLOWED_ORIGINS else ALLOWED_ORIGINS
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins=socketio_origins,
-    logger=True,
-    engineio_logger=True,  # Enable Engine.IO logging to debug WebSocket messages
+    logger=SOCKET_IO_LOGGER,
+    engineio_logger=SOCKET_ENGINEIO_LOGGER,
     ping_timeout=60,
     ping_interval=25
 )
@@ -111,7 +87,7 @@ sio = socketio.AsyncServer(
 # Create FastAPI app
 app = FastAPI(
     title="Arena Poker Game Engine",
-    description="Real-time Texas Hold'em with SIWE authentication and blockchain settlement",
+    description="Real-time Texas Hold'em and Werewolf for AI agents",
     version="2.1.0"
 )
 
@@ -175,15 +151,109 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=ALLOWED_HOSTS,
+)
+
 # Game state management
 poker_tables: Dict[str, TexasGame] = {}  # Using unified TexasGame architecture
 werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
-player_sessions: Dict[str, Dict] = {}  # sid -> {address, table_id, game_id, authenticated}
-nonces: Dict[str, str] = {}  # address -> nonce for SIWE auth only
-# NOTE: withdrawal_nonces removed - now queried from blockchain
+player_sessions: Dict[str, Dict] = {}  # sid -> {player_id, player_name, table_id, game_id, authenticated}
+# Spectator reveal subscriptions by sid. Shape:
+# {
+#   sid: {
+#     'poker': {table_id: reveal_bool},
+#     'werewolf': {game_id: reveal_bool}
+#   }
+# }
+spectator_subscriptions: Dict[str, Dict[str, Dict[str, bool]]] = {}
+
+POKER_SPECTATOR_ROOM_PREFIX = "spectate:poker:"
+WEREWOLF_SPECTATOR_ROOM_PREFIX = "spectate:werewolf:"
 
 # Matchmaker for Werewolf games
 werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
+werewolf_timeout_task: Optional[asyncio.Task] = None
+poker_timeout_task: Optional[asyncio.Task] = None
+
+
+def _set_spectator_subscription(sid: str, game_type: str, room_id: str, reveal: bool) -> None:
+    """Track spectator reveal preference per room."""
+    sid_subs = spectator_subscriptions.setdefault(sid, {'poker': {}, 'werewolf': {}})
+    room_subs = sid_subs.setdefault(game_type, {})
+    room_subs[room_id] = bool(reveal)
+
+
+def _remove_spectator_subscription(sid: str, game_type: str, room_id: Optional[str] = None) -> None:
+    """Remove one or all spectator subscriptions for a sid/game type."""
+    sid_subs = spectator_subscriptions.get(sid)
+    if not sid_subs:
+        return
+
+    if room_id:
+        sid_subs.get(game_type, {}).pop(room_id, None)
+    else:
+        sid_subs[game_type] = {}
+
+    if not sid_subs.get('poker') and not sid_subs.get('werewolf'):
+        spectator_subscriptions.pop(sid, None)
+
+
+def _iter_reveal_spectators(game_type: str, room_id: str):
+    """Yield sids that subscribed with reveal=True for this room."""
+    for sid, sid_subs in spectator_subscriptions.items():
+        # Defense-in-depth: only read-only spectator sessions can receive
+        # reveal-all state so active players cannot subscribe to hidden info.
+        if sid_subs.get(game_type, {}).get(room_id) and _is_read_only_session(sid):
+            yield sid
+
+
+def _poker_spectator_room(table_id: str) -> str:
+    return f"{POKER_SPECTATOR_ROOM_PREFIX}{table_id}"
+
+
+def _werewolf_spectator_room(game_id: str) -> str:
+    return f"{WEREWOLF_SPECTATOR_ROOM_PREFIX}{game_id}"
+
+
+async def _emit_poker_event(table_id: str, event: str, payload: Dict) -> None:
+    """Emit an event to poker players and spectator room."""
+    await sio.emit(event, payload, room=table_id)
+    await sio.emit(event, payload, room=_poker_spectator_room(table_id))
+
+
+def _is_read_only_session(sid: str) -> bool:
+    session = player_sessions.get(sid) or {}
+    return bool(session.get('read_only') or session.get('spectator_mode'))
+
+
+async def _reject_if_read_only(sid: str, action_name: str) -> bool:
+    """Return True when action should be stopped due to read-only spectator session."""
+    if _is_read_only_session(sid):
+        await sio.emit('error', {
+            'message': f"Read-only spectator session cannot perform '{action_name}'",
+            'error_code': 'SPECTATOR_READ_ONLY'
+        }, room=sid)
+        return True
+    return False
+
+
+async def _emit_werewolf_event(game_id: str, event: str, payload: Dict) -> None:
+    """Emit an event to werewolf players and spectator room."""
+    await sio.emit(event, payload, room=game_id)
+    await sio.emit(event, payload, room=_werewolf_spectator_room(game_id))
+
+
+async def _emit_to_sids(event: str, payload: Dict, sids: List[str]) -> None:
+    """Emit same payload to many sockets concurrently."""
+    if not sids:
+        return
+    await asyncio.gather(
+        *(sio.emit(event, payload, room=target_sid) for target_sid in sids),
+        return_exceptions=True,
+    )
 
 
 # ============================================================================
@@ -193,143 +263,6 @@ werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
 # Note: Database initialization with retry logic is performed in the async startup handler
 # to properly wait for MySQL to be ready in Docker environments.
 # The init_db() function now includes retry logic for container startup scenarios.
-
-
-# ============================================================================
-# SMART WITHDRAWAL MANAGEMENT
-# ============================================================================
-
-class SmartWithdrawalManager:
-    """智能提现管理器 - 单服务器优化"""
-
-    def __init__(self):
-        self.pending_withdrawals = {}  # wallet_address -> list of pending amounts
-
-    async def should_withdraw(self, wallet_address: str, amount: Decimal) -> Dict[str, Any]:
-        """
-        智能判断是否应该提现
-
-        Args:
-            wallet_address: 用户钱包地址
-            amount: 提现金额
-
-        Returns:
-            Dict with decision and reasoning
-        """
-        # 检查最小提现金额
-        if amount < MIN_WITHDRAWAL_AMOUNT:
-            return {
-                'should_withdraw': False,
-                'reason': f'Amount {amount} below minimum {MIN_WITHDRAWAL_AMOUNT}',
-                'accumulate': True
-            }
-
-        # 获取当前Gas费估算（这里简化，实际可以调用Gas估算API）
-        gas_cost = await self._estimate_gas_cost()
-
-        # 计算净收益
-        net_profit = amount - gas_cost
-
-        # 检查是否值得提现
-        if net_profit < gas_cost * WITHDRAWAL_PROFITABILITY_RATIO:
-            return {
-                'should_withdraw': False,
-                'reason': f'Net profit {net_profit} too low vs gas cost {gas_cost}',
-                'accumulate': True,
-                'suggested_wait': True
-            }
-
-        # 检查每日限额（单服务器无限制）
-        if DAILY_WITHDRAWAL_LIMIT is not None:
-            daily_total = await self._get_daily_withdrawal_total(wallet_address)
-            if daily_total + amount > DAILY_WITHDRAWAL_LIMIT:
-                return {
-                    'should_withdraw': False,
-                    'reason': f'Would exceed daily limit {DAILY_WITHDRAWAL_LIMIT}',
-                    'accumulate': False
-                }
-
-        return {
-            'should_withdraw': True,
-            'net_profit': float(net_profit),
-            'gas_cost': float(gas_cost),
-            'reason': 'Optimal withdrawal conditions'
-        }
-
-    async def _estimate_gas_cost(self) -> Decimal:
-        """估算Gas费用（简化版本）"""
-        # 这里可以集成实际的Gas估算API
-        # 目前使用静态估算
-        try:
-            # 可以根据网络状况动态调整
-            # 例如：调用 etherscan API 或 web3.eth.gas_price
-            return GAS_COST_ESTIMATE_MEDIUM
-        except:
-            return GAS_COST_ESTIMATE_HIGH  # 保守估算
-
-    async def _get_daily_withdrawal_total(self, wallet_address: str) -> Decimal:
-        """获取今日提现总额（单服务器简化实现）"""
-        # 在Redis中存储每日提现记录
-        try:
-            today_key = f"daily_withdrawals:{wallet_address}:{datetime.utcnow().date()}"
-            daily_total = await redis_manager.get_cached_balance(wallet_address)  # 简化实现
-            return daily_total or Decimal("0")
-        except:
-            return Decimal("0")
-
-    def add_pending_withdrawal(self, wallet_address: str, amount: Decimal):
-        """添加待提现金额"""
-        if wallet_address not in self.pending_withdrawals:
-            self.pending_withdrawals[wallet_address] = []
-        self.pending_withdrawals[wallet_address].append(amount)
-
-    def get_pending_total(self, wallet_address: str) -> Decimal:
-        """获取用户待提现总额"""
-        amounts = self.pending_withdrawals.get(wallet_address, [])
-        return sum(amounts)
-
-    def clear_pending_withdrawals(self, wallet_address: str):
-        """清除用户的待提现记录"""
-        self.pending_withdrawals.pop(wallet_address, None)
-
-    async def process_auto_withdrawal(self, wallet_address: str, amount: Decimal) -> bool:
-        """
-        处理自动提现
-
-        Args:
-            wallet_address: 用户钱包地址
-            amount: 提现金额
-
-        Returns:
-            True if withdrawal was processed
-        """
-        decision = await self.should_withdraw(wallet_address, amount)
-
-        if decision['should_withdraw']:
-            try:
-                # 生成提现签名
-                signature_data = await generate_withdrawal_signature(wallet_address, int(amount))
-
-                # 可以通过多种方式通知用户：
-                # 1. Socket.IO推送（如果用户在线）
-                # 2. 存储到数据库供用户查询
-                # 3. 发送到消息队列
-
-                # 这里暂时记录到日志
-                print(f"Auto-withdrawal processed for {wallet_address}: {amount} tokens")
-
-                return True
-            except Exception as e:
-                print(f"Auto-withdrawal failed for {wallet_address}: {e}")
-                return False
-        else:
-            # 累积待提现金额
-            if decision.get('accumulate', False):
-                self.add_pending_withdrawal(wallet_address, amount)
-            return False
-
-# 全局智能提现管理器实例
-smart_withdrawal_manager = SmartWithdrawalManager()
 
 
 # ============================================================================
@@ -345,7 +278,6 @@ async def startup_event():
     - MySQL database to be ready (with retry logic)
     - Redis connection
     - Game state restoration
-    - Deposit event worker (if not in local debug mode)
     """
     # Initialize database with retry logic (waits for MySQL to be ready)
     print("Initializing database...")
@@ -359,13 +291,6 @@ async def startup_event():
     # Connect to Redis
     await redis_manager.connect()
     print("✓ RedisManager connected")
-    
-    # Start deposit event worker (unless in local debug mode)
-    if not is_local_debug_mode():
-        asyncio.create_task(deposit_worker.run())
-        print("✓ Deposit event worker started")
-    else:
-        print("⚠ Deposit event worker disabled (local debug mode)")
     
     # Restore persisted games from Redis
     try:
@@ -392,19 +317,32 @@ async def startup_event():
                         state = state_data['state']
                         game_type = state_data.get('game_type', 'unknown')
                         
-                        # Only restore active games
                         phase = state.get('phase', 'unknown')
-                        if phase in ['waiting', 'finished', 'aborted']:
-                            print(f"  ⚠ Skipping inactive game: {game_id} (phase: {phase})")
-                            await redis_manager.delete_game_data(game_id)
-                            continue
                         
                         if game_type == 'werewolf':
+                            # Only restore active werewolf games.
+                            if phase in ['waiting', 'finished', 'aborted']:
+                                print(f"  ⚠ Skipping inactive werewolf game: {game_id} (phase: {phase})")
+                                await redis_manager.delete_game_data(game_id)
+                                continue
+
                             # Restore werewolf game using from_dict
                             game = WerewolfGame.from_dict(state)
                             werewolf_games[game_id] = game
                             restored_count += 1
                             print(f"  ✓ Restored werewolf game: {game_id} (phase: {phase}, day: {game.day_count})")
+                        elif game_type == 'texas':
+                            # Restore poker tables even when waiting so players can
+                            # reconnect to lobby state after restart.
+                            if phase in ['finished', 'aborted']:
+                                print(f"  ⚠ Skipping inactive poker table: {game_id} (phase: {phase})")
+                                await redis_manager.delete_game_data(game_id)
+                                continue
+
+                            table = TexasGame.from_dict(state)
+                            poker_tables[game_id] = table
+                            restored_count += 1
+                            print(f"  ✓ Restored poker table: {game_id} (phase: {phase})")
                         else:
                             print(f"  ⚠ Unknown game type: {game_type} for {game_id}")
                             
@@ -422,8 +360,92 @@ async def startup_event():
         traceback.print_exc()
     
     # Start werewolf game timeout checker
-    asyncio.create_task(werewolf_timeout_checker())
+    global werewolf_timeout_task
+    werewolf_timeout_task = asyncio.create_task(werewolf_timeout_checker())
     print("✓ Werewolf game timeout checker started")
+
+    # Start poker game timeout checker
+    global poker_timeout_task
+    poker_timeout_task = asyncio.create_task(poker_timeout_checker())
+    print("✓ Poker game timeout checker started")
+
+
+async def poker_timeout_checker():
+    """
+    Background task that enforces poker turn timeouts.
+
+    Runs every POKER_TIMEOUT_CHECK_INTERVAL seconds and:
+    1. Finds the current acting player for active hands
+    2. Auto-check/fold on timeout
+    3. Advances phase and emits showdown/reward events like manual actions
+    """
+    while True:
+        try:
+            await asyncio.sleep(POKER_TIMEOUT_CHECK_INTERVAL)
+
+            for table_id, table in list(poker_tables.items()):
+                engine = table.engine
+                if engine.phase not in POKER_ACTIVE_PHASES:
+                    continue
+
+                current_sid = engine.current_player_sid
+                if not current_sid:
+                    continue
+
+                if engine.get_turn_time_remaining() > 0:
+                    continue
+
+                print(f"[PokerTimeout] Table {table_id} player {current_sid} timed out")
+                result = engine.handle_timeout(current_sid)
+
+                if not result.get('success'):
+                    print(f"[PokerTimeout] Failed to auto-act on {table_id}: {result.get('error')}")
+                    continue
+
+                # Keep wrapper timeout tracking aligned with engine state.
+                table.update_player_action_time(current_sid)
+
+                await _emit_poker_event(table_id, 'PLAYER_TIMEOUT', {
+                    'table_id': table_id,
+                    'player_sid': current_sid,
+                    'action': result.get('action', 'fold'),
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+
+                # Keep hot/cold snapshot eventually consistent on auto-play paths.
+                asyncio.create_task(table.save_checkpoint('timeout_action'))
+
+                await broadcast_game_state(table_id)
+
+                if result.get('hand_over'):
+                    winner_info = result.get('winner', {})
+                    await _emit_poker_event(table_id, 'hand_winner', {
+                        'winner': winner_info,
+                        'reason': 'All other players folded',
+                        'pot': winner_info.get('amount', 0)
+                    })
+                    asyncio.create_task(table.save_checkpoint('hand_end'))
+                    continue
+
+                if result.get('advance_phase'):
+                    phase_result = engine.advance_phase()
+                    await broadcast_game_state(table_id)
+                    asyncio.create_task(table.save_checkpoint('phase_change'))
+
+                    if engine.phase == PokerPhase.SHOWDOWN:
+                        showdown_result = phase_result if isinstance(phase_result, dict) else {}
+                        await _emit_poker_event(table_id, 'showdown_reveal', {
+                            'player_hands': showdown_result.get('player_hands', engine.get_all_hole_cards()),
+                            'community_cards': engine.cards_to_strings(engine.community_cards),
+                            'winners': showdown_result.get('winners', [])
+                        })
+                        asyncio.create_task(table.save_checkpoint('showdown'))
+
+        except asyncio.CancelledError:
+            print("Poker timeout checker stopped")
+            break
+        except Exception as e:
+            print(f"[PokerTimeout] Error in poker timeout checker: {e}")
 
 
 # ============================================================================
@@ -474,8 +496,10 @@ async def werewolf_timeout_checker():
                         new_phase = result.get('new_phase', game.phase.value)
                         
                         # Persist phase change
-                        significant_phases = ['day_announcement', 'day_voting', 'finished', 'aborted']
-                        is_significant = new_phase in significant_phases or old_phase in significant_phases
+                        is_significant = (
+                            new_phase in WEREWOLF_SIGNIFICANT_PHASES
+                            or old_phase in WEREWOLF_SIGNIFICANT_PHASES
+                        )
                         
                         await persistence_manager.on_phase_changed(
                             game_id=game_id,
@@ -489,30 +513,30 @@ async def werewolf_timeout_checker():
                         # Emit timeout notification
                         if result.get('timed_out_players'):
                             for nickname in result['timed_out_players']:
-                                await sio.emit('PLAYER_TIMEOUT', {
+                                await _emit_werewolf_event(game_id, 'PLAYER_TIMEOUT', {
                                     'message': f'Player {nickname} Timed Out',
                                     'player': nickname,
                                     'timestamp': datetime.utcnow().isoformat()
-                                }, room=game_id)
+                                })
                         
                         # Check if game was aborted
                         if result.get('aborted'):
-                            await sio.emit('GAME_ABORTED', {
+                            await _emit_werewolf_event(game_id, 'GAME_ABORTED', {
                                 'message': result.get('reason', 'Game aborted'),
                                 'refund_players': result.get('refund_players', []),
                                 'timestamp': datetime.utcnow().isoformat()
-                            }, room=game_id)
+                            })
                             continue
                         
                         # Emit phase change
-                        await sio.emit('werewolf_phase_change', {
+                        await _emit_werewolf_event(game_id, 'werewolf_phase_change', {
                             'phase': result.get('new_phase'),
                             'day_count': result.get('day_count'),
                             'deaths': result.get('deaths', []),
                             'eliminated': result.get('eliminated'),
                             'game_over': result.get('game_over', False),
                             'winners': result.get('winners', [])
-                        }, room=game_id)
+                        })
                         
                         # Check if game ended
                         if result.get('game_over'):
@@ -576,17 +600,23 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
             print(f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners")
 
             for winner_address in winners:
-                add_balance(winner_address, prize_per_winner,
-                           tx_type=TransactionType.GAME_WIN,
-                           description="Werewolf game prize")
+                await add_balance(
+                    winner_address,
+                    prize_per_winner,
+                    tx_type=TransactionType.GAME_WIN,
+                    description="Werewolf game prize"
+                )
                 print(f"Awarded {float(prize_per_winner)} tokens to winner: {winner_address[:8]}...")
         elif game and not winners:
             # 平局或游戏异常结束，退还所有入场费
             print("Werewolf game ended without winners, refunding entry fees")
             for player in game.players:
-                unlock_balance(player['wallet_address'], player['entry_fee_paid'],
-                              game_session_id=game_id,
-                              description="Werewolf game refund - no winners")
+                await unlock_balance(
+                    player['wallet_address'],
+                    player['entry_fee_paid'],
+                    game_session_id=game_id,
+                    description="Werewolf game refund - no winners"
+                )
                 print(f"Refunded {float(player['entry_fee_paid'])} tokens to: {player['wallet_address'][:8]}...")
         else:
             print("No game data found for prize distribution")
@@ -594,170 +624,6 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
         print(f"Failed to handle prize distribution: {e}")
         import traceback
         traceback.print_exc()
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def generate_nonce() -> str:
-    """Generate a random nonce for SIWE."""
-    import secrets
-    return secrets.token_hex(16)
-
-
-def create_siwe_message(address: str, nonce: str) -> str:
-    """Create a Sign-In with Ethereum message."""
-    domain = "arenapoker.game"
-    issued_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    message = (
-        f"{domain} wants you to sign in with your Ethereum account:\n"
-        f"{address}\n\n"
-        f"Sign in to Arena Poker\n\n"
-        f"URI: https://{domain}\n"
-        f"Version: 1\n"
-        f"Chain ID: 1\n"
-        f"Nonce: {nonce}\n"
-        f"Issued At: {issued_at}"
-    )
-    return message
-
-
-def verify_siwe_signature(message: str, signature: str, expected_address: str) -> bool:
-    """Verify a SIWE signature."""
-    try:
-        message_hash = encode_defunct(text=message)
-        recovered_address = Account.recover_message(message_hash, signature=signature)
-        return recovered_address.lower() == expected_address.lower()
-    except Exception:
-        return False
-
-
-def get_nonce_from_blockchain(user_address: str) -> int:
-    """
-    Get the current nonce for a user from the blockchain.
-    
-    This is the ONLY source of truth for withdrawal nonces.
-    Prevents nonce desynchronization issues.
-    
-    Args:
-        user_address: Ethereum address of the user
-    
-    Returns:
-        Current nonce value from smart contract
-    """
-    if not ARENA_VAULT_ADDRESS or not w3.is_connected():
-        # Fallback for testing - use in-memory counter
-        import warnings
-        warnings.warn("Web3 not configured - using in-memory nonce (testing only)", RuntimeWarning)
-        return 0
-    
-    try:
-        # Load contract ABI (simplified - just the nonce getter)
-        contract_abi = [
-            {
-                "inputs": [{"internalType": "address", "name": "agent", "type": "address"}],
-                "name": "getNonce",
-                "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-                "stateMutability": "view",
-                "type": "function"
-            }
-        ]
-        
-        contract = w3.eth.contract(
-            address=Web3.to_checksum_address(ARENA_VAULT_ADDRESS),
-            abi=contract_abi
-        )
-        
-        # Get nonce from blockchain
-        nonce = contract.functions.getNonce(Web3.to_checksum_address(user_address)).call()
-        return nonce
-    except Exception as e:
-        print(f"Error getting nonce from blockchain: {e}")
-        return 0
-
-
-
-async def generate_withdrawal_signature(user_address: str, amount: int) -> Dict:
-    """
-    Generate a withdrawal signature for on-chain claiming.
-    
-    In local debug mode, returns a mock signature that won't work on-chain
-    but allows testing the flow.
-    
-    SECURITY UPDATE: Nonce is now synchronized via RedisManager to prevent
-    race conditions during concurrent withdrawal requests. Periodically syncs
-    with blockchain to ensure consistency.
-    
-    This creates a signature that can be verified by the smart contract
-    to allow the user to withdraw their winnings.
-    
-    Args:
-        user_address: Ethereum address of the user
-        amount: Amount of tokens to withdraw (in wei)
-    
-    Returns:
-        Dict containing the signature, message hash, nonce, and parameters
-    """
-    # Local debug mode: return mock signature
-    if LOCAL_DEBUG_MODE:
-        return {
-            'user_address': user_address,
-            'amount': amount,
-            'nonce': 0,
-            # Mock signature: 65 bytes in hex (r: 32 + s: 32 + v: 1 = 65 bytes)
-            'signature': '0x' + '00' * 65,
-            # Mock hash: 32 bytes in hex (Keccak-256 hash)
-            'message_hash': '0x' + '00' * 32,
-            'signer': server_account.address,
-            'local_debug_mode': True,
-            'note': 'Mock signature for local debug mode - not valid on-chain'
-        }
-    
-    # Periodic blockchain sync: verify Redis nonce matches blockchain
-    # This prevents using stale nonces if user withdrew on-chain directly
-    try:
-        blockchain_nonce = get_nonce_from_blockchain(user_address)
-        await redis_manager.sync_nonce_from_blockchain(user_address, blockchain_nonce)
-    except Exception as e:
-        # Log but don't fail - Redis nonce is still usable
-        print(f"Warning: Could not sync nonce with blockchain: {e}")
-    
-    # Get and increment nonce atomically via RedisManager (prevents race conditions)
-    nonce = await redis_manager.get_and_increment_nonce(user_address)
-    
-    # Ensure address is checksummed
-    user_address = Web3.to_checksum_address(user_address)
-    
-    # Create the message to sign (matching smart contract's expected format)
-    # This must match: keccak256(abi.encodePacked(address, amount, nonce, chainId, contract))
-    
-    # Using Web3.py to create the same hash as Solidity
-    if not ARENA_VAULT_ADDRESS:
-        raise ValueError("ARENA_VAULT_ADDRESS not set - cannot generate withdrawal signature")
-    
-    if not w3:
-        raise RuntimeError("Web3 provider not initialized - cannot generate withdrawal signature")
-    
-    vault_address = Web3.to_checksum_address(ARENA_VAULT_ADDRESS)
-    chain_id = w3.eth.chain_id
-    message = w3.solidity_keccak(
-        ['address', 'uint256', 'uint256', 'uint256', 'address'],
-        [user_address, amount, nonce, chain_id, vault_address]
-    )
-    
-    # Sign the message hash
-    signed_message = server_account.sign_message(encode_defunct(hexstr=message.hex()))
-    
-    return {
-        'user_address': user_address,
-        'amount': amount,
-        'nonce': nonce,
-        'signature': signed_message.signature.hex(),
-        'message_hash': message.hex(),
-        'signer': server_account.address
-    }
 
 
 # ============================================================================
@@ -772,8 +638,6 @@ async def root(request: Request):
         "name": "Arena Poker Game Engine",
         "version": "2.1.0",
         "status": "running",
-        "server_address": server_account.address,
-        "security": "enhanced",
         "local_debug_mode": LOCAL_DEBUG_MODE
     }
 
@@ -785,7 +649,6 @@ async def health(request: Request):
     return {
         "status": "healthy",
         "active_tables": len(poker_tables),
-        "web3_connected": w3.is_connected() if w3 else False,
         "local_debug_mode": LOCAL_DEBUG_MODE
     }
 
@@ -843,7 +706,7 @@ async def register_agent(request: Request):
         "next_steps": [
             "1. POST /bot/token with {fingerprint} → get token",
             "2. Connect Socket.IO with auth: {botToken, fingerprint}",
-            "3. Authenticate with SIWE and start playing!"
+            "3. Send authenticate event with {login_key} and start playing!"
         ]
     }
 
@@ -858,93 +721,20 @@ async def agent_instructions_endpoint():
     return get_agent_instructions()
 
 
-@app.post("/auth/nonce")
-@limiter.limit("5/minute")
-async def get_nonce(request: Request, address: str):
-    """Get a nonce for SIWE authentication."""
-    nonce = generate_nonce()
-    nonces[address.lower()] = nonce
-    message = create_siwe_message(address, nonce)
-    
-    return {
-        "nonce": nonce,
-        "message": message
-    }
-
-
-@app.post("/auth/verify")
-@limiter.limit("5/minute")
-async def verify_auth(request: Request, address: str, signature: str):
-    """Verify SIWE signature."""
-    addr_lower = address.lower()
-    
-    if addr_lower not in nonces:
-        raise HTTPException(status_code=400, detail="No nonce found")
-    
-    nonce = nonces[addr_lower]
-    message = create_siwe_message(address, nonce)
-    
-    if not verify_siwe_signature(message, signature, address):
-        raise HTTPException(status_code=401, detail="Invalid signature")
-    
-    # Clear used nonce
-    del nonces[addr_lower]
-    
-    return {"verified": True, "address": address}
-
-
-@app.post("/withdrawal/request")
-@limiter.limit("3/minute")
-async def request_withdrawal(request: Request, address: str, amount: int):
-    """
-    Request a withdrawal signature.
-    
-    Security update: Nonce is now synchronized via RedisManager.
-    """
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Invalid amount")
-    
-    try:
-        # Generate signature with synchronized nonce from RedisManager
-        signature_data = await generate_withdrawal_signature(address, amount)
-        return signature_data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate signature: {str(e)}")
-
-
-@app.get("/nonce/{address}")
-@limiter.limit("10/minute")
-async def get_withdrawal_nonce(request: Request, address: str):
-    """
-    Get current withdrawal nonce for an address from RedisManager.
-    
-    This queries the synchronized nonce counter.
-    """
-    try:
-        nonce = await redis_manager.get_nonce(address)
-        return {
-            "address": address,
-            "nonce": nonce,
-            "source": "redis_synchronized"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get nonce: {str(e)}")
-
-
 # ============================================================================
 # ECONOMY SYSTEM ENDPOINTS
 # ============================================================================
 
 @app.post("/api/register")
 @limiter.limit("5/minute")
-async def api_register(request: Request, wallet_address: str):
+async def api_register(request: Request, player_name: str, address: Optional[str] = None):
     """
     Register a new user account.
     
     Creates a user account in the database with initial balance.
     """
     try:
-        result = register_user(wallet_address)
+        result = await register_user(player_name, address)
         return result
     except (InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -954,14 +744,26 @@ async def api_register(request: Request, wallet_address: str):
 
 @app.post("/api/login")
 @limiter.limit("10/minute")
-async def api_login(request: Request, wallet_address: str):
+async def api_login(
+    request: Request,
+    login_key: Optional[str] = None,
+    player_id: Optional[str] = None,
+):
     """
     Handle user login with daily reward check.
     
     Checks if it's a new UTC day and grants daily login reward if applicable.
+
+    Accepts either:
+    - login_key: canonical login identifier (recommended)
+    - player_id: backward-compatible alias
     """
     try:
-        result = handle_login(wallet_address)
+        resolved_login_key = (login_key or player_id or "").strip()
+        if not resolved_login_key:
+            raise HTTPException(status_code=400, detail="login_key or player_id is required")
+
+        result = await handle_login(resolved_login_key)
         return result
     except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -969,14 +771,14 @@ async def api_login(request: Request, wallet_address: str):
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
 
-@app.get("/api/balance/{wallet_address}")
+@app.get("/api/balance/{player_id}")
 @limiter.limit("20/minute")
-async def api_get_balance(request: Request, wallet_address: str):
+async def api_get_balance(request: Request, player_id: str):
     """Get user's current balance."""
     try:
-        balance = get_balance(wallet_address)
+        balance = await get_balance(player_id)
         return {
-            "wallet_address": wallet_address,
+            "player_id": player_id,
             "balance": float(balance)
         }
     except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
@@ -985,12 +787,12 @@ async def api_get_balance(request: Request, wallet_address: str):
         raise HTTPException(status_code=500, detail=f"Failed to get balance: {str(e)}")
 
 
-@app.get("/api/account/{wallet_address}")
+@app.get("/api/account/{player_id}")
 @limiter.limit("10/minute")
-async def api_get_account_summary(request: Request, wallet_address: str):
+async def api_get_account_summary(request: Request, player_id: str):
     """Get comprehensive account summary including validation and recent transactions."""
     try:
-        summary = get_account_summary(wallet_address)
+        summary = await get_account_summary(player_id)
         return summary
     except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1000,10 +802,10 @@ async def api_get_account_summary(request: Request, wallet_address: str):
 
 @app.post("/api/transfer")
 @limiter.limit("5/minute")
-async def api_transfer_balance(request: Request, from_wallet: str, to_wallet: str, amount: float):
+async def api_transfer_balance(request: Request, from_player_id: str, to_player_id: str, amount: float):
     """Transfer balance between two accounts."""
     try:
-        result = transfer_balance(from_wallet, to_wallet, Decimal(str(amount)))
+        result = await transfer_balance(from_player_id, to_player_id, Decimal(str(amount)))
         return result
     except InvalidAmountError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1017,89 +819,17 @@ async def api_transfer_balance(request: Request, from_wallet: str, to_wallet: st
 
 @app.post("/api/balances/batch")
 @limiter.limit("10/minute")
-async def api_batch_get_balances(request: Request, wallet_addresses: List[str]):
-    """Get balances for multiple wallet addresses efficiently."""
+async def api_batch_get_balances(request: Request, player_ids: List[str]):
+    """Get balances for multiple player identifiers efficiently."""
     try:
-        if len(wallet_addresses) > 50:
-            raise HTTPException(status_code=400, detail="Too many addresses (max 50)")
-        balances = batch_get_balances(wallet_addresses)
+        if len(player_ids) > 50:
+            raise HTTPException(status_code=400, detail="Too many player IDs (max 50)")
+        balances = await batch_get_balances(player_ids)
         return {
             "balances": {addr: float(bal) for addr, bal in balances.items()}
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch balance query failed: {str(e)}")
-
-
-@app.get("/api/withdrawal/smart/{wallet_address}")
-@limiter.limit("20/minute")
-async def api_get_smart_withdrawal_status(request: Request, wallet_address: str):
-    """Get smart withdrawal status and pending withdrawals."""
-    try:
-        # 检查余额
-        balance = get_balance(wallet_address)
-
-        # 获取待提现总额
-        pending_total = smart_withdrawal_manager.get_pending_total(wallet_address)
-
-        # 计算建议的提现决策
-        available_for_withdrawal = balance - pending_total
-        decision = await smart_withdrawal_manager.should_withdraw(wallet_address, available_for_withdrawal)
-
-        return {
-            "wallet_address": wallet_address,
-            "current_balance": float(balance),
-            "pending_withdrawals": float(pending_total),
-            "available_for_withdrawal": float(available_for_withdrawal),
-            "smart_decision": decision,
-            "min_withdrawal": float(MIN_WITHDRAWAL_AMOUNT),
-            "gas_estimate": float(await smart_withdrawal_manager._estimate_gas_cost())
-        }
-    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Smart withdrawal status failed: {str(e)}")
-
-
-@app.post("/api/withdrawal/smart/{wallet_address}")
-@limiter.limit("10/minute")
-async def api_request_smart_withdrawal(request: Request, wallet_address: str, amount: Optional[float] = None):
-    """Request smart withdrawal with optimal timing."""
-    try:
-        # 如果没有指定金额，使用可用余额
-        if amount is None:
-            balance = get_balance(wallet_address)
-            pending_total = smart_withdrawal_manager.get_pending_total(wallet_address)
-            amount = float(balance - pending_total)
-        else:
-            amount = float(amount)
-
-        token_amount = Decimal(str(amount))
-
-        # 使用智能提现管理器
-        success = await smart_withdrawal_manager.process_auto_withdrawal(wallet_address, token_amount)
-
-        if success:
-            return {
-                "status": "processed",
-                "message": f"Withdrawal of {amount} tokens processed immediately",
-                "wallet_address": wallet_address
-            }
-        else:
-            # 检查是否累积了待提现金额
-            pending_total = smart_withdrawal_manager.get_pending_total(wallet_address)
-            return {
-                "status": "accumulated",
-                "message": f"Amount {amount} tokens accumulated for later withdrawal",
-                "pending_total": float(pending_total),
-                "wallet_address": wallet_address
-            }
-
-    except InvalidAmountError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Smart withdrawal failed: {str(e)}")
 
 
 @app.get("/api/games/active")
@@ -1129,24 +859,64 @@ async def api_list_active_games(request: Request, q: Optional[str] = None):
     }
 
 
+@app.get("/api/leaderboard")
+@limiter.limit("30/minute")
+async def api_get_leaderboard(request: Request, limit: int = 10):
+    """Get top players ranked by off-chain token balance."""
+    try:
+        if limit > 100:
+            raise HTTPException(status_code=400, detail="Limit too large (max 100)")
+
+        entries = await get_leaderboard(limit=limit)
+        return {
+            "entries": entries,
+            "total": len(entries),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    except InvalidAmountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get leaderboard: {str(e)}")
+
+
 @app.get("/api/spectate/poker/{table_id}")
 @limiter.limit("30/minute")
 async def api_spectate_poker(request: Request, table_id: str, reveal: bool = False):
-    """Return poker state for spectators (optionally reveal hole cards)."""
+    """Return poker state for spectators.
+
+    `reveal=true` is intentionally blocked for public HTTP endpoints to avoid
+    hidden-info leakage without an authenticated read-only socket session.
+    """
     if table_id not in poker_tables:
         raise HTTPException(status_code=404, detail="Table not found")
+    if reveal:
+        raise HTTPException(
+            status_code=403,
+            detail="Reveal mode is only available to read-only spectator Socket.IO sessions"
+        )
     table = poker_tables[table_id]
-    return table.get_game_state(for_spectator=True, reveal_all=reveal)
+    return table.get_game_state(for_spectator=True, reveal_all=False)
 
 
 @app.get("/api/spectate/werewolf/{game_id}")
 @limiter.limit("30/minute")
 async def api_spectate_werewolf(request: Request, game_id: str, reveal: bool = False):
-    """Return werewolf state for spectators (optionally reveal roles)."""
+    """Return werewolf state for spectators.
+
+    `reveal=true` is intentionally blocked for public HTTP endpoints to avoid
+    hidden-role leakage without an authenticated read-only socket session.
+    """
     if game_id not in werewolf_games:
         raise HTTPException(status_code=404, detail="Game not found")
+    if reveal:
+        raise HTTPException(
+            status_code=403,
+            detail="Reveal mode is only available to read-only spectator Socket.IO sessions"
+        )
     game = werewolf_games[game_id]
-    return game.get_game_state(reveal_all=reveal)
+    return game.get_game_state(reveal_all=False)
 
 
 # ============================================================================
@@ -1175,18 +945,24 @@ async def connect(sid, environ, auth):
     auth = auth or {}
     agent_id = auth.get("agent_id") or auth.get("agentId") or "anonymous"
     
-    print(f"AI Agent connected: {sid} (agent_id: {agent_id})")
+    is_spectator_connection = reason == "spectator"
+    role_label = "spectator" if is_spectator_connection else "agent"
+    print(f"AI Client connected: {sid} (agent_id: {agent_id}, role: {role_label})")
     
     player_sessions[sid] = {
-        'address': None,
+        'player_id': None,
+        'player_name': None,
         'table_id': None,
         'game_id': None,
         'authenticated': False,
-        'agent_id': agent_id
+        'agent_id': agent_id,
+        'read_only': is_spectator_connection,
+        'spectator_mode': is_spectator_connection,
     }
     await sio.emit('connected', {
         'sid': sid,
         'agent_id': agent_id,
+        'read_only': is_spectator_connection,
         'message': 'Welcome, AI Agent! You are connected to the arena.'
     }, room=sid)
 
@@ -1204,10 +980,16 @@ async def disconnect(sid):
         # Remove from table if in one
         if session['table_id'] and session['table_id'] in poker_tables:
             table = poker_tables[session['table_id']]
-            table.remove_player(sid)
-            
-            # Broadcast updated state
-            await broadcast_game_state(session['table_id'])
+            # Keep in-hand seats for reconnection and timeout auto-play.
+            # Remove only when no hand is active.
+            if table.engine.phase in POKER_ACTIVE_PHASES:
+                print(f"[Disconnect] Preserving poker seat for reconnect: sid={sid}, table={session['table_id']}")
+                # Persist SID-preserving in-hand state immediately so restart can
+                # still recover the table even when no further action happens.
+                asyncio.create_task(table.save_state_to_redis())
+            else:
+                table.remove_player(sid)
+                await broadcast_game_state(session['table_id'])
         
         # Remove from matchmaking queue if in one
         if werewolf_matchmaker:
@@ -1215,90 +997,63 @@ async def disconnect(sid):
         
         del player_sessions[sid]
 
+    # Always clear spectator reveal subscriptions for disconnected sockets.
+    spectator_subscriptions.pop(sid, None)
+
 
 @sio.event
 async def authenticate(sid, data):
     """
-    Authenticate a client with SIWE.
-    
-    In local debug mode, skips signature verification and accepts any valid address.
+    Authenticate a client using a login key.
     
     On successful authentication, checks if player was in an active game and sends
     GAME_SNAPSHOT for reconnection recovery.
     
-    Expected data: {'address': str, 'signature': str}
+    Expected data: {'login_key': str}
+    Backward compatible: {'player_id': str}
     """
     try:
-        address = data.get('address')
-        signature = data.get('signature')
-        
-        # Local debug mode: simplified authentication (no signature verification)
-        if LOCAL_DEBUG_MODE:
-            if not address:
-                await sio.emit('error', {'message': 'Missing address'}, room=sid)
-                return
-            
-            # Validate address format
-            if len(address) != 42 or not address.startswith('0x'):
-                await sio.emit('error', {'message': 'Invalid address format'}, room=sid)
-                return
-            
-            # Mark as authenticated (no signature verification needed)
-            player_sessions[sid]['address'] = address
-            player_sessions[sid]['authenticated'] = True
-            
-            # Auto-register/update user with debug balance
-            try:
-                register_user(address)
-            except Exception:
-                pass  # User may already exist
-            
-            await sio.emit('authenticated', {
-                'address': address,
-                'local_debug_mode': True
-            }, room=sid)
-            
-            # Check for reconnection to active game
-            await handle_reconnection(sid, address)
+        if await _reject_if_read_only(sid, 'authenticate'):
             return
-        
-        # Normal mode: full SIWE authentication
-        if not address or not signature:
-            await sio.emit('error', {'message': 'Missing address or signature'}, room=sid)
+
+        data = data or {}
+        login_key = data.get('login_key') or data.get('player_id') or data.get('address')
+        if not login_key or not str(login_key).strip():
+            await sio.emit('error', {'message': 'Missing login_key (or player_id)'}, room=sid)
             return
-        
-        addr_lower = address.lower()
-        
-        # Check if nonce exists
-        if addr_lower not in nonces:
-            await sio.emit('error', {'message': 'No nonce found. Call /auth/nonce first'}, room=sid)
+
+        login_key = str(login_key).strip()
+        if len(login_key) > 128:
+            await sio.emit('error', {'message': 'Login key too long (max 128)'}, room=sid)
             return
-        
-        # Verify signature
-        nonce = nonces[addr_lower]
-        message = create_siwe_message(address, nonce)
-        
-        if not verify_siwe_signature(message, signature, address):
-            await sio.emit('error', {'message': 'Invalid signature'}, room=sid)
+
+        login_result = await handle_login(login_key)
+        user = login_result.get('user', {})
+        player_id = user.get('player_id', '')
+        player_name = user.get('player_name', 'Player')
+
+        if not player_id:
+            await sio.emit('error', {'message': 'Login succeeded but player_id missing'}, room=sid)
             return
-        
+
         # Mark as authenticated
-        player_sessions[sid]['address'] = address
+        player_sessions[sid]['player_id'] = player_id
+        player_sessions[sid]['player_name'] = player_name
         player_sessions[sid]['authenticated'] = True
-        
-        # Clear used nonce
-        del nonces[addr_lower]
-        
-        await sio.emit('authenticated', {'address': address}, room=sid)
-        
+
+        await sio.emit('authenticated', {
+            'player_id': player_id,
+            'player_name': player_name,
+        }, room=sid)
+
         # Check for reconnection to active game
-        await handle_reconnection(sid, address)
-        
+        await handle_reconnection(sid, player_id)
+
     except Exception as e:
         await sio.emit('error', {'message': f'Authentication failed: {str(e)}'}, room=sid)
 
 
-async def handle_reconnection(sid: str, wallet_address: str):
+async def handle_reconnection(sid: str, player_id: str):
     """
     Handle reconnection by checking if player was in an active game.
     
@@ -1306,28 +1061,26 @@ async def handle_reconnection(sid: str, wallet_address: str):
     
     Args:
         sid: New socket ID
-        wallet_address: Player's wallet address
+        player_id: Player identifier
     """
-    wallet_lower = wallet_address.lower()
-    
     # Inactive werewolf phases (no need to reconnect)
     INACTIVE_PHASES = {WerewolfPhase.WAITING, WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}
     
-    # Check werewolf games for this wallet
+    # Check werewolf games for this player id
     for game_id, game in werewolf_games.items():
         # Skip finished/aborted/waiting games
         if game.phase in INACTIVE_PHASES:
             continue
         
-        # Find player by wallet address
+        # Find player by stored legacy wallet_address field (value is player_id)
         for player in game.players:
-            if player['wallet_address'].lower() == wallet_lower:
+            if player['wallet_address'] == player_id:
                 old_sid = player['sid']
                 
                 # Update player's socket ID
                 if old_sid != sid:
                     game.update_player_sid(old_sid, sid)
-                    print(f"[Reconnect] Player {wallet_address} reconnected to game {game_id}")
+                    print(f"[Reconnect] Player {player_id} reconnected to game {game_id}")
                 
                 # Update session
                 player_sessions[sid]['game_id'] = game_id
@@ -1339,13 +1092,22 @@ async def handle_reconnection(sid: str, wallet_address: str):
                 snapshot = game.get_game_snapshot(sid)
                 await sio.emit('GAME_SNAPSHOT', snapshot, room=sid)
                 
-                print(f"[Reconnect] Sent GAME_SNAPSHOT to {wallet_address} for game {game_id}")
+                print(f"[Reconnect] Sent GAME_SNAPSHOT to {player_id} for game {game_id}")
                 return
     
-    # Check poker tables for this wallet
+    # Check poker tables for this player_id
     for table_id, table in poker_tables.items():
         for player in table.players:
-            if player.get('wallet_address', '').lower() == wallet_lower:
+            if player.get('wallet_address', '') == player_id:
+                old_sid = player.get('sid')
+
+                # Rebind player seat/state to the new socket id so turn checks,
+                # private hand delivery, and action routing continue to work.
+                if old_sid and old_sid != sid:
+                    table.engine.update_player_sid(old_sid, sid)
+                    player['sid'] = sid
+                    asyncio.create_task(table.save_checkpoint('reconnect_rebind'))
+
                 # Update session
                 player_sessions[sid]['table_id'] = table_id
                 
@@ -1353,15 +1115,9 @@ async def handle_reconnection(sid: str, wallet_address: str):
                 await sio.enter_room(sid, table_id)
                 
                 # Send game state
-                state = table.get_game_state(sid)
-                await sio.emit('GAME_SNAPSHOT', {
-                    'game_id': table_id,
-                    'game_type': 'texas',
-                    **state,
-                    'timestamp': datetime.utcnow().isoformat()
-                }, room=sid)
+                await sio.emit('GAME_SNAPSHOT', table.get_game_snapshot(sid), room=sid)
                 
-                print(f"[Reconnect] Sent GAME_SNAPSHOT to {wallet_address} for poker table {table_id}")
+                print(f"[Reconnect] Sent GAME_SNAPSHOT to {player_id} for poker table {table_id}")
                 return
 
 
@@ -1373,12 +1129,17 @@ async def join_game(sid, data):
     Expected data: {'table_id': str, 'chips': int (optional)}
     """
     try:
+        if await _reject_if_read_only(sid, 'join_game'):
+            return
+
         # Check authentication
         if sid not in player_sessions or not player_sessions[sid]['authenticated']:
             await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
             return
         
         table_id = data.get('table_id')
+        player_id = player_sessions[sid]['player_id']
+        player_name = player_sessions[sid]['player_name'] or 'Player'
 
         # 支持chips或tokens买入，默认使用chips
         if 'tokens' in data:
@@ -1394,7 +1155,7 @@ async def join_game(sid, data):
 
         # 检查余额是否足够
         try:
-            current_balance = get_balance(address)
+            current_balance = await get_balance(player_id)
             if current_balance < buy_in_tokens:
                 await sio.emit('error', {
                     'message': f'Insufficient balance. Required: {float(buy_in_tokens)} tokens, Available: {float(current_balance)}'
@@ -1409,16 +1170,15 @@ async def join_game(sid, data):
             poker_tables[table_id] = create_texas_game(table_id)
 
         table = poker_tables[table_id]
-        address = player_sessions[sid]['address']
 
         # Add player to table with token amount
-        if not table.add_player(sid, address, nickname=address[:8], buy_in_tokens=buy_in_tokens):
+        if not table.add_player(sid, player_id, nickname=player_name, buy_in_tokens=buy_in_tokens):
             await sio.emit('error', {'message': 'Could not join table'}, room=sid)
             return
 
         # 锁定资金
         try:
-            lock_balance(address, buy_in_tokens, game_session_id=table_id)
+            await lock_balance(player_id, buy_in_tokens, game_session_id=table_id)
         except Exception as e:
             await sio.emit('error', {'message': f'Failed to lock funds: {str(e)}'}, room=sid)
             # 移除玩家
@@ -1434,7 +1194,8 @@ async def join_game(sid, data):
         # Notify player
         await sio.emit('joined_game', {
             'table_id': table_id,
-            'address': address
+            'player_id': player_id,
+            'player_name': player_name,
         }, room=sid)
         
         # Broadcast updated state
@@ -1452,6 +1213,9 @@ async def start_hand(sid, data):
     Expected data: {'table_id': str}
     """
     try:
+        if await _reject_if_read_only(sid, 'start_hand'):
+            return
+
         table_id = data.get('table_id')
         
         if not table_id or table_id not in poker_tables:
@@ -1460,10 +1224,12 @@ async def start_hand(sid, data):
         
         table = poker_tables[table_id]
         
-        result = table.start_hand()
-        if not result['success']:
-            await sio.emit('error', {'message': result.get('error', 'Not enough players to start')}, room=sid)
+        # TexasGame exposes start_game() in the BaseGame interface.
+        if not table.start_game():
+            await sio.emit('error', {'message': 'Not enough players to start'}, room=sid)
             return
+
+        asyncio.create_task(table.save_checkpoint('hand_start'))
         
         # Broadcast updated state
         await broadcast_game_state(table_id)
@@ -1485,6 +1251,9 @@ async def player_move(sid, data):
     }
     """
     try:
+        if await _reject_if_read_only(sid, 'player_move'):
+            return
+
         table_id = data.get('table_id')
         action = data.get('action')
         amount = data.get('amount', 0)
@@ -1499,7 +1268,13 @@ async def player_move(sid, data):
             return
         
         table = poker_tables[table_id]
-        result = table.process_move(sid, action, amount, chat_message)
+        action_kwargs = {}
+        if action == 'raise':
+            action_kwargs['amount'] = amount
+        if chat_message:
+            action_kwargs['message'] = chat_message
+
+        result = table.process_action(sid, action, **action_kwargs)
         
         if not result['success']:
             await sio.emit('error', {'message': result.get('error', 'Action failed')}, room=sid)
@@ -1522,7 +1297,7 @@ async def player_move(sid, data):
                     persistence_manager.save_chat_message(
                         game_id=table_id,
                         game_type=table.game_type,
-                        wallet_address=player.get('wallet_address', ''),
+                        player_id=player.get('wallet_address', ''),
                         nickname=player.get('nickname', 'Player'),
                         message=chat_message,
                         message_type=message_type,
@@ -1536,13 +1311,14 @@ async def player_move(sid, data):
         # Check if hand ended (everyone else folded)
         if result.get('hand_over'):
             winner_info = result.get('winner', {})
-            await sio.emit('hand_winner', {
+            await _emit_poker_event(table_id, 'hand_winner', {
                 'winner': winner_info,
                 'reason': 'All other players folded',
                 'pot': winner_info.get('amount', 0)
-            }, room=table_id)
+            })
+
+            asyncio.create_task(table.save_checkpoint('hand_end'))
             
-            # Generate withdrawal signature for winner
             if winner_info.get('amount', 0) > 0:
                 winner_sid = winner_info.get('sid')
                 winner_player = None
@@ -1552,32 +1328,28 @@ async def player_move(sid, data):
                         break
                 
                 if winner_player:
-                    # 转换chips为tokens发放奖金
-                    token_amount = int(winner_info['amount'] * TEXAS_CHIP_TO_TOKEN_RATIO)
-                    await generate_and_emit_withdrawal(
-                        table_id,
-                        winner_player['wallet_address'],
-                        token_amount
-                    )
+                    # Winnings stay in-table as chips until player leaves and settles.
+                    pass
             return
         
         # Check if round complete and advance phase
         if result.get('advance_phase'):
             phase_result = table.engine.advance_phase()
             await broadcast_game_state(table_id)
+            asyncio.create_task(table.save_checkpoint('phase_change'))
             
-            # Check for showdown (use engine.phase, not table.phase)
+            # Check for showdown (advance_phase already computes showdown results)
             if table.engine.phase.value == 'showdown':
-                showdown_result = table.engine.showdown()
+                showdown_result = phase_result if isinstance(phase_result, dict) else {}
                 
                 # Broadcast showdown reveal with all hole cards visible
-                await sio.emit('showdown_reveal', {
-                    'player_hands': table.engine.get_all_hole_cards(),
+                await _emit_poker_event(table_id, 'showdown_reveal', {
+                    'player_hands': showdown_result.get('player_hands', table.engine.get_all_hole_cards()),
                     'community_cards': table.engine.cards_to_strings(table.engine.community_cards),
                     'winners': showdown_result.get('winners', [])
-                }, room=table_id)
+                })
+                asyncio.create_task(table.save_checkpoint('showdown'))
                 
-                # Generate withdrawal signatures for winners
                 for winner in showdown_result.get('winners', []):
                     if winner.get('amount', 0) > 0:
                         winner_sid = winner.get('sid')
@@ -1589,13 +1361,11 @@ async def player_move(sid, data):
                                 break
                         
                         if winner_player:
-                            # 转换chips为tokens发放奖金
-                            token_amount = int(winner['amount'] * TEXAS_CHIP_TO_TOKEN_RATIO)
-                            await generate_and_emit_withdrawal(
-                                table_id,
-                                winner_player['wallet_address'],
-                                token_amount
-                            )
+                            # Winnings stay in-table as chips until player leaves and settles.
+                            pass
+
+        # Non-critical action checkpoint (throttled MySQL, always-hot Redis).
+        asyncio.create_task(table.save_checkpoint('action'))
         
     except Exception as e:
         await sio.emit('error', {'message': f'Player move failed: {str(e)}'}, room=sid)
@@ -1615,6 +1385,9 @@ async def poker_action(sid, data):
         'message': str (optional, for chat/bluff)
     }
     """
+    if await _reject_if_read_only(sid, 'poker_action'):
+        return
+
     # Convert game_id to table_id for compatibility
     data['table_id'] = data.get('game_id', data.get('table_id'))
     await player_move(sid, data)
@@ -1644,6 +1417,82 @@ async def get_state(sid, data):
 
 
 @sio.event
+async def join_spectate(sid, data):
+    """
+    Join spectator room for poker or werewolf.
+
+    Expected data:
+      - Poker: {'table_id': str, 'reveal': bool (optional)}
+      - Werewolf: {'game_id': str, 'reveal': bool (optional)}
+    """
+    try:
+        payload = data or {}
+        reveal_requested = bool(payload.get('reveal', False))
+        reveal_allowed = reveal_requested and _is_read_only_session(sid)
+        table_id = payload.get('table_id')
+        game_id = payload.get('game_id')
+        joined_any = False
+
+        if reveal_requested and not reveal_allowed:
+            await sio.emit('error', {
+                'message': 'Reveal mode is only available to read-only spectator sessions',
+                'error_code': 'SPECTATOR_REVEAL_FORBIDDEN'
+            }, room=sid)
+
+        if table_id and table_id in poker_tables:
+            poker_room = _poker_spectator_room(table_id)
+            if reveal_allowed:
+                # Avoid duplicate masked+reveal payloads for reveal subscribers.
+                await sio.leave_room(sid, poker_room)
+            else:
+                await sio.enter_room(sid, poker_room)
+            _set_spectator_subscription(sid, 'poker', table_id, reveal_allowed)
+            table = poker_tables[table_id]
+            state = table.get_game_state(for_spectator=True, reveal_all=reveal_allowed)
+            await sio.emit('game_state', state, room=sid)
+            joined_any = True
+
+        if game_id and game_id in werewolf_games:
+            werewolf_room = _werewolf_spectator_room(game_id)
+            if reveal_allowed:
+                # Avoid duplicate masked+reveal payloads for reveal subscribers.
+                await sio.leave_room(sid, werewolf_room)
+            else:
+                await sio.enter_room(sid, werewolf_room)
+            _set_spectator_subscription(sid, 'werewolf', game_id, reveal_allowed)
+            game = werewolf_games[game_id]
+            state = game.get_game_state(reveal_all=reveal_allowed)
+            await sio.emit('werewolf_state', state, room=sid)
+            joined_any = True
+
+        if not joined_any:
+            await sio.emit('error', {
+                'message': 'No valid table_id/game_id to spectate'
+            }, room=sid)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Join spectate failed: {str(e)}'}, room=sid)
+
+
+@sio.event
+async def leave_spectate(sid, data):
+    """Leave spectator room for poker or werewolf."""
+    try:
+        table_id = (data or {}).get('table_id')
+        game_id = (data or {}).get('game_id')
+
+        if table_id:
+            await sio.leave_room(sid, _poker_spectator_room(table_id))
+            _remove_spectator_subscription(sid, 'poker', table_id)
+        if game_id:
+            await sio.leave_room(sid, _werewolf_spectator_room(game_id))
+            _remove_spectator_subscription(sid, 'werewolf', game_id)
+
+    except Exception as e:
+        await sio.emit('error', {'message': f'Leave spectate failed: {str(e)}'}, room=sid)
+
+
+@sio.event
 async def leave_game(sid, data):
     """
     Leave the current table.
@@ -1651,6 +1500,9 @@ async def leave_game(sid, data):
     Expected data: {'table_id': str}
     """
     try:
+        if await _reject_if_read_only(sid, 'leave_game'):
+            return
+
         table_id = data.get('table_id')
         
         if not table_id or table_id not in poker_tables:
@@ -1659,8 +1511,9 @@ async def leave_game(sid, data):
         
         table = poker_tables[table_id]
         
-        # Get player's remaining chips before leaving
-        player = table.players.get(sid)
+        # Capture balances before remove to settle locked funds correctly.
+        player_dict = next((p for p in table.players if p.get('sid') == sid), None)
+        engine_player = table.engine.players.get(sid)
         
         # Remove from table
         table.remove_player(sid)
@@ -1673,12 +1526,15 @@ async def leave_game(sid, data):
             player_sessions[sid]['table_id'] = None
         
         # If player had chips, convert to tokens and unlock funds
-        if player and player.chips > 0:
-            token_amount = int(player.chips * TEXAS_CHIP_TO_TOKEN_RATIO)
+        if player_dict and engine_player and engine_player.chips > 0:
+            token_amount = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
             # 解锁剩余资金
-            unlock_balance(player.wallet_address, token_amount,
-                          game_session_id=table_id,
-                          description="Texas Hold'em game exit refund")
+            await unlock_balance(
+                player_dict['wallet_address'],
+                token_amount,
+                game_session_id=table_id,
+                description="Texas Hold'em game exit refund"
+            )
         
         # Notify player
         await sio.emit('left_game', {'table_id': table_id}, room=sid)
@@ -1688,55 +1544,6 @@ async def leave_game(sid, data):
         
     except Exception as e:
         await sio.emit('error', {'message': f'Leave game failed: {str(e)}'}, room=sid)
-
-
-# ============================================================================
-# SETTLEMENT SYSTEM (CRUCIAL)
-# ============================================================================
-
-async def generate_and_emit_withdrawal(table_id: str, user_address: str, amount: int):
-    """
-    Generate withdrawal signature and emit to the user.
-
-    Includes smart withdrawal management for optimal timing.
-
-    SECURITY UPDATE: Nonce is now synchronized via RedisManager.
-
-    This is called when:
-    - A game ends with winnings
-    - A player leaves with chips
-
-    The signature allows the user to claim their winnings on-chain.
-    """
-    token_amount = Decimal(str(amount))
-
-    # 使用智能提现管理器判断是否立即提现
-    decision = await smart_withdrawal_manager.should_withdraw(user_address, token_amount)
-
-    if decision['should_withdraw']:
-        # 立即生成提现签名
-        withdrawal_data = await generate_withdrawal_signature(user_address, amount)
-        withdrawal_data['smart_decision'] = decision
-
-        # Emit to all sessions for this address in this table
-        await sio.emit('withdrawal_signature', withdrawal_data, room=table_id)
-
-        print(f"✅ Immediate withdrawal for {user_address}: {amount} tokens (net profit: {decision.get('net_profit', 'N/A')})")
-    else:
-        # 累积待提现或推迟提现
-        if decision.get('accumulate', False):
-            smart_withdrawal_manager.add_pending_withdrawal(user_address, token_amount)
-            print(f"⏳ Accumulated pending withdrawal for {user_address}: {token_amount} tokens")
-
-        # 仍然发送通知，但标记为延迟提现
-        delayed_data = {
-            'user_address': user_address,
-            'amount': amount,
-            'delayed': True,
-            'reason': decision['reason'],
-            'pending_total': float(smart_withdrawal_manager.get_pending_total(user_address))
-        }
-        await sio.emit('withdrawal_delayed', delayed_data, room=table_id)
 
 
 async def broadcast_game_state(table_id: str):
@@ -1808,6 +1615,13 @@ async def broadcast_game_state(table_id: str):
     
     # STEP 1: Broadcast public state to all players in the room (game_update)
     await sio.emit('game_update', public_state, room=table_id)
+    await sio.emit('game_update', public_state, room=_poker_spectator_room(table_id))
+
+    # STEP 1b: Push reveal-mode spectator payloads directly via Socket.IO.
+    reveal_sids = list(_iter_reveal_spectators('poker', table_id))
+    if reveal_sids:
+        reveal_state = table.get_game_state(for_spectator=True, reveal_all=True)
+        await _emit_to_sids('game_update', reveal_state, reveal_sids)
     
     # STEP 2: Send private_hand to each agent (their own hole cards only)
     if not is_showdown:
@@ -1839,6 +1653,9 @@ async def create_werewolf_game(sid, data):
     Expected data: {'game_id': str, 'entry_fee': float (optional)}
     """
     try:
+        if await _reject_if_read_only(sid, 'create_werewolf_game'):
+            return
+
         # Check authentication
         if sid not in player_sessions or not player_sessions[sid]['authenticated']:
             await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
@@ -1888,24 +1705,27 @@ async def join_werewolf_game(sid, data):
     Expected data: {'game_id': str, 'nickname': str (optional)}
     """
     try:
+        if await _reject_if_read_only(sid, 'join_werewolf_game'):
+            return
+
         # Check authentication
         if sid not in player_sessions or not player_sessions[sid]['authenticated']:
             await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
             return
         
         game_id = data.get('game_id')
-        nickname = data.get('nickname', 'Player')
+        nickname = player_sessions[sid]['player_name'] or 'Player'
         
         if not game_id or game_id not in werewolf_games:
             await sio.emit('error', {'message': 'Invalid game_id'}, room=sid)
             return
         
-        address = player_sessions[sid]['address']
+        player_id = player_sessions[sid]['player_id']
         game = werewolf_games[game_id]
 
         # 检查余额是否足够支付入场费
         try:
-            current_balance = get_balance(address)
+            current_balance = await get_balance(player_id)
             if current_balance < game.entry_fee:
                 await sio.emit('error', {
                     'message': f'Insufficient balance. Required: {float(game.entry_fee)} tokens, Available: {float(current_balance)}'
@@ -1918,13 +1738,13 @@ async def join_werewolf_game(sid, data):
         # Use distributed lock to prevent race conditions on player join
         async with redis_manager.lock(f"game_join:{game_id}"):
             # Add player to game
-            if not game.add_player(sid, address, nickname=nickname):
+            if not game.add_player(sid, player_id, nickname=nickname):
                 await sio.emit('error', {'message': 'Could not join game'}, room=sid)
                 return
 
             # 锁定入场费
             try:
-                lock_balance(address, game.entry_fee, game_session_id=game_id)
+                await lock_balance(player_id, game.entry_fee, game_session_id=game_id)
             except Exception as e:
                 await sio.emit('error', {'message': f'Failed to lock entry fee: {str(e)}'}, room=sid)
                 # 移除玩家
@@ -1937,7 +1757,7 @@ async def join_werewolf_game(sid, data):
             # Persist to MySQL (player record)
             await persistence_manager.on_player_joined(
                 game_id=game_id,
-                wallet_address=address,
+                player_id=player_id,
                 socket_sid=sid,
                 nickname=nickname
             )
@@ -1955,7 +1775,8 @@ async def join_werewolf_game(sid, data):
         # Notify player
         await sio.emit('werewolf_joined', {
             'game_id': game_id,
-            'address': address
+            'player_id': player_id,
+            'player_name': nickname,
         }, room=sid)
         
         # Broadcast updated state to all players in game
@@ -1973,6 +1794,9 @@ async def start_werewolf_game(sid, data):
     Expected data: {'game_id': str}
     """
     try:
+        if await _reject_if_read_only(sid, 'start_werewolf_game'):
+            return
+
         game_id = data.get('game_id')
         
         if not game_id or game_id not in werewolf_games:
@@ -2030,6 +1854,9 @@ async def werewolf_action(sid, data):
     }
     """
     try:
+        if await _reject_if_read_only(sid, 'werewolf_action'):
+            return
+
         game_id = data.get('game_id')
         action = data.get('action')
         target_sid = data.get('target_sid')
@@ -2047,11 +1874,11 @@ async def werewolf_action(sid, data):
         
         # Emit "thinking" state for non-chat actions
         if action not in ['chat', 'wolf_chat']:
-            await sio.emit('player_thinking', {
+            await _emit_werewolf_event(game_id, 'player_thinking', {
                 'game_id': game_id,
                 'player_sid': sid,
                 'action_type': action
-            }, room=game_id)
+            })
         
         # Build kwargs for action
         kwargs = {}
@@ -2080,7 +1907,7 @@ async def werewolf_action(sid, data):
                     persistence_manager.save_chat_message(
                         game_id=game_id,
                         game_type=game.game_type,
-                        wallet_address=player['wallet_address'],
+                        player_id=player['wallet_address'],
                         nickname=player['nickname'],
                         message=message,
                         message_type=action,
@@ -2097,11 +1924,15 @@ async def werewolf_action(sid, data):
             for wolf_sid in wolf_sids:
                 if wolf_sid != sid:
                     await sio.emit('wolf_chat_message', result.get('chat'), room=wolf_sid)
+
+            # Reveal spectators should observe wolf dialogue in realtime.
+            reveal_sids = list(_iter_reveal_spectators('werewolf', game_id))
+            await _emit_to_sids('wolf_chat_message', result.get('chat'), reveal_sids)
         
         # Handle public chat broadcast
         # (Chat stored in-memory in WerewolfGame, broadcast via Socket.IO)
         elif action == 'chat':
-            await sio.emit('chat_message', result.get('chat'), room=game_id)
+            await _emit_werewolf_event(game_id, 'chat_message', result.get('chat'))
         
         # Handle speak action (persist to MySQL for permanent history)
         elif action == 'speak':
@@ -2110,7 +1941,7 @@ async def werewolf_action(sid, data):
                 asyncio.create_task(
                     persistence_manager.save_speech(
                         game_id=game_id,
-                        wallet_address=player['wallet_address'],
+                        player_id=player['wallet_address'],
                         nickname=player['nickname'],
                         message=message or '',
                         phase=game.phase.value,
@@ -2130,8 +1961,10 @@ async def werewolf_action(sid, data):
             new_phase = phase_result.get('new_phase', '')
             
             # Determine if this is a significant phase change (for MySQL sync)
-            significant_phases = ['day_announcement', 'day_voting', 'finished', 'aborted']
-            is_significant = new_phase in significant_phases or old_phase in significant_phases
+            is_significant = (
+                new_phase in WEREWOLF_SIGNIFICANT_PHASES
+                or old_phase in WEREWOLF_SIGNIFICANT_PHASES
+            )
             
             # Persist phase change
             await persistence_manager.on_phase_changed(
@@ -2144,14 +1977,14 @@ async def werewolf_action(sid, data):
             )
             
             # Emit phase change
-            await sio.emit('werewolf_phase_change', {
+            await _emit_werewolf_event(game_id, 'werewolf_phase_change', {
                 'phase': new_phase,
                 'day_count': phase_result.get('day_count'),
                 'deaths': phase_result.get('deaths', []),
                 'eliminated': phase_result.get('eliminated'),
                 'game_over': phase_result.get('game_over', False),
                 'winners': phase_result.get('winners', [])
-            }, room=game_id)
+            })
             
             # Handle game end
             if phase_result.get('game_over'):
@@ -2174,6 +2007,9 @@ async def advance_werewolf_phase(sid, data):
     Expected data: {'game_id': str}
     """
     try:
+        if await _reject_if_read_only(sid, 'advance_werewolf_phase'):
+            return
+
         game_id = data.get('game_id')
         
         if not game_id or game_id not in werewolf_games:
@@ -2186,8 +2022,10 @@ async def advance_werewolf_phase(sid, data):
         new_phase = result.get('new_phase', game.phase.value)
         
         # Determine if this is a significant phase change
-        significant_phases = ['day_announcement', 'day_voting', 'finished', 'aborted']
-        is_significant = new_phase in significant_phases or old_phase in significant_phases
+        is_significant = (
+            new_phase in WEREWOLF_SIGNIFICANT_PHASES
+            or old_phase in WEREWOLF_SIGNIFICANT_PHASES
+        )
         
         # Persist phase change
         await persistence_manager.on_phase_changed(
@@ -2200,7 +2038,7 @@ async def advance_werewolf_phase(sid, data):
         )
         
         # Emit phase change to all players
-        await sio.emit('werewolf_phase_change', result, room=game_id)
+        await _emit_werewolf_event(game_id, 'werewolf_phase_change', result)
         
         # Check if game ended
         if game.is_game_over():
@@ -2257,6 +2095,16 @@ async def broadcast_werewolf_state(game_id: str):
     for player in game.players:
         state = game.get_game_state(player['sid'])
         await sio.emit('werewolf_state', state, room=player['sid'])
+
+    # Broadcast spectator-safe state to dedicated spectator room.
+    spectator_state = game.get_game_state(reveal_all=False)
+    await sio.emit('werewolf_state', spectator_state, room=_werewolf_spectator_room(game_id))
+
+    # Push reveal-mode spectator state directly to subscribed sockets.
+    reveal_sids = list(_iter_reveal_spectators('werewolf', game_id))
+    if reveal_sids:
+        reveal_state = game.get_game_state(reveal_all=True)
+        await _emit_to_sids('werewolf_state', reveal_state, reveal_sids)
     
     # Refresh TTL for active game (non-blocking)
     asyncio.create_task(redis_manager.refresh_game_ttl(game_id))
@@ -2315,7 +2163,7 @@ async def on_game_matched(players, game_size: int):
         # Persist player join to MySQL
         await persistence_manager.on_player_joined(
             game_id=game_id,
-            wallet_address=player.wallet_address,
+            player_id=player.wallet_address,
             socket_sid=player.sid,
             nickname=player.nickname
         )
@@ -2368,13 +2216,19 @@ async def join_matchmaking(sid, data):
     global werewolf_matchmaker
     
     try:
+        if await _reject_if_read_only(sid, 'join_matchmaking'):
+            return
+
         # Check authentication
         if sid not in player_sessions or not player_sessions[sid]['authenticated']:
             await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
             return
         
-        nickname = data.get('nickname', 'Player')
-        address = player_sessions[sid]['address']
+        data = data or {}
+        requested_name = str(data.get('nickname', '')).strip()
+        player_id = player_sessions[sid]['player_id']
+        player_name = player_sessions[sid]['player_name'] or 'Player'
+        nickname = requested_name[:32] if requested_name else player_name
         
         # Initialize matchmaker if needed
         if werewolf_matchmaker is None:
@@ -2385,7 +2239,7 @@ async def join_matchmaking(sid, data):
             werewolf_matchmaker.start()
         
         # Add to queue
-        if werewolf_matchmaker.add_player(sid, address, nickname):
+        if werewolf_matchmaker.add_player(sid, player_id, nickname):
             queue_info = werewolf_matchmaker.get_queue_info()
             await sio.emit('matchmaking_joined', {
                 'queue_size': queue_info['size'],
@@ -2460,20 +2314,23 @@ async def graceful_shutdown():
     Handle graceful shutdown to prevent game state loss.
     
     Security improvement: Save active game states before shutdown.
-    Also stops the deposit event worker gracefully.
     """
-    global werewolf_matchmaker
+    global werewolf_matchmaker, werewolf_timeout_task, poker_timeout_task
     
     print("\nGraceful shutdown initiated...")
-    
-    # Stop deposit worker
-    if not is_local_debug_mode():
-        deposit_worker.stop()
-        print("✓ Deposit worker stopped")
     
     # Stop matchmaker
     if werewolf_matchmaker:
         werewolf_matchmaker.stop()
+
+    # Stop background timeout task cleanly.
+    if werewolf_timeout_task and not werewolf_timeout_task.done():
+        werewolf_timeout_task.cancel()
+        await asyncio.gather(werewolf_timeout_task, return_exceptions=True)
+
+    if poker_timeout_task and not poker_timeout_task.done():
+        poker_timeout_task.cancel()
+        await asyncio.gather(poker_timeout_task, return_exceptions=True)
     
     # Notify all connected clients
     await sio.emit('server_shutdown', {
@@ -2487,7 +2344,7 @@ async def graceful_shutdown():
     
     # Save poker game states
     for table_id, game in poker_tables.items():
-        save_tasks.append(game.save_state_to_redis())
+        save_tasks.append(game.save_checkpoint('shutdown'))
         save_tasks.append(game.close_redis())
     
     # Save werewolf game states
@@ -2542,28 +2399,20 @@ if __name__ == "__main__":
     else:
         print("Arena Poker Server - Enhanced Security Edition")
     print("=" * 70)
-    print(f"Server account address: {server_account.address}")
-    print(f"Web3 connected: {w3.is_connected() if w3 else False}")
-    print(f"Arena Vault address: {ARENA_VAULT_ADDRESS or 'Not configured'}")
     print(f"CORS allowed origins: {ALLOWED_ORIGINS}")
     print(f"Local Debug Mode: {LOCAL_DEBUG_MODE}")
     print("=" * 70)
     
     if LOCAL_DEBUG_MODE:
         print("\n⚠️  LOCAL DEBUG MODE FEATURES:")
-        print("  ✓ Simplified authentication (no SIWE signature required)")
+        print("  ✓ Player ID based authentication")
         print("  ✓ Unlimited funds for all accounts")
-        print("  ✓ Mock withdrawal signatures")
-        print("  ✓ Web3/Blockchain connections disabled")
         print("\n  ⚠️  DO NOT USE IN PRODUCTION!")
     else:
         print("\nSecurity features enabled:")
         print("  ✓ Rate limiting on all endpoints")
-        print("  ✓ Blockchain nonce synchronization")
         print("  ✓ Configurable CORS whitelist")
         print("  ✓ Graceful shutdown handling")
-        print("  ✓ Daily withdrawal limits (contract)")
-        print("  ✓ Emergency pause mechanism (contract)")
     
     print("=" * 70)
     print("\nStarting server on http://0.0.0.0:8000")

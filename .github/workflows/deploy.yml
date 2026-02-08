@@ -1,142 +1,49 @@
-# Deploy Frontend (Vercel) + Backend (Railway) per environment
-# Environments: dev (dev branch), pre (pre branch), prod (main branch)
-# Domain: clawarena.io → prod; pre.clawarena.io → pre; dev.clawarena.io → dev
-
-name: Deploy (dev / pre / prod)
+name: Backend Deploy (Railway)
 
 on:
   push:
     branches: [main, pre, dev]
+    paths:
+      - 'backend/**'
+      - 'Dockerfile'
+      - '.github/workflows/**'
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Environment to deploy'
-        required: true
-        default: 'prod'
-        type: choice
-        options:
-          - prod
-          - pre
-          - dev
-
-concurrency:
-  group: deploy-${{ github.ref }}-${{ github.run_id }}
-  cancel-in-progress: false
-
-env:
-  DOMAIN: clawarena.io
 
 jobs:
-  env-mapping:
-    name: Set deployment environment
+  deploy-backend:
+    name: Deploy Backend
     runs-on: ubuntu-latest
-    outputs:
-      deploy_env: ${{ steps.set.outputs.deploy_env }}
-      railway_env: ${{ steps.set.outputs.railway_env }}
-      api_url: ${{ steps.set.outputs.api_url }}
-      vercel_prod: ${{ steps.set.outputs.vercel_prod }}
-    steps:
-      - id: set
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            DEPLOY_ENV="${{ github.event.inputs.environment }}"
-          else
-            case "${{ github.ref_name }}" in
-              main)  DEPLOY_ENV=prod ;;
-              pre)   DEPLOY_ENV=pre ;;
-              dev)   DEPLOY_ENV=dev ;;
-              *)     DEPLOY_ENV=dev ;;
-            esac
-          fi
-          case "$DEPLOY_ENV" in
-            prod) RAILWAY_ENV=production;  API_URL="https://api.${{ env.DOMAIN }}";     VERCEL_PROD=true  ;;
-            pre)  RAILWAY_ENV=preview;     API_URL="https://api-pre.${{ env.DOMAIN }}"; VERCEL_PROD=false ;;
-            dev)  RAILWAY_ENV=development; API_URL="https://api-dev.${{ env.DOMAIN }}"; VERCEL_PROD=false ;;
-            *)    RAILWAY_ENV=development; API_URL="https://api-dev.${{ env.DOMAIN }}"; VERCEL_PROD=false ;;
-          esac
-          echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
-          echo "railway_env=$RAILWAY_ENV" >> $GITHUB_OUTPUT
-          echo "api_url=$API_URL" >> $GITHUB_OUTPUT
-          echo "vercel_prod=$VERCEL_PROD" >> $GITHUB_OUTPUT
-          echo "Deploy env: $DEPLOY_ENV | Railway: $RAILWAY_ENV | API: $API_URL | Vercel prod: $VERCEL_PROD"
-
-  preflight:
-    name: Preflight
-    runs-on: ubuntu-latest
-    needs: env-mapping
-    steps:
-      - name: Trigger info
-        run: |
-          echo "Ref: $GITHUB_REF"
-          echo "Env: ${{ needs.env-mapping.outputs.deploy_env }}"
-          echo "API URL: ${{ needs.env-mapping.outputs.api_url }}"
-      - name: Secrets check
-        run: |
-          echo "Vercel: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}"
-          echo "Railway: ${{ secrets.RAILWAY_TOKEN != '' }}"
-
-  frontend:
-    name: Deploy Frontend (${{ needs.env-mapping.outputs.deploy_env }})
-    runs-on: ubuntu-latest
-    needs: [env-mapping, preflight]
-    if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
-    defaults:
-      run:
-        working-directory: frontend
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      NEXT_PUBLIC_API_URL: ${{ needs.env-mapping.outputs.api_url }}
-      DEPLOY_ENV: ${{ needs.env-mapping.outputs.deploy_env }}
-      VERCEL_PROD: ${{ needs.env-mapping.outputs.vercel_prod }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install Vercel CLI
-        run: npm install -g vercel@latest
-      - name: Install dependencies
-        run: npm install --no-package-lock
-      - name: Pull Vercel environment
-        run: |
-          if [ "$VERCEL_PROD" = "true" ]; then
-            vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
-          else
-            vercel pull --yes --environment=preview --token "$VERCEL_TOKEN"
-          fi
-      - name: Build
-        run: |
-          if [ "$VERCEL_PROD" = "true" ]; then
-            vercel build --prod --token "$VERCEL_TOKEN"
-          else
-            vercel build --token "$VERCEL_TOKEN"
-          fi
-      - name: Deploy
-        run: |
-          if [ "$VERCEL_PROD" = "true" ]; then
-            vercel deploy --prebuilt --prod --token "$VERCEL_TOKEN"
-          else
-            vercel deploy --prebuilt --token "$VERCEL_TOKEN"
-          fi
 
-  backend:
-    name: Deploy Backend (${{ needs.env-mapping.outputs.deploy_env }})
-    runs-on: ubuntu-latest
-    needs: [env-mapping, preflight]
-    if: ${{ secrets.RAILWAY_TOKEN != '' }}
-    env:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
-      RAILWAY_ENV: ${{ needs.env-mapping.outputs.railway_env }}
-    steps:
-      - uses: actions/checkout@v4
       - name: Install Railway CLI
         run: npm install -g @railway/cli
-      - name: Link project
-        if: env.RAILWAY_PROJECT_ID != ''
-        run: railway link --project "$RAILWAY_PROJECT_ID"
-      - name: Deploy backend to ${{ env.RAILWAY_ENV }}
+
+      - name: Deploy
+        # 这一步是核心：根据分支动态决定使用哪个 Token 和哪个服务名
         run: |
-          railway up --service backend --environment "$RAILWAY_ENV" --ci
+          # 1. 根据分支判断环境
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "Target: PRODUCTION"
+            export RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN_PROD }}
+            export RAILWAY_ENV="production"
+            export SERVICE_NAME="backend_prod"
+          
+          elif [ "${{ github.ref_name }}" = "pre" ]; then
+            echo "Target: PREVIEW"
+            export RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN_PRE }}
+            export RAILWAY_ENV="preview"
+            export SERVICE_NAME="backend_prev"
+          
+          else
+            echo "Target: DEVELOPMENT"
+            export RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN_DEV }}
+            export RAILWAY_ENV="development"
+            export SERVICE_NAME="backend_dev"
+          fi
+
+
+          # 2. 执行部署
+          # 注意：有了环境特定的 Token，CLI 会自动识别目标环境，
+          # 但如果你的服务名在不同环境不一样，还是需要 --service 指定名字
+          railway up --service $SERVICE_NAME --environment $RAILWAY_ENV --detach --ci

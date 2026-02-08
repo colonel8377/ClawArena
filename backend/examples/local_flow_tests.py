@@ -52,8 +52,9 @@ TEXAS_AGENTS = 3
 class SocketIOClient:
     """Simple Socket.IO client using standard library socket."""
     
-    def __init__(self, url: str):
+    def __init__(self, url: str, auth_payload: Optional[Dict[str, Any]] = None):
         self.url = url
+        self.auth_payload = auth_payload or {}
         self.sock: Optional[socket.socket] = None
         self.sid: Optional[str] = None
         self.connected = False
@@ -176,9 +177,14 @@ class SocketIOClient:
         # Wait a bit
         time.sleep(0.5)
         
-        # Now send Socket.IO connect packet
-        print(f"  [Connect] Sending Socket.IO connect packet '40'...")
-        self._send_packet('40')  # Connect to default namespace
+        # Now send Socket.IO connect packet (with auth payload when available)
+        if self.auth_payload:
+            connect_packet = '40' + json.dumps(self.auth_payload, separators=(',', ':'))
+            print(f"  [Connect] Sending Socket.IO connect packet with auth payload...")
+        else:
+            connect_packet = '40'
+            print(f"  [Connect] Sending Socket.IO connect packet '40'...")
+        self._send_packet(connect_packet)  # Connect to default namespace
         
         # Wait for server to respond
         # Note: connected flag will be set when we receive '40' confirmation from server
@@ -496,8 +502,10 @@ def http_request(method: str, path: str, params: Optional[Dict] = None,
 @dataclass
 class AgentState:
     """State tracking for an agent."""
-    wallet: str
+    player_name: str
     nickname: str
+    player_id: Optional[str] = None
+    address: Optional[str] = None
     authenticated: bool = False
     game_id: Optional[str] = None
     game_type: Optional[str] = None
@@ -507,40 +515,88 @@ class AgentState:
     is_my_turn: bool = False
     events_received: List[tuple] = field(default_factory=list)
     sid: Optional[str] = None
+    fingerprint: Optional[str] = None
+    bot_token: Optional[str] = None
 
 
 class BaseAgent:
     """Base agent class with common functionality."""
     
-    def __init__(self, wallet: str, nickname: str):
-        self.state = AgentState(wallet=wallet, nickname=nickname)
+    def __init__(self, player_name: str, nickname: str, address: Optional[str] = None):
+        self.state = AgentState(player_name=player_name, nickname=nickname, address=address)
+        self.state.fingerprint = f"local-flow-{nickname.lower()}"
         self.sio: Optional[SocketIOClient] = None
+
+    def fetch_bot_token(self) -> bool:
+        """Fetch anti-bot token for Socket.IO auth (required in non-local mode)."""
+        if not self.state.fingerprint:
+            return False
+
+        result = http_request(
+            'POST',
+            '/bot/token',
+            data={'fingerprint': self.state.fingerprint},
+            headers={
+                'User-Agent': f'agent-local-flow/{self.state.nickname}',
+                'x-agent-id': self.state.nickname,
+            },
+        )
+
+        token = result.get('token')
+        if token:
+            self.state.bot_token = token
+            return True
+
+        # In LOCAL_DEBUG_MODE with bypass enabled, token may not be required.
+        print(f"[{self.state.nickname}] Token fetch skipped/failed: {result}")
+        return False
     
     def register(self) -> bool:
         """Register the agent."""
         result = http_request('POST', '/api/register', params={
-            'wallet_address': self.state.wallet
+            'player_name': self.state.player_name,
+            'address': self.state.address,
         })
-        return result.get('status_code') in [200, 400]
+        if result.get('status_code') != 200:
+            return False
+        user = result.get('user') or {}
+        player_id = user.get('player_id')
+        if not player_id:
+            return False
+        self.state.player_id = player_id
+        self.state.player_name = user.get('player_name') or self.state.player_name
+        return True
     
     def login(self) -> bool:
         """Login the agent."""
+        if not self.state.player_id:
+            return False
         result = http_request('POST', '/api/login', params={
-            'wallet_address': self.state.wallet
+            'player_id': self.state.player_id
         })
         return result.get('status_code') == 200
     
     def connect_socket(self):
         """Connect Socket.IO client."""
-        self.sio = SocketIOClient(BACKEND_URL)
+        # Try token flow first for compatibility with anti-bot auth.
+        self.fetch_bot_token()
+
+        auth_payload = {
+            'fingerprint': self.state.fingerprint,
+            'agent_id': self.state.nickname,
+        }
+        if self.state.bot_token:
+            auth_payload['botToken'] = self.state.bot_token
+
+        self.sio = SocketIOClient(BACKEND_URL, auth_payload=auth_payload)
         
         # Setup handlers before connecting
         def on_connected(data):
             print(f"[{self.state.nickname}] Received 'connected' event, authenticating...")
             # Send authenticate immediately
             self.sio.emit('authenticate', {
-                'address': self.state.wallet,
-                'signature': 'debug'
+                'login_key': self.state.player_id,
+                'player_id': self.state.player_id,  # Backward compatibility
             })
         
         def on_connect(data):
@@ -588,8 +644,8 @@ class BaseAgent:
 class WerewolfAgent(BaseAgent):
     """Agent for Werewolf game with fixed logic."""
     
-    def __init__(self, wallet: str, nickname: str):
-        super().__init__(wallet, nickname)
+    def __init__(self, player_name: str, nickname: str, address: Optional[str] = None):
+        super().__init__(player_name, nickname, address)
         self.last_phase = None
     
     def connect_socket(self):
@@ -651,7 +707,7 @@ class WerewolfAgent(BaseAgent):
         # Get my role info
         if not self.state.my_role and self.state.game_state.get('players'):
             for player in self.state.game_state['players']:
-                if (player.get('wallet_address') == self.state.wallet or 
+                if (player.get('wallet_address') == self.state.player_id or 
                     player.get('nickname') == self.state.nickname):
                     if 'role' in player and player['role']:
                         self.state.my_role = player['role']
@@ -751,7 +807,7 @@ class WerewolfAgent(BaseAgent):
         if speaking_order and current_speaker_index < len(speaking_order):
             my_sid = None
             for player in self.state.game_state.get('players', []):
-                if (player.get('wallet_address') == self.state.wallet or 
+                if (player.get('wallet_address') == self.state.player_id or 
                     player.get('nickname') == self.state.nickname):
                     my_sid = player.get('sid')
                     break
@@ -848,7 +904,7 @@ class TexasAgent(BaseAgent):
         my_player = None
         if self.state.game_state.get('players'):
             for player in self.state.game_state['players']:
-                if (player.get('wallet_address') == self.state.wallet or 
+                if (player.get('wallet_address') == self.state.player_id or 
                     player.get('nickname') == self.state.nickname):
                     my_player = player
                     break
@@ -888,18 +944,24 @@ class TexasAgent(BaseAgent):
 # TEST FUNCTIONS
 # ============================================================================
 
-def register_and_login_agents(wallets: List[str]):
+def register_and_login_agents(agents: List[BaseAgent]):
     """Register and login all agents."""
     print("\n=== Registering and Logging in Agents ===")
-    for wallet in wallets:
-        agent = BaseAgent(wallet, f"Agent{wallet[-4:]}")
+    for agent in agents:
         try:
-            agent.register()
-            print(f"  Registered: {wallet[:10]}...")
-            agent.login()
-            print(f"  Logged in: {wallet[:10]}...")
+            registered = agent.register()
+            if not registered:
+                print(f"  Registration failed: {agent.state.nickname}")
+                continue
+            print(f"  Registered: {agent.state.nickname} -> {agent.state.player_id}")
+
+            logged_in = agent.login()
+            if not logged_in:
+                print(f"  Login failed: {agent.state.nickname} ({agent.state.player_id})")
+                continue
+            print(f"  Logged in: {agent.state.nickname} ({agent.state.player_id})")
         except Exception as e:
-            print(f"  Error with {wallet[:10]}...: {e}")
+            print(f"  Error with {agent.state.nickname}: {e}")
 
 
 def test_werewolf_flow():
@@ -909,11 +971,13 @@ def test_werewolf_flow():
     print("="*70)
     
     # Create agents
-    wallets = [f"0x{idx:040d}" for idx in range(WEREWOLF_AGENTS)]
-    agents = [WerewolfAgent(wallet, f"WerewolfAgent{i+1}") for i, wallet in enumerate(wallets)]
+    agents = [
+        WerewolfAgent(player_name=f"WerewolfAgent{i+1}", nickname=f"WerewolfAgent{i+1}")
+        for i in range(WEREWOLF_AGENTS)
+    ]
     
     # Register and login
-    register_and_login_agents(wallets)
+    register_and_login_agents(agents)
     
     # Connect all agents
     print("\n=== Connecting Agents ===")
@@ -965,11 +1029,13 @@ def test_texas_flow():
     print("="*70)
     
     # Create agents
-    wallets = [f"0x{idx+100:040d}" for idx in range(TEXAS_AGENTS)]
-    agents = [TexasAgent(wallet, f"TexasAgent{i+1}") for i, wallet in enumerate(wallets)]
+    agents = [
+        TexasAgent(player_name=f"TexasAgent{i+1}", nickname=f"TexasAgent{i+1}")
+        for i in range(TEXAS_AGENTS)
+    ]
     
     # Register and login
-    register_and_login_agents(wallets)
+    register_and_login_agents(agents)
     
     # Connect all agents
     print("\n=== Connecting Agents ===")
@@ -1034,7 +1100,7 @@ def main():
     # Check backend health
     if not check_backend_health():
         print("\n⚠️  Backend not available. Please start docker backend first:")
-        print("   docker compose -f docker-compose.dev.yml up")
+        print("   docker compose -f docker-compose.yml up")
         return
     
     try:

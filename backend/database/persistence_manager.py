@@ -1,5 +1,5 @@
 """
-Persistence Manager for AgentGameArena.
+Persistence Manager for ClawArena.
 
 Unified interface for managing game data persistence across:
 - Redis (hot storage): Active game core state (for server restart recovery)
@@ -47,6 +47,9 @@ class PersistenceManager:
     def __init__(self):
         """Initialize the persistence manager."""
         self._redis = redis_manager
+        # Throttle poker cold writes to avoid high-frequency MySQL pressure.
+        self._poker_last_mysql_checkpoint: Dict[str, datetime] = {}
+        self._poker_mysql_checkpoint_interval_seconds = 15
     
     # ========================================================================
     # GAME LIFECYCLE PERSISTENCE
@@ -112,7 +115,7 @@ class PersistenceManager:
     async def on_player_joined(
         self,
         game_id: str,
-        wallet_address: str,
+        player_id: str,
         socket_sid: str,
         nickname: str = "Player",
         entry_paid: Decimal = Decimal("0"),
@@ -125,7 +128,7 @@ class PersistenceManager:
         
         Args:
             game_id: Game identifier
-            wallet_address: Player's wallet address
+            player_id: Player identifier
             socket_sid: Player's socket session ID
             nickname: Player's display name
             entry_paid: Entry fee paid by player
@@ -142,26 +145,20 @@ class PersistenceManager:
                 # Get or create user
                 result = await db.execute(
                     select(UserLedger).where(
-                        UserLedger.wallet_address == wallet_address.lower()
+                        UserLedger.wallet_address == player_id
                     )
                 )
                 user = result.scalar_one_or_none()
                 
                 if not user:
-                    # Create user if doesn't exist
-                    user = UserLedger(
-                        wallet_address=wallet_address.lower(),
-                        offchain_balance=Decimal("0"),
-                        locked_balance=Decimal("0")
-                    )
-                    db.add(user)
-                    await db.flush()  # Get the user ID
+                    logger.warning(f"Rejecting game join persistence for unknown player_id: {player_id}")
+                    return False
                 
                 # Check if player already in game
                 result = await db.execute(
                     select(GamePlayer).where(
                         GamePlayer.game_session_id == game_id,
-                        GamePlayer.wallet_address == wallet_address.lower()
+                        GamePlayer.wallet_address == player_id
                     )
                 )
                 existing = result.scalar_one_or_none()
@@ -176,7 +173,7 @@ class PersistenceManager:
                 game_player = GamePlayer(
                     game_session_id=game_id,
                     user_id=user.id,
-                    wallet_address=wallet_address.lower(),
+                    wallet_address=player_id,
                     socket_sid=socket_sid,
                     nickname=nickname,
                     status=PlayerStatus.ALIVE.value,
@@ -194,7 +191,7 @@ class PersistenceManager:
                 )
                 
                 await db.commit()
-                logger.info(f"Player {wallet_address[:8]} joined game {game_id} in MySQL")
+                logger.info(f"Player {player_id[:8]} joined game {game_id} in MySQL")
                 return True
                 
         except Exception as e:
@@ -237,16 +234,16 @@ class PersistenceManager:
                     
                     # Update player roles
                     for player_data in players_with_roles:
-                        wallet = player_data.get('wallet_address', '').lower()
+                        player_id = player_data.get('player_id') or player_data.get('wallet_address', '')
                         role = player_data.get('role_type', player_data.get('role'))
                         team = player_data.get('team')
                         
-                        if wallet and role:
+                        if player_id and role:
                             await db.execute(
                                 update(GamePlayer)
                                 .where(
                                     GamePlayer.game_session_id == game_id,
-                                    GamePlayer.wallet_address == wallet
+                                    GamePlayer.wallet_address == player_id
                                 )
                                 .values(
                                     role=role if isinstance(role, str) else role.value if hasattr(role, 'value') else str(role),
@@ -258,7 +255,11 @@ class PersistenceManager:
             
             # Redis: Save core state (without chat)
             core_state = self._extract_core_state(initial_state)
-            await self._redis.save_game_core(game_id, core_state, game_type="werewolf")
+            await self._redis.save_game_core(
+                game_id,
+                core_state,
+                game_type=initial_state.get('game_type', 'werewolf')
+            )
             
             logger.info(f"Game started: {game_id}")
             return True
@@ -296,7 +297,11 @@ class PersistenceManager:
         try:
             # Redis: Always save core state
             core_state = self._extract_core_state(game_state)
-            await self._redis.save_game_core(game_id, core_state, game_type="werewolf")
+            await self._redis.save_game_core(
+                game_id,
+                core_state,
+                game_type=game_state.get('game_type', 'werewolf')
+            )
             
             # MySQL: Only for significant phases
             if significant and AsyncSessionLocal:
@@ -314,13 +319,13 @@ class PersistenceManager:
                     # Update player death status
                     if deaths:
                         for death in deaths:
-                            wallet = death.get('wallet_address', '').lower()
-                            if wallet:
+                            player_id = death.get('player_id') or death.get('wallet_address', '')
+                            if player_id:
                                 await db.execute(
                                     update(GamePlayer)
                                     .where(
                                         GamePlayer.game_session_id == game_id,
-                                        GamePlayer.wallet_address == wallet
+                                        GamePlayer.wallet_address == player_id
                                     )
                                     .values(
                                         is_alive=False,
@@ -392,29 +397,29 @@ class PersistenceManager:
                         )
                     
                     # Create game history records
-                    for winner_wallet in winners:
+                    for winner_player_id in winners:
                         game_history = GameHistory(
                             game_session_id=game_id,
                             game_type='werewolf',
-                            winner_wallet=winner_wallet.lower(),
+                            winner_wallet=winner_player_id,
                             winner_team=winner_team,
                             prize_amount=prize_amount / len(winners) if winners else Decimal("0"),
                             player_count=player_count,
                             duration_seconds=duration_seconds,
                             was_aborted=was_aborted,
-                            timestamp=datetime.utcnow()
+                            created_at=datetime.utcnow()
                         )
                         db.add(game_history)
                     
                     # Update player winnings
                     if winners and prize_amount > 0:
                         prize_per_winner = prize_amount / len(winners)
-                        for winner_wallet in winners:
+                        for winner_player_id in winners:
                             await db.execute(
                                 update(GamePlayer)
                                 .where(
                                     GamePlayer.game_session_id == game_id,
-                                    GamePlayer.wallet_address == winner_wallet.lower()
+                                    GamePlayer.wallet_address == winner_player_id
                                 )
                                 .values(winnings=prize_per_winner)
                             )
@@ -431,6 +436,107 @@ class PersistenceManager:
         except Exception as e:
             logger.error(f"Error recording game end {game_id}: {e}")
             return False
+
+    async def save_poker_checkpoint(
+        self,
+        game_id: str,
+        game_state: Dict[str, Any],
+        event_type: str = "manual",
+        force_mysql: bool = False
+    ) -> bool:
+        """
+        Persist poker cold snapshot to MySQL with event-aware throttling.
+
+        Redis hot state should be saved by caller before invoking this method.
+        This method intentionally rate-limits MySQL updates to control write cost
+        while still forcing durability on critical hand lifecycle events.
+        """
+        try:
+            if not AsyncSessionLocal:
+                return False
+
+            now = datetime.utcnow()
+            if not self._should_write_poker_mysql(game_id, event_type, now, force_mysql):
+                return True
+
+            snapshot = self._extract_core_state(game_state)
+            phase = str(snapshot.get('phase') or 'unknown')
+            players = snapshot.get('players') or []
+            player_count = len(players) if isinstance(players, list) else 0
+            status = GameStatus.WAITING.value if phase == 'waiting' else GameStatus.ACTIVE.value
+
+            async with get_async_db_session() as db:
+                result = await db.execute(
+                    select(GameSession).where(GameSession.id == game_id)
+                )
+                game_session = result.scalar_one_or_none()
+
+                if game_session is None:
+                    game_session = GameSession(
+                        id=game_id,
+                        game_type='texas',
+                        status=status,
+                        player_count=player_count,
+                        current_phase=phase,
+                        state_snapshot=snapshot,
+                        created_at=now,
+                        started_at=now if event_type == 'hand_start' else None,
+                    )
+                    db.add(game_session)
+                else:
+                    update_values = {
+                        'game_type': game_session.game_type or 'texas',
+                        'status': status,
+                        'player_count': max(game_session.player_count or 0, player_count),
+                        'current_phase': phase,
+                        'state_snapshot': snapshot,
+                        'updated_at': now,
+                    }
+                    if event_type == 'hand_start' and not game_session.started_at:
+                        update_values['started_at'] = now
+
+                    await db.execute(
+                        update(GameSession)
+                        .where(GameSession.id == game_id)
+                        .values(**update_values)
+                    )
+
+                await db.commit()
+
+            self._poker_last_mysql_checkpoint[game_id] = now
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving poker checkpoint {game_id}: {e}")
+            return False
+
+    def _should_write_poker_mysql(
+        self,
+        game_id: str,
+        event_type: str,
+        now: datetime,
+        force_mysql: bool = False
+    ) -> bool:
+        """Decide whether to write a poker checkpoint to MySQL now."""
+        if force_mysql:
+            return True
+
+        critical_events = {
+            'hand_start',
+            'phase_change',
+            'hand_end',
+            'showdown',
+            'shutdown',
+        }
+        if event_type in critical_events:
+            return True
+
+        last_write = self._poker_last_mysql_checkpoint.get(game_id)
+        if not last_write:
+            return True
+
+        elapsed = (now - last_write).total_seconds()
+        return elapsed >= self._poker_mysql_checkpoint_interval_seconds
     
     async def _delayed_redis_cleanup(self, game_id: str, delay: int = 300):
         """Cleanup Redis data after a delay."""
@@ -446,7 +552,7 @@ class PersistenceManager:
         self,
         game_id: str,
         game_type: str,
-        wallet_address: str,
+        player_id: str,
         nickname: str,
         message: str,
         message_type: str = "chat",
@@ -458,7 +564,7 @@ class PersistenceManager:
         Args:
             game_id: Game identifier
             game_type: Game type ('werewolf', 'texas', etc.)
-            wallet_address: Speaker's wallet address
+            player_id: Speaker's player ID
             nickname: Speaker's display name
             message: Message content
             message_type: Type of message (chat, wolf_chat, speak, action, etc.)
@@ -477,7 +583,7 @@ class PersistenceManager:
                 chat_record = ChatMessage(
                     game_session_id=game_id,
                     game_type=game_type or "unknown",
-                    player_wallet=wallet_address.lower(),
+                    player_wallet=player_id,
                     nickname=nickname,
                     message=message,
                     message_type=message_type,
@@ -495,7 +601,7 @@ class PersistenceManager:
     async def save_speech(
         self,
         game_id: str,
-        wallet_address: str,
+        player_id: str,
         nickname: str,
         message: str,
         phase: str = None,
@@ -506,7 +612,7 @@ class PersistenceManager:
         
         Args:
             game_id: Game identifier
-            wallet_address: Speaker's wallet address
+            player_id: Speaker's player ID
             nickname: Speaker's display name
             message: Speech content
             phase: Current game phase
@@ -519,7 +625,7 @@ class PersistenceManager:
         saved = await self.save_chat_message(
             game_id=game_id,
             game_type=game_type,
-            wallet_address=wallet_address,
+            player_id=player_id,
             nickname=nickname,
             message=message,
             message_type='speak',
@@ -638,7 +744,7 @@ class PersistenceManager:
     async def update_player_status(
         self,
         game_id: str,
-        wallet_address: str,
+        player_id: str,
         status: str,
         is_alive: bool = None,
         consecutive_timeouts: int = None
@@ -648,7 +754,7 @@ class PersistenceManager:
         
         Args:
             game_id: Game identifier
-            wallet_address: Player's wallet address
+            player_id: Player's player ID
             status: New status ('alive', 'dead', 'zombie')
             is_alive: Whether player is alive
             consecutive_timeouts: Timeout count
@@ -672,7 +778,7 @@ class PersistenceManager:
                     update(GamePlayer)
                     .where(
                         GamePlayer.game_session_id == game_id,
-                        GamePlayer.wallet_address == wallet_address.lower()
+                        GamePlayer.wallet_address == player_id
                     )
                     .values(**update_values)
                 )
@@ -686,7 +792,7 @@ class PersistenceManager:
     async def update_player_socket_sid(
         self,
         game_id: str,
-        wallet_address: str,
+        player_id: str,
         new_sid: str
     ) -> bool:
         """
@@ -694,7 +800,7 @@ class PersistenceManager:
         
         Args:
             game_id: Game identifier
-            wallet_address: Player's wallet address
+            player_id: Player's player ID
             new_sid: New socket session ID
             
         Returns:
@@ -709,7 +815,7 @@ class PersistenceManager:
                     update(GamePlayer)
                     .where(
                         GamePlayer.game_session_id == game_id,
-                        GamePlayer.wallet_address == wallet_address.lower()
+                        GamePlayer.wallet_address == player_id
                     )
                     .values(socket_sid=new_sid, last_action_at=datetime.utcnow())
                 )

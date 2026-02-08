@@ -6,11 +6,11 @@
 # - Redis for caching and session management
 #
 # Usage:
-#   Start all services:     docker compose -f docker-compose.dev.yml up
-#   Start in background:    docker compose -f docker-compose.dev.yml up -d
-#   View logs:              docker compose -f docker-compose.dev.yml logs -f
-#   Stop all services:      docker compose -f docker-compose.dev.yml down
-#   Stop and remove data:   docker compose -f docker-compose.dev.yml down -v
+#   Start all services:     docker compose -f docker-compose.yml up
+#   Start in background:    docker compose -f docker-compose.yml up -d
+#   View logs:              docker compose -f docker-compose.yml logs -f
+#   Stop all services:      docker compose -f docker-compose.yml down
+#   Stop and remove data:   docker compose -f docker-compose.yml down -v
 
 services:
   # ==========================================================================
@@ -19,7 +19,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: arena_frontend
     ports:
       - "3000:3000"
@@ -44,15 +44,13 @@ services:
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile.dev
+      dockerfile: backend/Dockerfile
     container_name: arena_backend
     ports:
       - "8000:8000"
     volumes:
       # Mount source code for hot reloading
       - ./backend:/app
-      # Mount requirements.txt from root
-      - ./requirements.txt:/app/requirements.txt:ro
       # Prevent container's cache from being overwritten
       - /app/__pycache__
     environment:

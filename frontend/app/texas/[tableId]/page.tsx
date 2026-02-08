@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
-import PlayingCard from '@/components/poker/PlayingCard';
+import PlayingCard, { Rank } from '@/components/poker/PlayingCard';
 import ChipIcon from '@/components/poker/ChipIcon';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
@@ -18,6 +18,7 @@ interface SpectatorPlayer {
   cards?: string[];
   hole_cards?: string[];
   current_bet?: number;
+  last_action?: string;
 }
 
 interface ChatMessage {
@@ -49,65 +50,81 @@ export default function TexasDetailPage() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tableLog, setTableLog] = useState<string[]>([]);
+  const lastSocketUpdateRef = useRef(0);
   const { readingMode } = useUiMode();
 
   const revealAll = readingMode === 'human';
-  const apiUrl = useMemo(() => {
-    const url = new URL(`${getApiBaseUrl()}/api/spectate/poker/${tableId}`);
-    if (revealAll) {
-      url.searchParams.set('reveal', 'true');
-    }
-    return url.toString();
-  }, [revealAll, tableId]);
-
-  const hasRevealedCards = (data: GameState) =>
-    data.players?.some((player) => {
-      const cards = player.hole_cards ?? player.cards;
-      return Array.isArray(cards) && cards.some((card) => card !== '??' && card !== '**');
-    });
+  const revealModeLabel = revealAll ? 'REVEAL VIEW' : 'MASKED VIEW';
+  // HTTP spectator endpoint is always masked by design.
+  // Full reveal is delivered only through read-only Socket.IO subscriptions.
+  const apiUrl = useMemo(() => `${getApiBaseUrl()}/api/spectate/poker/${tableId}`, [tableId]);
 
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
+    const activeSocket = socket;
+
+    setConnected(activeSocket.connected);
 
     function onConnect() {
       setConnected(true);
+      activeSocket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
     }
 
     function onDisconnect() {
       setConnected(false);
     }
 
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
+    activeSocket.on('connect', onConnect);
+    activeSocket.on('disconnect', onDisconnect);
 
     const onGameState = (data: GameState) => {
       if (data.game_id === tableId) {
-        if (revealAll && !hasRevealedCards(data)) {
-          return;
-        }
+        lastSocketUpdateRef.current = Date.now();
         setGameState(data);
+        setError(null);
       }
     };
 
-    socket.on('game_state', onGameState);
-    socket.on('game_update', onGameState);
+    const onHandWinner = (data: { winner?: { nickname?: string }; reason?: string; pot?: number }) => {
+      const winnerName = data?.winner?.nickname || 'Unknown';
+      const pot = typeof data?.pot === 'number' ? data.pot : 0;
+      setTableLog((prev) => [...prev.slice(-19), `Hand winner: ${winnerName} (+${pot})${data?.reason ? ` - ${data.reason}` : ''}`]);
+    };
 
-    socket.emit('join_spectate', { table_id: tableId });
+    const onShowdown = (data: { winners?: Array<{ nickname?: string; amount?: number }> }) => {
+      const winners = (data?.winners || [])
+        .map((w) => `${w.nickname || 'Unknown'}(+${w.amount || 0})`)
+        .join(', ');
+      setTableLog((prev) => [...prev.slice(-19), winners ? `Showdown: ${winners}` : 'Showdown reached']);
+    };
+
+    activeSocket.on('game_state', onGameState);
+    activeSocket.on('game_update', onGameState);
+    activeSocket.on('hand_winner', onHandWinner);
+    activeSocket.on('showdown_reveal', onShowdown);
+
+    if (activeSocket.connected) {
+      activeSocket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
+    }
 
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('game_state', onGameState);
-      socket.off('game_update', onGameState);
-      socket.emit('leave_spectate', { table_id: tableId });
+      activeSocket.off('connect', onConnect);
+      activeSocket.off('disconnect', onDisconnect);
+      activeSocket.off('game_state', onGameState);
+      activeSocket.off('game_update', onGameState);
+      activeSocket.off('hand_winner', onHandWinner);
+      activeSocket.off('showdown_reveal', onShowdown);
+      activeSocket.emit('leave_spectate', { table_id: tableId });
     };
-  }, [revealAll, tableId]);
+  }, [apiUrl, revealAll, tableId]);
 
   useEffect(() => {
-    const fetchGameState = async () => {
-      setLoading(true);
-      setError(null);
+    const fetchGameState = async (isInitial = false) => {
+      if (isInitial) {
+        setLoading(true);
+      }
       try {
         const res = await botFetch(apiUrl);
         if (!res.ok) {
@@ -116,19 +133,47 @@ export default function TexasDetailPage() {
           return;
         }
         const data = await res.json();
+        setError(null);
         setGameState(data);
       } catch {
-        setError('Failed to load game state');
-        setGameState(null);
+        if (!connected) {
+          setError('Failed to load game state');
+          setGameState(null);
+        }
       } finally {
-        setLoading(false);
+        if (isInitial) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchGameState();
-    const interval = setInterval(fetchGameState, 3000);
-    return () => clearInterval(interval);
-  }, [apiUrl, tableId]);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    const loop = async () => {
+      const socketHealthy = connected && Date.now() - lastSocketUpdateRef.current < 10_000;
+      if (!socketHealthy) {
+        await fetchGameState(false);
+      }
+      const nextDelay = socketHealthy ? 10_000 : 3_000;
+      if (!cancelled) {
+        timer = setTimeout(loop, nextDelay);
+      }
+    };
+
+    fetchGameState(true).finally(() => {
+      if (!cancelled) {
+        loop();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [apiUrl, connected]);
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -231,6 +276,9 @@ export default function TexasDetailPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <div className={`status-badge ${revealAll ? 'status-badge-live' : 'status-badge-offline'}`}>
+                {revealModeLabel}
+              </div>
               <div className={`status-badge ${connected ? 'status-badge-live' : 'status-badge-offline'}`}>
                 {connected ? '📡 LIVE' : '📴 POLLING'}
               </div>
@@ -287,7 +335,7 @@ export default function TexasDetailPage() {
               gameState.community_cards.map((card, idx) => {
                 const parsed = parseCard(card);
                 if (parsed) {
-                  return <PlayingCard key={idx} suit={parsed.suit} rank={parsed.rank as any} />;
+                  return <PlayingCard key={idx} suit={parsed.suit} rank={parsed.rank as Rank} />;
                 }
                 return <PlayingCard key={idx} suit="spades" rank="A" hidden />;
               })
@@ -336,6 +384,9 @@ export default function TexasDetailPage() {
                             <span className="ml-2 text-acidGreen">⟵ TURN</span>
                           )}
                         </div>
+                        {player.last_action && (
+                          <div className="text-[10px] text-warning mt-1">Action: {player.last_action}</div>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-6 text-sm">
@@ -362,7 +413,7 @@ export default function TexasDetailPage() {
                                 <PlayingCard 
                                   key={cardIdx} 
                                   suit={parsed.suit} 
-                                  rank={parsed.rank as any}
+                                  rank={parsed.rank as Rank}
                                   className="!w-12 !h-16"
                                 />
                               );
@@ -385,7 +436,7 @@ export default function TexasDetailPage() {
                                 <PlayingCard 
                                   key={cardIdx} 
                                   suit={parsed.suit} 
-                                  rank={parsed.rank as any}
+                                  rank={parsed.rank as Rank}
                                   className="!w-12 !h-16"
                                 />
                               );
@@ -445,6 +496,23 @@ export default function TexasDetailPage() {
             )}
           </div>
         </div>
+
+        {/* Table Log */}
+        {tableLog.length > 0 && (
+          <div className="cyber-card p-4 rounded-lg mb-4">
+            <div className="flex items-center gap-2 text-acidGreen text-sm mb-3 font-orbitron">
+              <span>📜</span>
+              <span>TABLE EVENTS</span>
+            </div>
+            <div className="max-h-40 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
+              {tableLog.map((log, idx) => (
+                <div key={idx} className="text-xs font-mono text-foreground/70 py-1 border-b border-border/20 last:border-0">
+                  <span className="text-acidGreen">▸</span> {log}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="cyber-card p-3 rounded-lg text-center">

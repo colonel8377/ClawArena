@@ -19,13 +19,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable
 
-try:
-    from treys import Card, Evaluator, Deck
-except ImportError:
-    # Fallback for environments without treys
-    Card = None
-    Evaluator = None
-    Deck = None
+from treys import Card, Evaluator, Deck
 
 from ..base import check_chat_phase
 
@@ -35,7 +29,7 @@ from ..base import check_chat_phase
 # ============================================================================
 
 # Timeout configuration
-TURN_TIMEOUT_SECONDS = 20  # Fast poker - 20 second turn timer
+TURN_TIMEOUT_SECONDS = 20
 DEFAULT_SMALL_BLIND = 25
 DEFAULT_BIG_BLIND = 50
 MIN_PLAYERS = 2
@@ -224,6 +218,10 @@ class TexasEngine:
         
         # Hand number
         self.hand_number = 0
+        self.turn_started_at: Optional[datetime] = None
+
+        # Winners of the most recently completed hand (SIDs)
+        self.last_hand_winners: List[str] = []
     
     # ========================================================================
     # PLAYER MANAGEMENT
@@ -292,6 +290,36 @@ class TexasEngine:
         del self.players[sid]
         self.player_order.remove(sid)
         return True
+
+    def update_player_sid(self, old_sid: str, new_sid: str) -> bool:
+        """Update player SID for reconnection without losing table seat/state."""
+        if old_sid not in self.players:
+            return False
+        if old_sid == new_sid:
+            return True
+        if new_sid in self.players:
+            return False
+
+        player = self.players.pop(old_sid)
+        player.sid = new_sid
+        self.players[new_sid] = player
+
+        self.player_order = [new_sid if sid == old_sid else sid for sid in self.player_order]
+        self.last_hand_winners = [new_sid if sid == old_sid else sid for sid in self.last_hand_winners]
+
+        if self.dealer_sid == old_sid:
+            self.dealer_sid = new_sid
+        if self.small_blind_sid == old_sid:
+            self.small_blind_sid = new_sid
+        if self.big_blind_sid == old_sid:
+            self.big_blind_sid = new_sid
+        if self.current_player_sid == old_sid:
+            self.current_player_sid = new_sid
+
+        for pot in self.pots:
+            pot.eligible_players = [new_sid if sid == old_sid else sid for sid in pot.eligible_players]
+
+        return True
     
     def can_start(self) -> bool:
         """Check if the game can start."""
@@ -313,6 +341,7 @@ class TexasEngine:
             return {'success': False, 'error': 'Not enough players'}
         
         self.hand_number += 1
+        self.last_hand_winners = []
         
         # Reset players
         for player in self.players.values():
@@ -324,18 +353,19 @@ class TexasEngine:
         self.pots = [Pot()]
         self.current_bet = 0
         self.last_raise_amount = self.big_blind
+        self.turn_started_at = None
         
         # Move dealer button
         self._rotate_dealer()
         
         # Create and shuffle deck
         self._create_deck()
-        
-        # Deal hole cards
-        self._deal_hole_cards()
-        
         # Post blinds
         self._post_blinds()
+
+        # Deal hole cards after blind positions are established so the
+        # pre-flop deal order starts correctly from small blind.
+        self._deal_hole_cards()
         
         # Set first player to act (after big blind)
         self._set_first_to_act()
@@ -506,6 +536,8 @@ class TexasEngine:
         # Update legacy index
         if self.current_player_sid in active_sids:
             self.current_player_index = active_sids.index(self.current_player_sid)
+        if self.current_player_sid:
+            self.turn_started_at = datetime.utcnow()
     
     # ========================================================================
     # BETTING ACTIONS
@@ -599,8 +631,41 @@ class TexasEngine:
             return self._handle_call(sid)
         elif action == 'raise':
             return self._handle_raise(sid, amount)
+        elif action == 'all_in':
+            return self._handle_all_in(sid)
         else:
             return {'success': False, 'error': f'Unknown action: {action}'}
+
+    def _handle_all_in(self, sid: str) -> Dict[str, Any]:
+        """
+        Handle explicit all-in action.
+
+        Behaves like:
+        - all-in call when stack is not enough to fully call
+        - all-in raise otherwise
+        """
+        player = self.players[sid]
+
+        if player.chips <= 0:
+            return {'success': False, 'error': 'No chips left'}
+
+        to_call = max(0, self.current_bet - player.current_bet)
+
+        # All-in call (short call allowed).
+        if player.chips <= to_call:
+            amount = player.chips
+            self._place_bet(sid, amount)
+            player.status = PlayerStatus.ALL_IN
+            return {
+                'success': True,
+                'action': 'all_in',
+                'amount': amount,
+                'player_sid': sid
+            }
+
+        # All-in raise to total invested amount.
+        raise_to = player.current_bet + player.chips
+        return self._handle_raise(sid, raise_to)
     
     def _handle_fold(self, sid: str) -> Dict[str, Any]:
         """Handle fold action."""
@@ -620,6 +685,7 @@ class TexasEngine:
             total_pot = self.get_total_pot()
             winner.chips += total_pot
             self.phase = PokerPhase.FINISHED
+            self.last_hand_winners = [winner.sid]
             
             result['hand_over'] = True
             result['winner'] = {
@@ -917,6 +983,7 @@ class TexasEngine:
             if self.players[sid].can_act():
                 self.current_player_sid = sid
                 self.current_player_index = active_sids.index(sid)
+                self.turn_started_at = datetime.utcnow()
                 return
     
     # ========================================================================
@@ -961,17 +1028,18 @@ class TexasEngine:
                     'amount': total_pot,
                     'hand': None
                 }],
-                'player_hands': self._get_all_hole_cards()
+                'player_hands': self.get_all_hole_cards()
             }
         
         # Evaluate hands and determine winners for each pot
         results = self._evaluate_and_distribute_pots(showdown_players)
+        self.last_hand_winners = list(dict.fromkeys(w['sid'] for w in results['winners']))
         
         return {
             'success': True,
             'phase': 'showdown',
             'winners': results['winners'],
-            'player_hands': self._get_all_hole_cards(),
+            'player_hands': self.get_all_hole_cards(),
             'community_cards': self._cards_to_strings(self.community_cards)
         }
     
@@ -1118,10 +1186,6 @@ class TexasEngine:
         """
         return self._cards_to_strings(cards)
     
-    def _get_all_hole_cards(self) -> Dict[str, List[str]]:
-        """Get all players' hole cards for showdown reveal."""
-        return self.get_all_hole_cards()
-    
     # ========================================================================
     # TIMEOUT HANDLING
     # ========================================================================
@@ -1229,7 +1293,21 @@ class TexasEngine:
                 active_sids = [s for s in self.player_order if self.players[s].can_act()]
                 if sid in active_sids:
                     self.current_player_index = active_sids.index(sid)
+                self.turn_started_at = datetime.utcnow()
                 return
+
+    def get_turn_time_remaining(self) -> float:
+        """Get remaining seconds for the current player's turn."""
+        if self.phase in (PokerPhase.WAITING, PokerPhase.SHOWDOWN, PokerPhase.FINISHED):
+            return 0.0
+        if not self.current_player_sid:
+            return 0.0
+        if self.turn_started_at is None:
+            self.turn_started_at = datetime.utcnow()
+            return float(TURN_TIMEOUT_SECONDS)
+
+        elapsed = (datetime.utcnow() - self.turn_started_at).total_seconds()
+        return max(0.0, float(TURN_TIMEOUT_SECONDS) - elapsed)
     
     def get_total_pot(self) -> int:
         """Get the total pot size."""
@@ -1363,6 +1441,7 @@ class TexasEngine:
         self.community_cards = []
         self.chat_history = []
         self.pots = [Pot()]
+        self.turn_started_at = None
         
         # Return summary
         return {
@@ -1370,6 +1449,164 @@ class TexasEngine:
             'hand_ended': True,
             'hand_number': self.hand_number
         }
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize full engine state for restart recovery."""
+        return {
+            'game_id': self.game_id,
+            'small_blind': self.small_blind,
+            'big_blind': self.big_blind,
+            'min_raise': self.min_raise,
+            'phase': self.phase.value,
+            'player_order': list(self.player_order),
+            'dealer_sid': self.dealer_sid,
+            'small_blind_sid': self.small_blind_sid,
+            'big_blind_sid': self.big_blind_sid,
+            'current_player_sid': self.current_player_sid,
+            'dealer_index': self.dealer_index,
+            'small_blind_index': self.small_blind_index,
+            'big_blind_index': self.big_blind_index,
+            'current_player_index': self.current_player_index,
+            'current_bet': self.current_bet,
+            'last_raise_amount': self.last_raise_amount,
+            'pots': [
+                {
+                    'amount': pot.amount,
+                    'eligible_players': list(pot.eligible_players),
+                }
+                for pot in self.pots
+            ],
+            'community_cards': list(self.community_cards),
+            'chat_history': [
+                {
+                    'player_sid': msg.player_sid,
+                    'player_nickname': msg.player_nickname,
+                    'message': msg.message,
+                    'timestamp': msg.timestamp,
+                    'action': msg.action,
+                }
+                for msg in self.chat_history[-100:]
+            ],
+            'hand_number': self.hand_number,
+            'last_hand_winners': list(self.last_hand_winners),
+            'turn_started_at': self.turn_started_at.isoformat() if self.turn_started_at else None,
+            'players': {
+                sid: {
+                    'sid': player.sid,
+                    'wallet_address': player.wallet_address,
+                    'nickname': player.nickname,
+                    'chips': player.chips,
+                    'hole_cards': list(player.hole_cards),
+                    'status': player.status.value,
+                    'current_bet': player.current_bet,
+                    'total_bet_this_round': player.total_bet_this_round,
+                    'total_bet_this_hand': player.total_bet_this_hand,
+                    'has_acted': player.has_acted,
+                    'last_action': player.last_action,
+                    'last_action_time': player.last_action_time.isoformat() if player.last_action_time else None,
+                    'consecutive_timeouts': player.consecutive_timeouts,
+                }
+                for sid, player in self.players.items()
+            }
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TexasEngine':
+        """Restore engine state from serialized snapshot."""
+        game_id = data.get('game_id', 'restored_table')
+        engine = cls(
+            game_id=game_id,
+            small_blind=int(data.get('small_blind', DEFAULT_SMALL_BLIND)),
+            big_blind=int(data.get('big_blind', DEFAULT_BIG_BLIND))
+        )
+
+        try:
+            engine.phase = PokerPhase(data.get('phase', PokerPhase.WAITING.value))
+        except ValueError:
+            engine.phase = PokerPhase.WAITING
+
+        engine.min_raise = int(data.get('min_raise', engine.big_blind))
+        engine.player_order = list(data.get('player_order', []))
+        engine.dealer_sid = data.get('dealer_sid')
+        engine.small_blind_sid = data.get('small_blind_sid')
+        engine.big_blind_sid = data.get('big_blind_sid')
+        engine.current_player_sid = data.get('current_player_sid')
+        engine.dealer_index = int(data.get('dealer_index', 0))
+        engine.small_blind_index = int(data.get('small_blind_index', 0))
+        engine.big_blind_index = int(data.get('big_blind_index', 0))
+        engine.current_player_index = int(data.get('current_player_index', 0))
+        engine.current_bet = int(data.get('current_bet', 0))
+        engine.last_raise_amount = int(data.get('last_raise_amount', engine.big_blind))
+        engine.community_cards = [int(c) for c in data.get('community_cards', [])]
+        engine.hand_number = int(data.get('hand_number', 0))
+        engine.last_hand_winners = list(data.get('last_hand_winners', []))
+
+        ts = data.get('turn_started_at')
+        if ts:
+            try:
+                engine.turn_started_at = datetime.fromisoformat(ts)
+            except (TypeError, ValueError):
+                engine.turn_started_at = datetime.utcnow()
+
+        players_data = data.get('players', {})
+        engine.players = {}
+        for sid, p in players_data.items():
+            try:
+                status = PlayerStatus(p.get('status', PlayerStatus.ACTIVE.value))
+            except ValueError:
+                status = PlayerStatus.ACTIVE
+
+            player = PokerPlayer(
+                sid=p.get('sid', sid),
+                wallet_address=p.get('wallet_address', ''),
+                nickname=p.get('nickname', 'Player'),
+                chips=int(p.get('chips', 0)),
+                hole_cards=[int(c) for c in p.get('hole_cards', [])],
+                status=status,
+                current_bet=int(p.get('current_bet', 0)),
+                total_bet_this_round=int(p.get('total_bet_this_round', 0)),
+                total_bet_this_hand=int(p.get('total_bet_this_hand', 0)),
+                has_acted=bool(p.get('has_acted', False)),
+                last_action=p.get('last_action'),
+                consecutive_timeouts=int(p.get('consecutive_timeouts', 0)),
+            )
+
+            last_action_time = p.get('last_action_time')
+            if last_action_time:
+                try:
+                    player.last_action_time = datetime.fromisoformat(last_action_time)
+                except (TypeError, ValueError):
+                    player.last_action_time = None
+
+            engine.players[sid] = player
+
+        if not engine.player_order:
+            engine.player_order = list(engine.players.keys())
+
+        engine.pots = []
+        for pot_data in data.get('pots', []):
+            engine.pots.append(
+                Pot(
+                    amount=int(pot_data.get('amount', 0)),
+                    eligible_players=list(pot_data.get('eligible_players', []))
+                )
+            )
+        if not engine.pots:
+            engine.pots = [Pot()]
+
+        engine.chat_history = []
+        for msg in data.get('chat_history', []):
+            engine.chat_history.append(
+                ChatMessage(
+                    player_sid=msg.get('player_sid', ''),
+                    player_nickname=msg.get('player_nickname', 'Player'),
+                    message=msg.get('message', ''),
+                    timestamp=msg.get('timestamp', datetime.utcnow().isoformat()),
+                    action=msg.get('action')
+                )
+            )
+
+        return engine
 
 
 # ============================================================================

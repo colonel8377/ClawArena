@@ -5,11 +5,14 @@ This module implements TexasGame which extends BaseGame and uses
 the poker_engine.PokerEngine for core game logic.
 """
 
+from datetime import datetime
 from typing import Dict, List, Optional, Any
-from decimal import Decimal
-from ..base import BaseGame, GamePhase
-from .texas_engine import TexasEngine, PokerPhase
-from backend.config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
+
+from .texas_engine import TexasEngine
+from ..base import BaseGame, GamePhase, check_chat_phase
+from ...config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
+from ...database.persistence_manager import persistence_manager
+from ...database.redis_manager import redis_manager
 
 
 class TexasGame(BaseGame):
@@ -73,49 +76,70 @@ class TexasGame(BaseGame):
             buy_in_chips = TEXAS_DEFAULT_BUY_IN_CHIPS
             buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
         
-        # Add to BaseGame player list
+        # Add to poker engine
+        success = self.engine.add_player(
+            sid=sid,
+            wallet_address=wallet_address,
+            nickname=nickname,
+            buy_in=int(buy_in_chips)
+        )
+        if not success:
+            return False
+
+        # Keep wrapper state in sync only after engine accepts the player.
         player = {
             'sid': sid,
             'wallet_address': wallet_address,
             'nickname': nickname,
             'buy_in_chips': int(buy_in_chips),
-            'buy_in_tokens': float(buy_in_tokens),
-            'buy_in': int(buy_in_chips)  # 向后兼容，保留旧字段
+            'buy_in_tokens': float(buy_in_tokens)
         }
         self.players.append(player)
-        
-        # Register with game channel
+
         self.channel.add_participant(
             player_id=sid,
             wallet_address=wallet_address,
             nickname=nickname
         )
         
-        # Add to poker engine
-        success = self.engine.add_player(
-            sid=sid,
-            wallet_address=wallet_address,
-            nickname=nickname,
-            buy_in=buy_in
-        )
-        
-        return success
+        return True
     
     def remove_player(self, sid: str) -> bool:
         """Remove a player from the game."""
-        self.players = [p for p in self.players if p['sid'] != sid]
-        return self.engine.remove_player(sid)
+        removed = self.engine.remove_player(sid)
+        if not removed:
+            return False
+
+        # Engine keeps players during active hands (marks as folded), so only
+        # remove from wrapper state if engine fully removed the seat.
+        if sid not in self.engine.players:
+            self.players = [p for p in self.players if p['sid'] != sid]
+            self.channel.remove_participant(sid)
+
+        return True
     
     def can_start(self) -> bool:
         """Check if game can start."""
         return len(self.players) >= self.MIN_PLAYERS and self.engine.can_start()
     
     def start_game(self) -> bool:
-        """Start the game."""
+        """Start the game or deal the next hand when a hand already finished."""
         if not self.can_start():
             return False
-        
-        if self.phase != GamePhase.WAITING:
+
+        # Table-level lifecycle: GamePhase.IN_PROGRESS means the table is alive,
+        # not that a hand is currently actionable. Allow explicit next-hand starts
+        # after a hand reaches SHOWDOWN/FINISHED/WAITING.
+        if self.phase == GamePhase.WAITING:
+            pass
+        elif self.phase == GamePhase.IN_PROGRESS:
+            if self.engine.phase not in {
+                self.engine.phase.SHOWDOWN,
+                self.engine.phase.FINISHED,
+                self.engine.phase.WAITING,
+            }:
+                return False
+        else:
             return False
         
         # Start first hand
@@ -154,23 +178,37 @@ class TexasGame(BaseGame):
         - all_in: Go all-in
         - chat: Send a chat message (message in kwargs)
         """
-        # Update last action time for zombie tracking
-        self.update_player_action_time(sid)
-        
-        # Reset consecutive timeouts on successful action
-        self._reset_timeout_tracking(sid)
-        
         if action == 'chat':
+            # Reuse shared phase gate to keep wrapper and engine chat rules consistent.
+            gate = check_chat_phase(self.engine.phase, self.engine.CHAT_ALLOWED_PHASES)
+            if gate:
+                return gate
+
             # Handle chat through BaseGame
             message = kwargs.get('message', '')
-            return {'success': True, 'chat': self.add_chat_message(sid, message)}
+            result = {'success': True, 'chat': self.add_chat_message(sid, message)}
+            self.update_player_action_time(sid)
+            self._reset_timeout_tracking(sid)
+            return result
         
-        # Delegate to poker engine
+        # Delegate to poker engine, including optional action-attached chat.
+        chat_message = kwargs.get('message')
         if action == 'raise':
             amount = kwargs.get('amount', self.big_blind)
-            return self.engine.process_move(sid, action, amount=amount)
+            result = self.engine.process_move(
+                sid,
+                action,
+                amount=amount,
+                chat_message=chat_message
+            )
         else:
-            return self.engine.process_move(sid, action)
+            result = self.engine.process_move(sid, action, chat_message=chat_message)
+
+        if result.get('success'):
+            self.update_player_action_time(sid)
+            self._reset_timeout_tracking(sid)
+
+        return result
     
     def get_game_state(
         self,
@@ -200,12 +238,9 @@ class TexasGame(BaseGame):
     
     def is_game_over(self) -> bool:
         """Check if the game is over."""
-        # Poker games continue until explicitly ended or all but one player leaves
-        if len(self.players) < 2:
-            return True
-        
-        # Check if hand is finished
-        return self.engine.is_hand_over()
+        # A finished hand is not a finished table. The table only ends when it
+        # can no longer start a hand (fewer than 2 chip-positive players).
+        return not self.engine.can_start()
     
     def get_winners(self) -> List[str]:
         """
@@ -216,9 +251,7 @@ class TexasGame(BaseGame):
         if not self.engine.is_hand_over():
             return []
         
-        # Get winners from showdown results
-        showdown = self.engine.showdown()
-        winners = showdown.get('winners', [])
+        winners = self.engine.last_hand_winners
         
         # Convert sids to wallet addresses
         winner_wallets = []
@@ -265,70 +298,124 @@ class TexasGame(BaseGame):
         Args:
             event_type: Type of checkpoint event
         """
-        # Save to Redis for hot state
-        await self.save_state_to_redis()
-        
-        # TODO: Implement MySQL persistence via database module
-        # This would save to GameSession.state_snapshot
-        pass
+        # Always write hot state first so reconnect/recovery remains instant.
+        state = self.get_core_state()
+        await self.save_state_to_redis(state)
+
+        # Cold storage is throttled in PersistenceManager for non-critical events.
+        force_mysql = event_type in {
+            'hand_start',
+            'phase_change',
+            'hand_end',
+            'showdown',
+            'shutdown',
+        }
+        await persistence_manager.save_poker_checkpoint(
+            game_id=self.game_id,
+            game_state=state,
+            event_type=event_type,
+            force_mysql=force_mysql,
+        )
+
+    async def save_state_to_redis(self, state: Optional[Dict] = None):
+        """Persist poker core state through the unified RedisManager namespace."""
+        payload = state if state is not None else self.get_core_state()
+        await redis_manager.save_game_core(self.game_id, payload, game_type=self.game_type)
+
+    def get_core_state(self) -> Dict[str, Any]:
+        """Return restart-safe table state for hot storage snapshots."""
+        return self.to_dict()
+
+    def get_game_snapshot(self, sid: Optional[str] = None) -> Dict[str, Any]:
+        """Build reconnect snapshot payload for poker clients."""
+        state = self.get_game_state(sid)
+        return {
+            'game_id': self.game_id,
+            'game_type': self.game_type,
+            **state,
+            'turn_time_remaining': self.engine.get_turn_time_remaining(),
+            'timestamp': datetime.utcnow().isoformat(),
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize full table + engine state for recovery."""
+        return {
+            'game_id': self.game_id,
+            'game_type': self.game_type,
+            'phase': self.phase.value,
+            'small_blind': self.small_blind,
+            'big_blind': self.big_blind,
+            'players': list(self.players),
+            'last_action_time': {
+                sid: ts.isoformat() for sid, ts in self.last_action_time.items()
+            },
+            'engine': self.engine.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TexasGame':
+        """Restore table and engine state from Redis snapshot."""
+        game = cls(
+            game_id=data.get('game_id', 'restored_table'),
+            small_blind=int(data.get('small_blind', 25)),
+            big_blind=int(data.get('big_blind', 50)),
+        )
+
+        phase_value = data.get('phase', GamePhase.WAITING.value)
+        try:
+            game.phase = GamePhase(phase_value)
+        except ValueError:
+            game.phase = GamePhase.WAITING
+
+        engine_data = data.get('engine')
+        if isinstance(engine_data, dict):
+            game.engine = TexasEngine.from_dict(engine_data)
+
+        wrapper_players = data.get('players', [])
+        game.players = []
+        if isinstance(wrapper_players, list) and wrapper_players:
+            for player in wrapper_players:
+                if not isinstance(player, dict):
+                    continue
+                game.players.append({
+                    'sid': player.get('sid'),
+                    'wallet_address': player.get('wallet_address', ''),
+                    'nickname': player.get('nickname', 'Player'),
+                    'buy_in_chips': int(player.get('buy_in_chips', 0) or 0),
+                    'buy_in_tokens': float(player.get('buy_in_tokens', 0) or 0),
+                })
+        else:
+            for sid in game.engine.player_order:
+                player = game.engine.players.get(sid)
+                if not player:
+                    continue
+                game.players.append({
+                    'sid': sid,
+                    'wallet_address': player.wallet_address,
+                    'nickname': player.nickname,
+                    'buy_in_chips': int(player.chips),
+                    'buy_in_tokens': float(player.chips * TEXAS_CHIP_TO_TOKEN_RATIO),
+                })
+
+        for player in game.players:
+            sid = player.get('sid')
+            if sid:
+                game.channel.add_participant(
+                    player_id=sid,
+                    wallet_address=player.get('wallet_address', ''),
+                    nickname=player.get('nickname', 'Player'),
+                )
+
+        game.last_action_time = {}
+        for sid, ts in (data.get('last_action_time') or {}).items():
+            try:
+                game.last_action_time[sid] = datetime.fromisoformat(ts)
+            except (TypeError, ValueError):
+                continue
+
+        # Keep table lifecycle aligned with restored hand lifecycle.
+        if game.engine.phase.value in {'pre_flop', 'flop', 'turn', 'river', 'showdown'}:
+            game.phase = GamePhase.IN_PROGRESS
+
+        return game
     
-    # ========================================================================
-    # BACKWARD COMPATIBILITY METHODS (PokerEngine interface)
-    # ========================================================================
-    
-    def start_hand(self) -> Dict:
-        """
-        Start a new hand (backward compatible with PokerEngine).
-        
-        Returns:
-            Dict with success status
-        """
-        return self.engine.start_hand()
-    
-    def process_move(self, sid: str, action: str, amount: int = 0, 
-                    chat_message: Optional[str] = None) -> Dict:
-        """
-        Process a player move (backward compatible with PokerEngine).
-        
-        Args:
-            sid: Socket.IO session ID
-            action: Action type (fold, check, call, raise)
-            amount: Bet amount for raise
-            chat_message: Optional chat/bluff message
-            
-        Returns:
-            Dict with action result
-        """
-        # Update last action time for zombie tracking
-        self.update_player_action_time(sid)
-        
-        # Reset consecutive timeouts on successful action
-        self._reset_timeout_tracking(sid)
-        
-        # Delegate to engine
-        return self.engine.process_move(sid, action, amount, chat_message)
-    
-    def is_hand_over(self) -> bool:
-        """Check if current hand is over (backward compatible)."""
-        return self.engine.is_hand_over()
-    
-    def showdown(self) -> Dict:
-        """Get showdown results (backward compatible)."""
-        return self.engine.showdown()
-    
-    def advance_phase(self) -> Dict:
-        """Advance to next phase (backward compatible with PokerEngine)."""
-        return self.engine.advance_phase()
-    
-    def get_all_hole_cards(self) -> Dict:
-        """Get all players' hole cards for showdown (backward compatible)."""
-        return self.engine.get_all_hole_cards()
-    
-    def cards_to_strings(self, cards) -> list:
-        """Convert card integers to strings (backward compatible)."""
-        return self.engine.cards_to_strings(cards)
-    
-    @property
-    def community_cards(self):
-        """Get community cards (backward compatible)."""
-        return self.engine.community_cards

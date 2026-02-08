@@ -1,5 +1,5 @@
 """
-Blockchain Event Worker for AgentGameArena Deposit Listener.
+Blockchain Event Worker for ClawArena Deposit Listener.
 
 This worker monitors the ArenaVault smart contract for deposit events and
 automatically credits user accounts in the UserLedger.
@@ -23,10 +23,10 @@ from web3.contract import Contract
 
 from sqlalchemy import text
 
-from backend.config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
-from backend.database.connection import get_db_session
-from backend.database.models import UserLedger
-from backend.database.redis_manager import redis_manager
+from ..config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
+from ..database.connection import get_db_session
+from ..database.models import UserLedger
+from ..database.redis_manager import redis_manager
 
 logger = logging.getLogger(__name__)
 
@@ -329,35 +329,51 @@ class DepositEventWorker:
     
     async def _credit_user_balance(
         self,
-        wallet_address: str,
+        external_address: str,
         amount: Decimal,
         tx_hash: str,
         block_number: int
     ):
         """
         Credit user balance in database using atomic operation.
+
+        IMPORTANT:
+        - We only credit users that already completed backend registration.
+        - Deposits never auto-create accounts.
+        - On-chain addresses are matched against UserLedger.address.
         
         Args:
-            wallet_address: User's wallet address
+            external_address: On-chain address emitted by contract event
             amount: Amount to credit
             tx_hash: Transaction hash (for deduplication)
             block_number: Block number
         """
         with get_db_session() as db:
-            # Check if user exists, create if not
-            user = db.query(UserLedger).filter_by(wallet_address=wallet_address).first()
-            
-            if not user:
-                logger.info(f"Creating new user for deposit: {wallet_address}")
-                user = UserLedger(
-                    wallet_address=wallet_address,
-                    offchain_balance=Decimal("0"),
-                    locked_balance=Decimal("0"),
-                    nonce=0
+            normalized_address = (external_address or "").strip()
+            if not normalized_address:
+                logger.warning(
+                    f"Skipping deposit credit: empty external address, tx={tx_hash}, block={block_number}"
                 )
-                db.add(user)
-                db.commit()
-                db.refresh(user)
+                return
+
+            # Credit only pre-registered users that explicitly bound this address.
+            user = (
+                db.query(UserLedger)
+                .filter(
+                    UserLedger.address.isnot(None),
+                    UserLedger.address == normalized_address,
+                )
+                .first()
+            )
+
+            if not user:
+                logger.warning(
+                    f"Skipping deposit credit for unregistered address: {normalized_address}, "
+                    f"tx={tx_hash}, block={block_number}"
+                )
+                return
+
+            player_id = user.wallet_address
             
             # Atomic balance credit - use str() to maintain precision
             db.execute(
@@ -365,13 +381,13 @@ class DepositEventWorker:
                     "UPDATE user_ledger SET offchain_balance = offchain_balance + :amount "
                     "WHERE wallet_address = :wallet"
                 ),
-                {"amount": str(amount), "wallet": wallet_address}
+                {"amount": str(amount), "wallet": player_id}
             )
             db.commit()
             db.refresh(user)
             
             logger.info(
-                f"Credited {amount} to {wallet_address}. "
+                f"Credited {amount} to player_id={player_id} (address={normalized_address}). "
                 f"New balance: {user.offchain_balance}, tx: {tx_hash}"
             )
     

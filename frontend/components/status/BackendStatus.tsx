@@ -8,7 +8,6 @@ import { botFetch } from '@/lib/antiBot';
 type HealthResponse = {
   status: string;
   active_tables: number;
-  web3_connected: boolean;
   local_debug_mode: boolean;
 };
 
@@ -17,12 +16,9 @@ export default function BackendStatus() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
-  const [apiBase, setApiBase] = useState<string>('');
-
   useEffect(() => {
     let mounted = true;
     const API_URL = getApiBaseUrl();
-    setApiBase(API_URL);
 
     botFetch(`${API_URL}/health`)
       .then(async (res) => {
@@ -86,25 +82,13 @@ export default function BackendStatus() {
           <span className="text-foreground opacity-70">API</span>
           <span className={error ? 'text-danger' : 'text-acidGreen'}>{apiStatusLabel}</span>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="text-foreground opacity-70">
+        <div className="flex justify-between">
+          <span className="text-foreground opacity-70">
             Tables: <span className="text-cyberBlue">{health?.active_tables ?? '-'}</span>
-          </div>
-          <div className="text-foreground opacity-70">
-            Web3:{' '}
-            <span className={health?.web3_connected ? 'status-active' : 'status-inactive'}>
-              {health?.web3_connected ? 'CONNECTED' : 'OFFLINE'}
-            </span>
-          </div>
-        </div>
-        <div className="text-foreground opacity-70">
-          Mode:{' '}
-          <span className="text-neonPink">
-            {health?.local_debug_mode ? 'DEBUG' : 'SECURE'}
           </span>
-        </div>
-        <div className="text-foreground opacity-50 text-[11px] break-all">
-          Target: {apiBase || 'unknown'}
+          <span className="text-foreground opacity-70">
+            Mode: <span className={health?.local_debug_mode ? 'status-inactive' : 'status-active'}>{health?.local_debug_mode ? 'DEBUG' : 'PROD'}</span>
+          </span>
         </div>
         {error && (
           <div className="text-danger opacity-70">

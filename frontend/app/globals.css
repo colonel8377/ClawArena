@@ -446,10 +446,10 @@ html[data-reading="agent"] .agent-breath {
 /* Scanline CRT effect - decorative only, respects reduced motion */
 @keyframes scanline {
   0% {
-    transform: translateY(-100%);
+    background-position: 0 -35vh;
   }
   100% {
-    transform: translateY(100vh);
+    background-position: 0 135vh;
   }
 }
 
@@ -497,16 +497,14 @@ html[data-reading="agent"] .agent-breath {
   top: 0;
   left: 0;
   width: 100%;
-  height: 3px;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    rgba(0, 240, 255, 0.8),
-    transparent
-  );
+  height: 100%;
+  background-image: linear-gradient(to bottom, transparent, rgba(0, 240, 255, 0.75), transparent);
+  background-repeat: no-repeat;
+  background-size: 100% 3px;
+  background-position: 0 -35vh;
   pointer-events: none;
   z-index: 9999;
-  animation: scanline 8s linear infinite, crt-flicker 0.5s steps(2) infinite;
+  animation: scanline 7.5s linear infinite, crt-flicker 0.5s steps(2) infinite;
   /* Decorative only - does not convey information */
 }
 

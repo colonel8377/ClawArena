@@ -20,7 +20,9 @@ USE agent_arena;
 DROP TABLE IF EXISTS user_ledger;
 CREATE TABLE user_ledger (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    wallet_address VARCHAR(42) NOT NULL COMMENT 'Ethereum wallet address (0x...)',
+    wallet_address VARCHAR(42) NOT NULL COMMENT 'System-generated player_id',
+    player_name VARCHAR(50) NOT NULL DEFAULT 'Player' COMMENT 'User-defined display name',
+    address VARCHAR(128) NULL COMMENT 'Optional external wallet/address identifier',
     offchain_balance DECIMAL(36, 18) NOT NULL DEFAULT 0 COMMENT 'Off-chain token balance',
     locked_balance DECIMAL(36, 18) NOT NULL DEFAULT 0 COMMENT 'Locked balance (in-game funds)',
     nonce INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Nonce for withdrawal signatures',
@@ -30,7 +32,9 @@ CREATE TABLE user_ledger (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
     UNIQUE KEY uk_wallet_address (wallet_address),
-    INDEX idx_created_at (created_at)
+    INDEX idx_address (address),
+    INDEX idx_created_at (created_at),
+    INDEX idx_user_ledger_balance_wallet (offchain_balance DESC, wallet_address)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='User ledger with off-chain balances';
 
@@ -166,6 +170,7 @@ CREATE TABLE transaction_log (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Transaction timestamp',
     
     INDEX idx_user (user_id),
+    INDEX idx_transaction_log_user_created_at (user_id, created_at),
     INDEX idx_wallet (wallet_address),
     INDEX idx_tx_type (tx_type),
     INDEX idx_game_session (game_session_id),

@@ -1,5 +1,5 @@
 """
-Unified Redis Manager for AgentGameArena.
+Unified Redis Manager for ClawArena.
 
 This module centralizes all Redis operations:
 - Connection pooling and management
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', '')
 
 # Key prefixes for namespacing
 REDIS_SESSION_PREFIX = 'arena:session:'
@@ -47,6 +48,7 @@ REDIS_LOCK_PREFIX = 'arena:lock:'
 REDIS_PERSISTENCE_PREFIX = 'arena:persist:'  # Legacy, for full state
 REDIS_GAME_CORE_PREFIX = 'arena:core:'       # Core game state (frequent updates)
 REDIS_INDEXER_PREFIX = 'arena:indexer:'      # Indexer state and dedup
+REDIS_BALANCE_PREFIX = 'arena:balance:'      # User balance cache
 
 # Timeouts and TTLs (seconds)
 SESSION_EXPIRY = 3600           # 1 hour
@@ -57,6 +59,9 @@ GAME_CORE_EXPIRY = 7200         # 2 hours (active game core state)
 NONCE_EXPIRY = 86400            # 24 hours
 EVENT_PROCESSING_LOCK_EXPIRY = 300  # 5 minutes
 PROCESSED_EVENT_EXPIRY = 86400 * 30  # 30 days
+LEADERBOARD_CACHE_EXPIRY = 60      # 1 minute
+REDIS_LEADERBOARD_KEY = 'arena:leaderboard:top10'
+BALANCE_CACHE_EXPIRY = int(os.getenv('BALANCE_CACHE_EXPIRY', '300'))  # 5 minutes
 
 
 # ============================================================================
@@ -75,7 +80,7 @@ class RedisManager:
     - Session management
     """
     
-    def __init__(self, redis_url: str = REDIS_URL):
+    def __init__(self, redis_url: str = REDIS_URL, redis_password: str = REDIS_PASSWORD):
         """
         Initialize Redis Manager.
         
@@ -83,6 +88,7 @@ class RedisManager:
             redis_url: Redis connection URL
         """
         self.redis_url = redis_url
+        self.redis_password = redis_password
         self._redis: Optional[redis.Redis] = None
         self._connection_lock = asyncio.Lock()
         self._connected = False
@@ -115,6 +121,7 @@ class RedisManager:
             try:
                 self._redis = redis.from_url(
                     self.redis_url,
+                    password=self.redis_password,
                     encoding="utf-8",
                     decode_responses=True,
                     max_connections=20
@@ -230,7 +237,7 @@ class RedisManager:
         Uses Redis INCR for atomic increment operation.
         
         Args:
-            wallet_address: Ethereum wallet address
+            wallet_address: Canonical player identifier
             
         Returns:
             Current nonce value (before increment)
@@ -242,7 +249,7 @@ class RedisManager:
         if not await self.ping():
             raise RuntimeError("Redis unavailable - cannot generate synchronized nonce")
         
-        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address.lower()}"
+        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address}"
         
         # INCR is atomic - no race condition possible
         new_nonce = await self._redis.incr(nonce_key)
@@ -262,7 +269,7 @@ class RedisManager:
         signature generation with stale nonces.
         
         Args:
-            wallet_address: Ethereum wallet address
+            wallet_address: Canonical player identifier
             blockchain_nonce: Current nonce from blockchain
             
         Returns:
@@ -271,7 +278,7 @@ class RedisManager:
         if not await self.ping():
             return False
         
-        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address.lower()}"
+        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address}"
         redis_nonce = await self.get_nonce(wallet_address)
         
         # Only update if blockchain is ahead (user may have withdrawn on-chain)
@@ -289,7 +296,7 @@ class RedisManager:
         Get current nonce without incrementing.
         
         Args:
-            wallet_address: Ethereum wallet address
+            wallet_address: Canonical player identifier
             
         Returns:
             Current nonce value (0 if not set)
@@ -297,7 +304,7 @@ class RedisManager:
         if not await self.ping():
             return 0
         
-        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address.lower()}"
+        nonce_key = f"{REDIS_NONCE_PREFIX}{wallet_address}"
         nonce = await self._redis.get(nonce_key)
         return int(nonce) if nonce else 0
     
@@ -827,6 +834,175 @@ class RedisManager:
             "confidence": 0.0,
             "note": "Anti-collusion analysis not yet implemented"
         }
+
+    # ========================================================================
+    # BALANCE CACHING
+    # ========================================================================
+
+    async def set_cached_balance(self, wallet_address: str, balance: str, locked_balance: str) -> None:
+        """
+        Cache balance and locked balance in Redis as JSON.
+
+        Args:
+            wallet_address: Canonical player identifier
+            balance: Current balance as string
+            locked_balance: Current locked balance as string
+        """
+        if not await self.ping():
+            return
+
+        try:
+            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
+            value = json.dumps({"balance": balance, "locked_balance": locked_balance})
+            await self._redis.setex(key, BALANCE_CACHE_EXPIRY, value)
+        except Exception as e:
+            logger.error(f"Error setting cached balance for {wallet_address}: {e}")
+
+    async def get_cached_balance(self, wallet_address: str) -> Optional[str]:
+        """
+        Get cached balance from Redis.
+
+        Args:
+            wallet_address: Canonical player identifier
+
+        Returns:
+            Cached balance as string or None
+        """
+        if not await self.ping():
+            return None
+
+        try:
+            data = await self.get_cached_balance_data(wallet_address)
+            if data:
+                return data.get("balance")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting cached balance for {wallet_address}: {e}")
+            return None
+
+    async def get_cached_balance_data(self, wallet_address: str) -> Optional[Dict[str, str]]:
+        """
+        Get cached balance data from Redis.
+
+        Args:
+            wallet_address: Canonical player identifier
+
+        Returns:
+            Dict with balance and locked_balance as strings or None
+        """
+        if not await self.ping():
+            return None
+
+        try:
+            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
+            value = await self._redis.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            logger.error(f"Error getting cached balance data for {wallet_address}: {e}")
+            return None
+
+    async def get_cached_balances_data(self, wallet_addresses: List[str]) -> Dict[str, Dict[str, str]]:
+        """
+        Bulk get cached balance data for multiple users.
+
+        Args:
+            wallet_addresses: Canonical player identifiers
+
+        Returns:
+            Mapping of wallet_address -> {balance, locked_balance}
+        """
+        if not wallet_addresses:
+            return {}
+        if not await self.ping():
+            return {}
+
+        try:
+            keys = [f"{REDIS_BALANCE_PREFIX}{wallet}" for wallet in wallet_addresses]
+            values = await self._redis.mget(keys)
+            result: Dict[str, Dict[str, str]] = {}
+
+            for wallet, raw in zip(wallet_addresses, values):
+                if not raw:
+                    continue
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    result[wallet] = parsed
+
+            return result
+        except Exception as e:
+            logger.error(f"Error bulk getting cached balances: {e}")
+            return {}
+
+    async def invalidate_balance_cache(self, wallet_address: str) -> None:
+        """
+        Invalidate balance cache for a user.
+
+        Args:
+            wallet_address: Canonical player identifier
+        """
+        if not await self.ping():
+            return
+
+        try:
+            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
+            await self._redis.delete(key)
+        except Exception as e:
+            logger.error(f"Error invalidating cache for {wallet_address}: {e}")
+
+    # ========================================================================
+    # LEADERBOARD CACHING
+    # ========================================================================
+
+    async def set_cached_leaderboard(self, entries: List[Dict[str, str]]) -> None:
+        """
+        Cache leaderboard entries in Redis.
+
+        Args:
+            entries: List of leaderboard rows with stringified balances
+        """
+        if not await self.ping():
+            return
+
+        try:
+            await self._redis.setex(
+                REDIS_LEADERBOARD_KEY,
+                LEADERBOARD_CACHE_EXPIRY,
+                json.dumps(entries),
+            )
+        except Exception as e:
+            logger.error(f"Error setting cached leaderboard: {e}")
+
+    async def get_cached_leaderboard(self) -> Optional[List[Dict[str, str]]]:
+        """
+        Get cached leaderboard entries from Redis.
+
+        Returns:
+            List of leaderboard rows if cache hit, else None
+        """
+        if not await self.ping():
+            return None
+
+        try:
+            cached = await self._redis.get(REDIS_LEADERBOARD_KEY)
+            if not cached:
+                return None
+            data = json.loads(cached)
+            return data if isinstance(data, list) else None
+        except Exception as e:
+            logger.error(f"Error getting cached leaderboard: {e}")
+            return None
+
+    async def invalidate_leaderboard_cache(self) -> None:
+        """Invalidate cached leaderboard payload."""
+        if not await self.ping():
+            return
+
+        try:
+            await self._redis.delete(REDIS_LEADERBOARD_KEY)
+        except Exception as e:
+            logger.error(f"Error invalidating cached leaderboard: {e}")
 
 
 # ============================================================================

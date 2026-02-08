@@ -400,6 +400,9 @@ class WerewolfGame(BaseGame):
     def _init_day_announcement(self):
         """Initialize death announcement phase."""
         self.last_night_deaths = self.pending_deaths.copy()
+        # Apply deaths immediately when entering announcement so alive/dead state
+        # is already correct during speaking/voting setup.
+        self._apply_deaths(self.last_night_deaths)
         self.pending_deaths.clear()
         # No actions needed - just display deaths
     
@@ -433,13 +436,27 @@ class WerewolfGame(BaseGame):
         
         self.current_speaker_index = 0
         self.speakers_done.clear()
-        
-        # First speaker needs to speak
-        if self.speaking_order:
-            first_speaker = self.speaking_order[0]
-            player = self._get_player_by_sid(first_speaker)
-            if player and player.get('status') != 'zombie':
-                self._pending_actions[first_speaker] = False
+
+        # Prepare first actionable speaker (skip zombie/dead placeholders).
+        self._advance_speaking_turn()
+
+    def _advance_speaking_turn(self) -> bool:
+        """Advance to the next non-zombie alive speaker and set pending action."""
+        self._pending_actions.clear()
+
+        while self.current_speaker_index < len(self.speaking_order):
+            speaker_sid = self.speaking_order[self.current_speaker_index]
+            player = self._get_player_by_sid(speaker_sid)
+
+            if player and player['is_alive'] and player.get('status') != 'zombie':
+                self._pending_actions[speaker_sid] = False
+                return True
+
+            # Auto-skip speakers who can no longer speak (dead/zombie/disconnected).
+            self.speakers_done.add(speaker_sid)
+            self.current_speaker_index += 1
+
+        return False
     
     def _init_day_voting(self):
         """Initialize voting phase."""
@@ -450,8 +467,19 @@ class WerewolfGame(BaseGame):
     
     def get_current_timeout(self) -> int:
         """Get timeout for current phase."""
-        phase_name = self.phase.value.replace('night_', '').replace('day_', '')
-        return PHASE_TIMEOUTS.get(phase_name, DEFAULT_TIMEOUT)
+        timeout_map = {
+            WerewolfPhase.NIGHT_WOLF_DISCUSSION: 'wolf_discussion',
+            WerewolfPhase.NIGHT_WOLF_VOTING: 'wolf_voting',
+            WerewolfPhase.NIGHT_SEER: 'seer_action',
+            WerewolfPhase.NIGHT_WITCH: 'witch_action',
+            WerewolfPhase.NIGHT_HUNTER: 'hunter_action',
+            WerewolfPhase.DAY_ANNOUNCEMENT: 'death_announcement',
+            WerewolfPhase.DAY_SPEAKING: 'speaking',
+            WerewolfPhase.DAY_VOTING: 'voting',
+            WerewolfPhase.DAY_HUNTER: 'hunter_action',
+        }
+        phase_key = timeout_map.get(self.phase)
+        return PHASE_TIMEOUTS.get(phase_key, DEFAULT_TIMEOUT)
     
     def get_time_remaining(self) -> float:
         """Get time remaining in current phase."""
@@ -486,8 +514,8 @@ class WerewolfGame(BaseGame):
             self._resolve_hunter_shot()
             self._hunter_death_pending = False
         elif self.phase == WerewolfPhase.DAY_ANNOUNCEMENT:
-            # Apply pending deaths
-            self._apply_pending_deaths()
+            # Deaths are already applied on entering announcement
+            pass
         elif self.phase == WerewolfPhase.DAY_SPEAKING:
             # Speaking done, nothing to resolve
             pass
@@ -550,6 +578,17 @@ class WerewolfGame(BaseGame):
     # ========================================================================
     # ACTION PROCESSING
     # ========================================================================
+
+    def _mark_player_active(self, sid: str):
+        """Mark a player as active after a successful user action."""
+        player = self._get_player_by_sid(sid)
+        if not player or not player['is_alive']:
+            return
+
+        if player.get('status') == 'zombie':
+            player['status'] = 'alive'
+        player['consecutive_timeouts'] = 0
+        self.update_player_action_time(sid)
     
     def process_action(self, sid: str, action: str, **kwargs) -> Dict:
         """
@@ -568,26 +607,32 @@ class WerewolfGame(BaseGame):
         - chat: Public chat message
         """
         player = self._get_player_by_sid(sid)
+
+        # Zombie players are treated as fully inactive and cannot actively send
+        # any actions/chat; they only advance via timeout default behavior.
+        if player and player.get('status') == 'zombie':
+            return {
+                'success': False,
+                'error': 'Inactive (zombie) players cannot act',
+                'error_code': 'PLAYER_ZOMBIE'
+            }
         
         # Chat actions are phase-restricted (see _handle_public_chat)
         if action == 'chat':
-            return self._handle_public_chat(sid, kwargs.get('message', ''))
+            result = self._handle_public_chat(sid, kwargs.get('message', ''))
+            if result.get('success'):
+                self._mark_player_active(sid)
+            return result
         
         if action == 'wolf_chat':
-            return self._handle_wolf_chat(sid, kwargs.get('message', ''))
+            result = self._handle_wolf_chat(sid, kwargs.get('message', ''))
+            if result.get('success'):
+                self._mark_player_active(sid)
+            return result
         
         # Other actions require being alive
         if not player or not player['is_alive']:
             return {'success': False, 'error': 'Player not found or dead'}
-        
-        # Zombie recovery on valid action
-        if player.get('status') == 'zombie':
-            player['status'] = 'alive'
-            player['consecutive_timeouts'] = 0
-        
-        # Reset timeout counter
-        player['consecutive_timeouts'] = 0
-        self.update_player_action_time(sid)
         
         # Route to handler
         handlers = {
@@ -606,6 +651,9 @@ class WerewolfGame(BaseGame):
             return {'success': False, 'error': f'Unknown action: {action}'}
         
         result = handler(sid, **kwargs)
+
+        if result.get('success'):
+            self._mark_player_active(sid)
         
         # Mark action complete if successful
         if result.get('success') and sid in self._pending_actions:
@@ -682,6 +730,9 @@ class WerewolfGame(BaseGame):
         player = self._get_player_by_sid(sid)
         if not player:
             return {'success': False, 'error': 'Player not found'}
+
+        if not player['is_alive']:
+            return {'success': False, 'error': 'Dead players cannot chat'}
         
         if not isinstance(player.get('role'), Wolf):
             return {'success': False, 'error': 'Only wolves can use wolf chat'}
@@ -899,14 +950,9 @@ class WerewolfGame(BaseGame):
         
         # Move to next speaker
         self.current_speaker_index += 1
-        
-        # If more speakers, set up next pending action
-        if self.current_speaker_index < len(self.speaking_order):
-            next_speaker = self.speaking_order[self.current_speaker_index]
-            next_player = self._get_player_by_sid(next_speaker)
-            if next_player and next_player.get('status') != 'zombie':
-                self._pending_actions.clear()
-                self._pending_actions[next_speaker] = False
+
+        # Prepare next actionable speaker; auto-skip zombie/dead entries.
+        self._advance_speaking_turn()
         
         return {
             'success': True,
@@ -1060,13 +1106,17 @@ class WerewolfGame(BaseGame):
                 if eliminated['role'].can_shoot():
                     self._hunter_death_pending = True
     
-    def _apply_pending_deaths(self):
-        """Apply all pending deaths to players."""
-        for death in self.pending_deaths:
+    def _apply_deaths(self, deaths: List[DeathEvent]):
+        """Apply a list of death events to player states."""
+        for death in deaths:
             player = self._get_player_by_sid(death.sid)
             if player:
                 player['is_alive'] = False
                 player['status'] = 'dead'
+
+    def _apply_pending_deaths(self):
+        """Apply all pending deaths to players."""
+        self._apply_deaths(self.pending_deaths)
     
     # ========================================================================
     # WIN CONDITIONS
@@ -1094,6 +1144,8 @@ class WerewolfGame(BaseGame):
     
     def is_game_over(self) -> bool:
         """Public method to check if game is over."""
+        if self.phase in (WerewolfPhase.FINISHED, WerewolfPhase.ABORTED):
+            return True
         return self._check_game_over()
     
     def get_winners(self) -> List[str]:
@@ -1151,6 +1203,18 @@ class WerewolfGame(BaseGame):
         # Check abort condition
         if self.get_zombie_ratio() > ABORT_ZOMBIE_THRESHOLD:
             return await self.abort_game("More than 50% of players are inactive")
+
+        # Day speaking timeout is per speaker; continue same phase when another
+        # speaker is pending rather than jumping directly to voting.
+        if self.phase == WerewolfPhase.DAY_SPEAKING and self._pending_actions:
+            self._phase_start_time = datetime.utcnow()
+            return {
+                'success': True,
+                'old_phase': self.phase.value,
+                'new_phase': self.phase.value,
+                'day_count': self.day_count,
+                'timed_out_players': [p['nickname'] for p in timed_out_players]
+            }
         
         # Advance phase
         result = self.advance_phase()
@@ -1194,6 +1258,7 @@ class WerewolfGame(BaseGame):
             # Skip speech, move to next
             self.speakers_done.add(sid)
             self.current_speaker_index += 1
+            self._advance_speaking_turn()
         
         elif self.phase == WerewolfPhase.DAY_VOTING:
             # Random vote
@@ -1258,6 +1323,8 @@ class WerewolfGame(BaseGame):
         """
         requesting_player = self._get_player_by_sid(sid) if sid else None
         is_wolf = requesting_player and isinstance(requesting_player.get('role'), Wolf)
+        # In this codebase, spectator means a non-player context (typically
+        # HTTP /api/spectate requests where sid is not provided).
         is_spectator = sid is None
         allow_full_reveal = reveal_all and is_spectator
         
@@ -1270,8 +1337,9 @@ class WerewolfGame(BaseGame):
             'chat_messages': [c.to_dict() for c in self.public_chat[-50:]],
         }
         
-        # Add wolf chat for wolves
-        if is_wolf or is_spectator:
+        # Wolf chat is visible to wolves, and to spectator requests that
+        # explicitly ask for full reveal.
+        if is_wolf or allow_full_reveal:
             state['wolf_chat'] = [c.to_dict() for c in self.wolf_chat[-50:]]
         
         # Add player info

@@ -2731,14 +2731,14 @@ if __name__ == "__main__":
         print("  ✓ Graceful shutdown handling")
     
     print("=" * 70)
-    print("\nStarting server on http://0.0.0.0:8000")
-    print("API docs available at: http://0.0.0.0:8000/docs")
+    print("\nStarting server on http://0.0.0.0:8080")
+    print("API docs available at: http://0.0.0.0:8080/docs")
     print("=" * 70)
     
     uvicorn.run(
         "main:asgi_app",
         host="0.0.0.0",
-        port=8000,
+        port=8080,
         reload=True,
         log_level="info"
     )

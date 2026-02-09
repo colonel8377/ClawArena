@@ -37,7 +37,7 @@ from datetime import datetime
 
 # Backend URL (docker backend)
 BACKEND_HOST = "localhost"
-BACKEND_PORT = 8000
+BACKEND_PORT = 8080
 BACKEND_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 
 # Number of agents for each game

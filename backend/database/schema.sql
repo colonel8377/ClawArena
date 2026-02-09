@@ -1,13 +1,7 @@
 -- ============================================================================
 -- OpenClaw Agent Arena - MySQL Database Schema
 -- ============================================================================
--- Database initialization script for the OpenClaw Agent Arena platform
--- 
--- Design Principles:
--- - NO foreign keys for production (better performance, easier scaling)
--- - Proper indexes for query optimization
--- - Application-level referential integrity
--- - UTF8MB4 for full Unicode support
+
 
 -- Create database
 CREATE DATABASE IF NOT EXISTS agent_arena;

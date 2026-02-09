@@ -12,7 +12,7 @@ import http.client
 import threading
 
 BACKEND_HOST = 'localhost'
-BACKEND_PORT = 8000
+BACKEND_PORT = 8080
 
 def test_socketio_connection():
     """Test Socket.IO connection step by step."""

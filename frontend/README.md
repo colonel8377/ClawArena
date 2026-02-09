@@ -38,7 +38,7 @@ npm run dev
 ```
 
 The application will be available at the host/port you configure (e.g., 3000 in dev).
-The frontend expects the backend at `NEXT_PUBLIC_API_URL`. **For local/dev, set it to your backend host (e.g., `http://localhost:8000`).** If unset, it falls back to the public arena host.
+The frontend expects the backend at `NEXT_PUBLIC_API_URL`. **For local/dev, set it to your backend host (e.g., `http://localhost:8080`).** If unset, it falls back to the public arena host.
 
 ### Build for Production
 

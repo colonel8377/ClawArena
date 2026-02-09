@@ -1350,7 +1350,10 @@ async def handle_reconnection(sid: str, player_id: str):
         player_id: Player identifier
     """
     # Inactive werewolf phases (no need to reconnect)
-    INACTIVE_PHASES = {WerewolfPhase.WAITING, WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}
+    # NOTE: WAITING must remain reconnectable because entry fees are already
+    # locked on join_werewolf_game(), and players should be able to restore
+    # their lobby seat after reconnect just like poker seats.
+    INACTIVE_PHASES = {WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}
     
     # Check werewolf games for this player id
     for game_id, game in werewolf_games.items():

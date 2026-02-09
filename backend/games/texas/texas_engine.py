@@ -22,6 +22,14 @@ from typing import Dict, List, Optional, Any, Callable, Awaitable
 from treys import Card, Evaluator, Deck
 
 from ..base import check_chat_phase
+from .game_config import (
+    TEXAS_DEFAULT_BIG_BLIND,
+    TEXAS_DEFAULT_SMALL_BLIND,
+    TEXAS_MAX_PLAYERS,
+    TEXAS_MIN_PLAYERS,
+    TEXAS_TURN_TIMEOUT_SECONDS,
+)
+from .roles import PlayerAction, PlayerStatus
 
 
 # ============================================================================
@@ -29,11 +37,11 @@ from ..base import check_chat_phase
 # ============================================================================
 
 # Timeout configuration
-TURN_TIMEOUT_SECONDS = 20
-DEFAULT_SMALL_BLIND = 25
-DEFAULT_BIG_BLIND = 50
-MIN_PLAYERS = 2
-MAX_PLAYERS = 9
+TURN_TIMEOUT_SECONDS = TEXAS_TURN_TIMEOUT_SECONDS
+DEFAULT_SMALL_BLIND = TEXAS_DEFAULT_SMALL_BLIND
+DEFAULT_BIG_BLIND = TEXAS_DEFAULT_BIG_BLIND
+MIN_PLAYERS = TEXAS_MIN_PLAYERS
+MAX_PLAYERS = TEXAS_MAX_PLAYERS
 
 
 # ============================================================================
@@ -49,23 +57,6 @@ class PokerPhase(Enum):
     RIVER = "river"
     SHOWDOWN = "showdown"
     FINISHED = "finished"
-
-
-class PlayerAction(Enum):
-    """Available player actions."""
-    FOLD = "fold"
-    CHECK = "check"
-    CALL = "call"
-    RAISE = "raise"
-    ALL_IN = "all_in"
-
-
-class PlayerStatus(Enum):
-    """Player status in game."""
-    ACTIVE = "active"
-    FOLDED = "folded"
-    ALL_IN = "all_in"
-    SITTING_OUT = "sitting_out"
 
 
 # ============================================================================
@@ -623,15 +614,15 @@ class TexasEngine:
         """Execute the player's action."""
         player = self.players[sid]
         
-        if action == 'fold':
+        if action == PlayerAction.FOLD.value:
             return self._handle_fold(sid)
-        elif action == 'check':
+        elif action == PlayerAction.CHECK.value:
             return self._handle_check(sid)
-        elif action == 'call':
+        elif action == PlayerAction.CALL.value:
             return self._handle_call(sid)
-        elif action == 'raise':
+        elif action == PlayerAction.RAISE.value:
             return self._handle_raise(sid, amount)
-        elif action == 'all_in':
+        elif action == PlayerAction.ALL_IN.value:
             return self._handle_all_in(sid)
         else:
             return {'success': False, 'error': f'Unknown action: {action}'}

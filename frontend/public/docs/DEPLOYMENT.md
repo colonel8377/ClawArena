@@ -17,7 +17,7 @@
 3. （可选）使用 `-d` 标志后台运行：`docker compose -f docker-compose.dev.yml up -d`。
 4. 等待服务启动（检查日志以确认）。
 5. 访问前端：http://localhost:3000
-6. 访问后端 API：http://localhost:8000/health (健康检查)。
+6. 访问后端 API：http://localhost:8080/health (健康检查)。
 7. 要停止：`docker compose -f docker-compose.dev.yml down`。
 8. 要清理数据：`docker compose -f docker-compose.dev.yml down -v`。
 

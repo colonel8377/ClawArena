@@ -27,6 +27,26 @@ interface ChatMessage {
   is_wolf_chat?: boolean;
 }
 
+interface DeathInfo {
+  sid?: string;
+  nickname?: string;
+  cause?: string;
+  role_revealed?: string;
+}
+
+interface ActionTrace {
+  game_id: string;
+  phase: string;
+  actor_sid?: string;
+  actor_nickname?: string;
+  action: string;
+  message?: string;
+  target?: { sid?: string; nickname?: string } | null;
+  visibility?: string;
+  seer_result?: string;
+  timestamp?: string;
+}
+
 interface GameState {
   game_id: string;
   phase: string;
@@ -49,6 +69,7 @@ export default function WerewolfDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [gameLog, setGameLog] = useState<string[]>([]);
+  const [actionTimeline, setActionTimeline] = useState<ActionTrace[]>([]);
   const lastSocketUpdateRef = useRef(0);
   const { readingMode } = useUiMode();
 
@@ -63,6 +84,24 @@ export default function WerewolfDetailPage() {
 
   const appendGameLog = (message: string) => {
     setGameLog((prev) => [...prev.slice(-39), message]);
+  };
+
+  const appendActionTimeline = (entry: ActionTrace) => {
+    setActionTimeline((prev) => [...prev.slice(-79), entry]);
+  };
+
+  const formatPhaseLabel = (phase?: string) => {
+    if (!phase) return 'UNKNOWN';
+    return phase
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const formatDeathLabel = (death: string | DeathInfo) => {
+    if (typeof death === 'string') return death;
+    const who = death.nickname || (death.sid ? `Player ${death.sid}` : 'Unknown');
+    const by = death.cause ? ` (${death.cause})` : '';
+    return `${who}${by}`;
   };
 
   useEffect(() => {
@@ -98,16 +137,16 @@ export default function WerewolfDetailPage() {
     const onPhaseChange = (data: {
       phase?: string;
       day_count?: number;
-      deaths?: string[];
+      deaths?: Array<string | DeathInfo>;
       eliminated?: string;
       game_over?: boolean;
       winners?: string[];
     }) => {
       appendGameLog(
-        `Phase -> ${data.phase || 'unknown'} (Day ${data.day_count || '?'})`
+        `Phase -> ${formatPhaseLabel(data.phase)} (Day ${data.day_count || '?'})`
       );
       if (data.deaths && data.deaths.length > 0) {
-        appendGameLog(`Deaths: ${data.deaths.join(', ')}`);
+        appendGameLog(`Deaths: ${data.deaths.map(formatDeathLabel).join(', ')}`);
       }
       if (data.eliminated) {
         appendGameLog(`Eliminated: ${data.eliminated}`);
@@ -131,10 +170,16 @@ export default function WerewolfDetailPage() {
       appendGameLog(`Wolf chat: ${chat.nickname || 'Unknown'} -> ${chat.message || ''}`);
     };
 
+    const onActionTrace = (trace: ActionTrace) => {
+      if (trace.game_id !== gameId) return;
+      appendActionTimeline(trace);
+    };
+
     activeSocket.on('werewolf_phase_change', onPhaseChange);
     activeSocket.on('player_thinking', onPlayerThinking);
     activeSocket.on('chat_message', onPublicChat);
     activeSocket.on('wolf_chat_message', onWolfChat);
+    activeSocket.on('werewolf_action_trace', onActionTrace);
 
     if (activeSocket.connected) {
       activeSocket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
@@ -149,6 +194,7 @@ export default function WerewolfDetailPage() {
       activeSocket.off('player_thinking', onPlayerThinking);
       activeSocket.off('chat_message', onPublicChat);
       activeSocket.off('wolf_chat_message', onWolfChat);
+      activeSocket.off('werewolf_action_trace', onActionTrace);
       activeSocket.emit('leave_spectate', { game_id: gameId });
     };
   }, [apiUrl, gameId, revealAll]);
@@ -285,14 +331,20 @@ export default function WerewolfDetailPage() {
   };
 
   const getPhaseIcon = (phase?: string) => {
-    switch (phase?.toLowerCase()) {
-      case 'day': return '☀️';
-      case 'night': return '🌙';
-      case 'voting': return '🗳️';
-      case 'discussion': return '💬';
-      default: return '⏳';
-    }
+    const normalized = (phase || '').toLowerCase();
+    if (!normalized) return '⏳';
+    if (normalized.startsWith('night_')) return '🌙';
+    if (normalized.startsWith('day_announcement')) return '📢';
+    if (normalized.startsWith('day_speaking')) return '💬';
+    if (normalized.startsWith('day_voting')) return '🗳️';
+    if (normalized.includes('hunter')) return '🎯';
+    if (normalized === 'waiting') return '⏳';
+    if (normalized === 'finished') return '🏁';
+    if (normalized === 'aborted') return '🛑';
+    return '⏳';
   };
+
+  const isDayPhase = (phase?: string) => (phase || '').toLowerCase().startsWith('day_');
 
   const sidToName = useMemo(() => {
     const map = new Map<string, string>();
@@ -390,12 +442,12 @@ export default function WerewolfDetailPage() {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className={`bg-backgroundSlate/50 p-3 rounded border text-center ${
-                gameState.phase === 'day' ? 'border-warning/40' : 'border-electricPurple/40'
+                isDayPhase(gameState.phase) ? 'border-warning/40' : 'border-electricPurple/40'
               }`}>
                 <div className="text-2xl mb-1">{getPhaseIcon(gameState.phase)}</div>
                 <div className="text-xs text-foreground/50">Phase</div>
-                <div className={`font-bold ${gameState.phase === 'day' ? 'text-warning' : 'text-electricPurple'}`}>
-                  {gameState.phase?.toUpperCase() || 'WAITING'}
+                <div className={`font-bold ${isDayPhase(gameState.phase) ? 'text-warning' : 'text-electricPurple'}`}>
+                  {formatPhaseLabel(gameState.phase)}
                 </div>
               </div>
               <div className="bg-backgroundSlate/50 p-3 rounded border border-cyberBlue/20 text-center">
@@ -609,6 +661,35 @@ export default function WerewolfDetailPage() {
                   <span className="text-acidGreen">▸</span> {log}
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Action Timeline */}
+        {actionTimeline.length > 0 && (
+          <div className="cyber-card p-4 rounded-lg mb-4">
+            <div className="flex items-center gap-2 text-warning text-sm mb-3 font-orbitron">
+              <span>🧭</span>
+              <span>ACTION TIMELINE</span>
+            </div>
+            <div className="max-h-56 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
+              {[...actionTimeline].reverse().map((item, idx) => {
+                const actor = item.actor_nickname || item.actor_sid || 'Unknown';
+                const target = item.target?.nickname || item.target?.sid;
+                const targetText = target ? ` -> ${target}` : '';
+                const msg = item.message ? ` | ${item.message}` : '';
+                const seer = item.seer_result && revealAll ? ` | result: ${item.seer_result}` : '';
+                return (
+                  <div key={`${item.timestamp || 'time'}-${idx}`} className="text-xs font-mono text-foreground/80 py-1 border-b border-border/20 last:border-0">
+                    <span className="text-warning">[{formatPhaseLabel(item.phase)}]</span>
+                    <span className="ml-2 text-cyberBlue">{actor}</span>
+                    <span className="ml-1 text-foreground/70">{item.action}{targetText}{msg}{seer}</span>
+                    {item.timestamp && (
+                      <span className="text-foreground/40 ml-2">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

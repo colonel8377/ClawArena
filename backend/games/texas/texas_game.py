@@ -9,6 +9,13 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from .texas_engine import TexasEngine
+from .game_config import (
+    TEXAS_DEFAULT_BIG_BLIND,
+    TEXAS_DEFAULT_SMALL_BLIND,
+    TEXAS_MAX_PLAYERS,
+    TEXAS_MIN_PLAYERS,
+    TEXAS_TURN_TIMEOUT_SECONDS,
+)
 from ..base import BaseGame, GamePhase, check_chat_phase
 from ...config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
 from ...database.persistence_manager import persistence_manager
@@ -23,10 +30,15 @@ class TexasGame(BaseGame):
     for consistent game management across the Arena.
     """
     
-    MIN_PLAYERS = 2
-    MAX_PLAYERS = 9
+    MIN_PLAYERS = TEXAS_MIN_PLAYERS
+    MAX_PLAYERS = TEXAS_MAX_PLAYERS
     
-    def __init__(self, game_id: str, small_blind: int = 25, big_blind: int = 50):
+    def __init__(
+        self,
+        game_id: str,
+        small_blind: int = TEXAS_DEFAULT_SMALL_BLIND,
+        big_blind: int = TEXAS_DEFAULT_BIG_BLIND,
+    ):
         """
         Initialize a Texas Hold'em game.
         
@@ -35,8 +47,12 @@ class TexasGame(BaseGame):
             small_blind: Small blind amount
             big_blind: Big blind amount
         """
-        # Initialize with 20 second timeout for poker actions
-        super().__init__(game_id, game_type="texas", timeout_seconds=20)
+        # Keep timeout aligned with the centralized Texas config.
+        super().__init__(
+            game_id,
+            game_type="texas",
+            timeout_seconds=TEXAS_TURN_TIMEOUT_SECONDS,
+        )
         
         # Use PokerEngine as the game logic engine
         self.engine = TexasEngine(
@@ -357,8 +373,8 @@ class TexasGame(BaseGame):
         """Restore table and engine state from Redis snapshot."""
         game = cls(
             game_id=data.get('game_id', 'restored_table'),
-            small_blind=int(data.get('small_blind', 25)),
-            big_blind=int(data.get('big_blind', 50)),
+            small_blind=int(data.get('small_blind', TEXAS_DEFAULT_SMALL_BLIND)),
+            big_blind=int(data.get('big_blind', TEXAS_DEFAULT_BIG_BLIND)),
         )
 
         phase_value = data.get('phase', GamePhase.WAITING.value)

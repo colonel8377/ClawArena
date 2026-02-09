@@ -29,6 +29,7 @@ import struct
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 
 # ============================================================================
@@ -37,12 +38,20 @@ from datetime import datetime
 
 # Backend URL (docker backend)
 BACKEND_HOST = "localhost"
-BACKEND_PORT = 8000
+BACKEND_PORT = 8080
 BACKEND_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 
 # Number of agents for each game
 WEREWOLF_AGENTS = 6
 TEXAS_AGENTS = 3
+WEREWOLF_ENTRY_FEE = 100
+TEXAS_BUY_IN_CHIPS = 1000
+EPSILON = Decimal("0.000001")
+
+
+def unique_id(prefix: str) -> str:
+    """Generate a short unique id to avoid collisions with persisted games."""
+    return f"{prefix}_{int(time.time())}"
 
 
 # ============================================================================
@@ -517,6 +526,9 @@ class AgentState:
     sid: Optional[str] = None
     fingerprint: Optional[str] = None
     bot_token: Optional[str] = None
+    game_finished: bool = False
+    winners: List[Any] = field(default_factory=list)
+    left_game: bool = False
 
 
 class BaseAgent:
@@ -553,19 +565,40 @@ class BaseAgent:
     
     def register(self) -> bool:
         """Register the agent."""
-        result = http_request('POST', '/api/register', params={
+        params = {
             'player_name': self.state.player_name,
-            'address': self.state.address,
-        })
-        if result.get('status_code') != 200:
+        }
+        # Do not send address when empty; sending None through query params
+        # becomes the literal string "None" and collapses registrations.
+        if self.state.address:
+            params['address'] = self.state.address
+
+        max_attempts = 8
+        for attempt in range(1, max_attempts + 1):
+            result = http_request('POST', '/api/register', params=params)
+            status_code = result.get('status_code')
+
+            if status_code == 200:
+                user = result.get('user') or {}
+                player_id = user.get('player_id')
+                if not player_id:
+                    return False
+                self.state.player_id = player_id
+                self.state.player_name = user.get('player_name') or self.state.player_name
+                return True
+
+            if status_code == 429 and attempt < max_attempts:
+                wait_seconds = 10
+                print(
+                    f"[{self.state.nickname}] register hit rate limit "
+                    f"(attempt {attempt}/{max_attempts}), retrying in {wait_seconds}s..."
+                )
+                time.sleep(wait_seconds)
+                continue
+
             return False
-        user = result.get('user') or {}
-        player_id = user.get('player_id')
-        if not player_id:
-            return False
-        self.state.player_id = player_id
-        self.state.player_name = user.get('player_name') or self.state.player_name
-        return True
+
+        return False
     
     def login(self) -> bool:
         """Login the agent."""
@@ -641,12 +674,151 @@ class BaseAgent:
         pass
 
 
+def wait_until(predicate, timeout: float, interval: float = 0.5) -> bool:
+    """Poll a predicate until timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def wait_for_authentication(agents: List[BaseAgent], timeout: float = 15.0) -> bool:
+    """Wait until all agents are authenticated over Socket.IO."""
+    return wait_until(lambda: all(a.state.authenticated for a in agents), timeout=timeout)
+
+
+def dec(value: Any) -> Decimal:
+    """Convert numeric-like values to Decimal safely."""
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def get_backend_info() -> Dict[str, Any]:
+    """Get backend metadata from /health endpoint."""
+    return http_request('GET', '/health')
+
+
+def get_account_summary(player_id: str) -> Dict[str, Any]:
+    """Fetch account summary for settlement assertions."""
+    return http_request('GET', f'/api/account/{player_id}')
+
+
+def capture_account_snapshot(agent: BaseAgent) -> Dict[str, Any]:
+    """Capture normalized account snapshot for one agent."""
+    if not agent.state.player_id:
+        return {'error': 'missing_player_id'}
+
+    summary = get_account_summary(agent.state.player_id)
+    if summary.get('status_code') != 200:
+        return {'error': f"account_fetch_failed:{summary}"}
+
+    return {
+        'player_id': agent.state.player_id,
+        'nickname': agent.state.nickname,
+        'offchain_balance': dec(summary.get('offchain_balance')),
+        'locked_balance': dec(summary.get('locked_balance')),
+        'available_balance': dec(summary.get('available_balance')),
+        'recent_transactions': summary.get('recent_transactions') or [],
+    }
+
+
+def capture_snapshots(agents: List[BaseAgent], label: str) -> Dict[str, Dict[str, Any]]:
+    """Capture account snapshots for all agents and print compact summary."""
+    snapshots: Dict[str, Dict[str, Any]] = {}
+    print(f"\n=== Account Snapshot: {label} ===")
+    for agent in agents:
+        snap = capture_account_snapshot(agent)
+        snapshots[agent.state.player_id or agent.state.nickname] = snap
+        if 'error' in snap:
+            print(f"  {agent.state.nickname}: ERROR -> {snap['error']}")
+        else:
+            print(
+                f"  {agent.state.nickname}: offchain={snap['offchain_balance']} "
+                f"locked={snap['locked_balance']}"
+            )
+    return snapshots
+
+
+def tx_has_type(snap: Dict[str, Any], tx_type: str) -> bool:
+    """Check whether account snapshot contains a tx type in recent transactions."""
+    for tx in snap.get('recent_transactions', []):
+        if str(tx.get('type', '')).lower() == tx_type.lower():
+            return True
+    return False
+
+
 class WerewolfAgent(BaseAgent):
     """Agent for Werewolf game with fixed logic."""
     
     def __init__(self, player_name: str, nickname: str, address: Optional[str] = None):
         super().__init__(player_name, nickname, address)
         self.last_phase = None
+        self._last_action_key: Optional[str] = None
+
+    def _role_name(self) -> Optional[str]:
+        """Return normalized role name across schema variants."""
+        if not self.state.my_role:
+            return None
+        return self.state.my_role.get('role_type') or self.state.my_role.get('role')
+
+    def _self_player(self) -> Optional[Dict[str, Any]]:
+        """Get this agent's player entry from latest game state."""
+        state = self.state.game_state or {}
+        for player in state.get('players', []):
+            if player.get('nickname') == self.state.nickname:
+                return player
+        return None
+
+    def _my_game_sid(self) -> Optional[str]:
+        """Return the player's in-game sid from latest state."""
+        me = self._self_player()
+        if not me:
+            return None
+        return me.get('sid')
+
+    def _emit_werewolf_action(self, payload: Dict[str, Any], expected_phase: Optional[str] = None) -> bool:
+        """Guard action emits against phase drift and invalid self state."""
+        if not self.sio or not self.state.game_state:
+            return False
+
+        if expected_phase and self.state.game_state.get('phase') != expected_phase:
+            return False
+
+        me = self._self_player()
+        if not me or not me.get('is_alive', False) or me.get('status') == 'zombie':
+            return False
+
+        game_id = self.state.game_id or self.state.game_state.get('game_id')
+        if not game_id:
+            return False
+
+        data = dict(payload)
+        data['game_id'] = game_id
+        self.sio.emit('werewolf_action', data)
+        return True
+
+    def _already_acted_for_state(self, phase: str) -> bool:
+        """Prevent duplicate emits for the same phase/turn snapshot."""
+        gs = self.state.game_state or {}
+        key_parts = [
+            str(gs.get('game_id') or self.state.game_id or ''),
+            str(gs.get('day_count') or ''),
+            phase,
+        ]
+
+        if phase == 'day_speaking':
+            key_parts.append(str(gs.get('current_speaker_index', 0)))
+
+        key = '|'.join(key_parts)
+        if self._last_action_key == key:
+            return True
+
+        self._last_action_key = key
+        return False
     
     def connect_socket(self):
         """Connect and setup werewolf handlers."""
@@ -659,12 +831,20 @@ class WerewolfAgent(BaseAgent):
         def on_state(data):
             print(f"[{self.state.nickname}] Received werewolf_state")
             self.state.game_state = data
+            if data.get('game_id'):
+                self.state.game_id = data.get('game_id')
             self.state.events_received.append(('werewolf_state', data))
             self.decide_action()
         
         def on_phase_change(data):
             print(f"[{self.state.nickname}] Phase changed: {data.get('phase')}")
             self.last_phase = data.get('phase')
+            if data.get('game_id'):
+                self.state.game_id = data.get('game_id')
+            if data.get('game_over') or data.get('phase') == 'finished':
+                self.state.game_finished = True
+                self.state.winners = data.get('winners', []) or []
+                print(f"[{self.state.nickname}] ✓ Werewolf game finished, winners={self.state.winners}")
             self.state.events_received.append(('werewolf_phase_change', data))
             self.decide_action()
         
@@ -677,10 +857,13 @@ class WerewolfAgent(BaseAgent):
         self.sio.on('werewolf_phase_change', on_phase_change)
         self.sio.on('werewolf_game_created', on_game_created)
     
-    def create_game(self, game_id: str):
+    def create_game(self, game_id: str, entry_fee: int = 0):
         """Create a werewolf game."""
         if self.sio:
-            self.sio.emit('create_werewolf_game', {'game_id': game_id})
+            self.sio.emit('create_werewolf_game', {
+                'game_id': game_id,
+                'entry_fee': entry_fee,
+            })
     
     def join_game(self, game_id: str):
         """Join a werewolf game."""
@@ -699,9 +882,17 @@ class WerewolfAgent(BaseAgent):
         """Decide action based on current game state."""
         if not self.state.game_state:
             return
+
+        # Keep game_id in sync; phase-change payloads may omit game_id.
+        if self.state.game_state.get('game_id'):
+            self.state.game_id = self.state.game_state.get('game_id')
         
         phase = self.state.game_state.get('phase')
         if not phase:
+            return
+
+        me = self._self_player()
+        if not me or not me.get('is_alive', False) or me.get('status') == 'zombie':
             return
         
         # Get my role info
@@ -712,6 +903,15 @@ class WerewolfAgent(BaseAgent):
                     if 'role' in player and player['role']:
                         self.state.my_role = player['role']
                     break
+
+        # Night ability phases require role visibility. Avoid consuming
+        # phase dedupe before role info arrives in a later snapshot.
+        if phase in ('night_wolf_discussion', 'night_wolf_voting', 'night_seer', 'night_witch') and not self.state.my_role:
+            return
+
+        # Avoid repeatedly spamming the same action on every state update packet.
+        if self._already_acted_for_state(phase):
+            return
         
         # Fixed logic based on phase
         if phase == 'night_wolf_discussion':
@@ -729,78 +929,75 @@ class WerewolfAgent(BaseAgent):
     
     def _handle_wolf_discussion(self):
         """Handle wolf discussion phase."""
-        if not self.state.my_role or not self.sio:
+        if not self.state.my_role:
             return
         
-        role_type = self.state.my_role.get('role_type')
+        role_type = self._role_name()
         if role_type == 'wolf':
-            self.sio.emit('werewolf_action', {
-                'game_id': self.state.game_id,
+            self._emit_werewolf_action({
                 'action': 'wolf_chat',
                 'message': f'{self.state.nickname}: Let\'s kill someone!'
-            })
+            }, expected_phase='night_wolf_discussion')
     
     def _handle_wolf_voting(self):
         """Handle wolf voting phase."""
-        if not self.state.my_role or not self.sio:
+        if not self.state.my_role:
             return
         
-        role_type = self.state.my_role.get('role_type')
+        role_type = self._role_name()
         if role_type == 'wolf':
             if self.state.game_state and self.state.game_state.get('players'):
                 non_wolves = [
                     p for p in self.state.game_state['players']
-                    if p.get('is_alive') and p.get('role', {}).get('role_type') != 'wolf'
+                    if p.get('is_alive') and p.get('status') != 'zombie'
+                    and (p.get('role', {}).get('role_type') or p.get('role', {}).get('role')) != 'wolf'
                 ]
                 if non_wolves:
                     target = random.choice(non_wolves)
-                    self.sio.emit('werewolf_action', {
-                        'game_id': self.state.game_id,
+                    self._emit_werewolf_action({
                         'action': 'night_kill',
                         'target_sid': target.get('sid')
-                    })
+                    }, expected_phase='night_wolf_voting')
                     print(f"[{self.state.nickname}] Voted to kill {target.get('nickname')}")
     
     def _handle_seer_action(self):
         """Handle seer check phase."""
-        if not self.state.my_role or not self.sio:
+        if not self.state.my_role:
             return
         
-        role_type = self.state.my_role.get('role_type')
+        role_type = self._role_name()
         if role_type == 'seer':
+            my_game_sid = self._my_game_sid()
             if self.state.game_state and self.state.game_state.get('players'):
                 others = [
                     p for p in self.state.game_state['players']
-                    if p.get('is_alive') and p.get('sid') != self.state.sid
+                    if p.get('is_alive') and p.get('status') != 'zombie' and p.get('sid') != my_game_sid
                 ]
                 if others:
                     target = random.choice(others)
-                    self.sio.emit('werewolf_action', {
-                        'game_id': self.state.game_id,
+                    self._emit_werewolf_action({
                         'action': 'seer_check',
                         'target_sid': target.get('sid')
-                    })
+                    }, expected_phase='night_seer')
                     print(f"[{self.state.nickname}] Checking {target.get('nickname')}")
     
     def _handle_witch_action(self):
         """Handle witch action phase."""
-        if not self.state.my_role or not self.sio:
+        if not self.state.my_role:
             return
         
-        role_type = self.state.my_role.get('role_type')
+        role_type = self._role_name()
         if role_type == 'witch':
-            self.sio.emit('werewolf_action', {
-                'game_id': self.state.game_id,
+            self._emit_werewolf_action({
                 'action': 'witch_skip'
-            })
+            }, expected_phase='night_witch')
             print(f"[{self.state.nickname}] Witch skipping action")
     
     def _handle_speaking(self):
         """Handle day speaking phase."""
-        if not self.state.game_state or not self.sio:
+        if not self.state.game_state:
             return
         
-        current_speaker = self.state.game_state.get('current_speaker')
         speaking_order = self.state.game_state.get('speaking_order', [])
         current_speaker_index = self.state.game_state.get('current_speaker_index', 0)
         
@@ -813,37 +1010,41 @@ class WerewolfAgent(BaseAgent):
                     break
             
             if my_sid and speaking_order[current_speaker_index] == my_sid:
-                self.sio.emit('werewolf_action', {
-                    'game_id': self.state.game_id,
+                self._emit_werewolf_action({
                     'action': 'speak',
                     'message': f'{self.state.nickname}: I think we should vote carefully.'
-                })
+                }, expected_phase='day_speaking')
                 print(f"[{self.state.nickname}] Speaking")
     
     def _handle_voting(self):
         """Handle day voting phase."""
-        if not self.state.game_state or not self.sio:
+        if not self.state.game_state:
             return
+
+        my_game_sid = self._my_game_sid()
         
         if self.state.game_state.get('players'):
             others = [
                 p for p in self.state.game_state['players']
-                if p.get('is_alive') and p.get('sid') != self.state.sid
+                if p.get('is_alive')
+                and p.get('status') != 'zombie'
+                and p.get('sid') != my_game_sid
             ]
-            if others and random.random() > 0.3:
-                target = random.choice(others)
-                self.sio.emit('werewolf_action', {
-                    'game_id': self.state.game_id,
+            if others:
+                # Deterministic vote target to reduce ties and finish E2E faster:
+                # prioritize zombie players, then stable nickname order.
+                others.sort(key=lambda p: p.get('nickname', ''))
+                target = others[0]
+                self._emit_werewolf_action({
                     'action': 'vote',
                     'target_sid': target.get('sid')
-                })
+                }, expected_phase='day_voting')
                 print(f"[{self.state.nickname}] Voted for {target.get('nickname')}")
             else:
-                self.sio.emit('werewolf_action', {
-                    'game_id': self.state.game_id,
+                self._emit_werewolf_action({
                     'action': 'vote',
                     'target_sid': None
-                })
+                }, expected_phase='day_voting')
                 print(f"[{self.state.nickname}] Abstained")
 
 
@@ -856,7 +1057,13 @@ class TexasAgent(BaseAgent):
         
         def on_joined(data):
             print(f"[{self.state.nickname}] Joined poker table")
+            self.state.left_game = False
             self.state.events_received.append(('joined_game', data))
+
+        def on_left_game(data):
+            print(f"[{self.state.nickname}] Left poker table")
+            self.state.left_game = True
+            self.state.events_received.append(('left_game', data))
         
         def on_game_update(data):
             print(f"[{self.state.nickname}] Received game_update")
@@ -872,10 +1079,25 @@ class TexasAgent(BaseAgent):
             self.state.events_received.append(('private_hand', data))
             if self.state.is_my_turn:
                 self.decide_action()
+
+        def on_hand_winner(data):
+            print(f"[{self.state.nickname}] ✓ Hand finished via hand_winner: {data.get('winner')}")
+            self.state.game_finished = True
+            self.state.winners = [data.get('winner')] if data.get('winner') else []
+            self.state.events_received.append(('hand_winner', data))
+
+        def on_showdown_reveal(data):
+            print(f"[{self.state.nickname}] ✓ Hand finished via showdown_reveal")
+            self.state.game_finished = True
+            self.state.winners = data.get('winners', []) or []
+            self.state.events_received.append(('showdown_reveal', data))
         
         self.sio.on('joined_game', on_joined)
+        self.sio.on('left_game', on_left_game)
         self.sio.on('game_update', on_game_update)
         self.sio.on('private_hand', on_private_hand)
+        self.sio.on('hand_winner', on_hand_winner)
+        self.sio.on('showdown_reveal', on_showdown_reveal)
     
     def join_table(self, table_id: str, chips: int = 1000):
         """Join a poker table."""
@@ -889,6 +1111,11 @@ class TexasAgent(BaseAgent):
         """Start a new hand."""
         if self.sio:
             self.sio.emit('start_hand', {'table_id': table_id})
+
+    def leave_table(self, table_id: str):
+        """Leave table explicitly so backend settles locked chips."""
+        if self.sio:
+            self.sio.emit('leave_game', {'table_id': table_id})
     
     def decide_action(self):
         """Decide poker action based on current state."""
@@ -978,6 +1205,8 @@ def test_werewolf_flow():
     
     # Register and login
     register_and_login_agents(agents)
+
+    pre_game = capture_snapshots(agents, 'werewolf_before_game')
     
     # Connect all agents
     print("\n=== Connecting Agents ===")
@@ -989,12 +1218,13 @@ def test_werewolf_flow():
             print(f"  Error connecting {agent.state.nickname}: {e}")
     
     # Wait for authentication
-    time.sleep(2)
+    if not wait_for_authentication(agents, timeout=20):
+        print("⚠ Some werewolf agents failed to authenticate in time")
     
     # Create game with first agent
-    game_id = "test_werewolf_1"
+    game_id = unique_id("test_werewolf")
     print(f"\n=== Creating Game: {game_id} ===")
-    agents[0].create_game(game_id)
+    agents[0].create_game(game_id, entry_fee=WEREWOLF_ENTRY_FEE)
     time.sleep(0.5)
     
     # All agents join
@@ -1010,9 +1240,40 @@ def test_werewolf_flow():
     agents[0].start_game(game_id)
     time.sleep(1)
     
-    # Let game run for a while
-    print(f"\n=== Running Game (30 seconds) ===")
-    time.sleep(30)
+    # Run until game reaches finished/over state
+    print(f"\n=== Running Game Until Finished (max 240 seconds) ===")
+    finished = wait_until(
+        lambda: any(a.state.game_finished for a in agents),
+        timeout=240,
+        interval=1.0,
+    )
+    if not finished:
+        raise RuntimeError("Werewolf did not finish within timeout")
+    else:
+        winners = next((a.state.winners for a in agents if a.state.game_finished), [])
+        if not winners:
+            raise RuntimeError("Werewolf finished but winners list is empty")
+        print(f"✓ Werewolf finished, winners={winners}")
+
+    post_game = capture_snapshots(agents, 'werewolf_after_game')
+    winner_set = set(next((a.state.winners for a in agents if a.state.game_finished), []))
+    winner_tx_found = False
+    winner_balance_gain = False
+
+    for agent in agents:
+        player_id = agent.state.player_id or ""
+        before = pre_game.get(player_id, {})
+        after = post_game.get(player_id, {})
+        if 'error' in before or 'error' in after:
+            continue
+        if player_id in winner_set:
+            if tx_has_type(after, 'game_win'):
+                winner_tx_found = True
+            if after['offchain_balance'] > before['offchain_balance'] + EPSILON:
+                winner_balance_gain = True
+
+    if not (winner_tx_found or winner_balance_gain):
+        raise RuntimeError("Werewolf settlement check failed: no winner prize signal found")
     
     # Disconnect all agents
     print(f"\n=== Disconnecting Agents ===")
@@ -1036,6 +1297,8 @@ def test_texas_flow():
     
     # Register and login
     register_and_login_agents(agents)
+
+    pre_join = capture_snapshots(agents, 'texas_before_join')
     
     # Connect all agents
     print("\n=== Connecting Agents ===")
@@ -1047,13 +1310,14 @@ def test_texas_flow():
             print(f"  Error connecting {agent.state.nickname}: {e}")
     
     # Wait for authentication
-    time.sleep(2)
+    if not wait_for_authentication(agents, timeout=20):
+        print("⚠ Some texas agents failed to authenticate in time")
     
     # All agents join table
-    table_id = "test_texas_1"
+    table_id = unique_id("test_texas")
     print(f"\n=== Joining Table: {table_id} ===")
     for agent in agents:
-        agent.join_table(table_id, chips=1000)
+        agent.join_table(table_id, chips=TEXAS_BUY_IN_CHIPS)
         time.sleep(0.1)
     
     time.sleep(1)
@@ -1063,9 +1327,55 @@ def test_texas_flow():
     agents[0].start_hand(table_id)
     time.sleep(1)
     
-    # Let game run for a while
-    print(f"\n=== Running Game (20 seconds) ===")
-    time.sleep(20)
+    # Run until at least one full hand is completed
+    print(f"\n=== Running Game Until Hand Finishes (max 120 seconds) ===")
+    finished = wait_until(
+        lambda: any(a.state.game_finished for a in agents),
+        timeout=120,
+        interval=0.5,
+    )
+    if not finished:
+        raise RuntimeError("Texas hand did not finish within timeout")
+    else:
+        winners = next((a.state.winners for a in agents if a.state.game_finished), [])
+        if not winners:
+            raise RuntimeError("Texas hand finished but winners list is empty")
+        print(f"✓ Texas hand finished, winners={winners}")
+
+    # Explicit leave_game to trigger unlock settlement
+    print(f"\n=== Leaving Table for Settlement ===")
+    for agent in agents:
+        agent.leave_table(table_id)
+        time.sleep(0.1)
+
+    all_left = wait_until(lambda: all(a.state.left_game for a in agents), timeout=20, interval=0.5)
+    if not all_left:
+        raise RuntimeError("Not all texas agents received left_game confirmation")
+
+    post_leave = capture_snapshots(agents, 'texas_after_leave')
+
+    # Settlement assertions:
+    # 1) all players have locked balance returned close to pre-join baseline
+    # 2) at least one player's offchain balance changed (win/loss realized)
+    locked_ok = True
+    any_balance_changed = False
+    for agent in agents:
+        player_id = agent.state.player_id or ""
+        before = pre_join.get(player_id, {})
+        after = post_leave.get(player_id, {})
+        if 'error' in before or 'error' in after:
+            raise RuntimeError(f"Texas account snapshot missing for {agent.state.nickname}")
+
+        if after['locked_balance'] > before['locked_balance'] + EPSILON:
+            locked_ok = False
+
+        if abs(after['offchain_balance'] - before['offchain_balance']) > EPSILON:
+            any_balance_changed = True
+
+    if not locked_ok:
+        raise RuntimeError("Texas settlement check failed: locked balance not fully released")
+    if not any_balance_changed:
+        raise RuntimeError("Texas settlement check failed: no post-hand balance change detected")
     
     # Disconnect all agents
     print(f"\n=== Disconnecting Agents ===")
@@ -1102,6 +1412,9 @@ def main():
         print("\n⚠️  Backend not available. Please start docker backend first:")
         print("   docker compose -f docker-compose.yml up")
         return
+
+    backend_info = get_backend_info()
+    print(f"Backend mode: local_debug_mode={backend_info.get('local_debug_mode')}")
     
     try:
         # Test werewolf flow

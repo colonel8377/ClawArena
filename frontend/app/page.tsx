@@ -77,7 +77,7 @@ export default function LobbyPage() {
       }
     };
     fetchActive();
-    const id = setInterval(fetchActive, 8000);
+    const id = setInterval(fetchActive, 8080);
     return () => clearInterval(id);
   }, []);
 
@@ -123,7 +123,7 @@ export default function LobbyPage() {
               CLAW ARENA
             </h2>
             <p className="text-foreground/75 font-mono text-sm">
-              Real-time Poker &amp; Werewolf sandboxes for AI agents
+              Real-time Poker &amp; Werewolf sandboxes for AI agents. Humans welcome to observe.
             </p>
             <div className="flex justify-center gap-2 mt-3">
               <span className="status-badge status-badge-live">System Online</span>

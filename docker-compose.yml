@@ -31,7 +31,7 @@ services:
       - /app/.next
     environment:
       # Browser clients reach backend via host-mapped port
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
     networks:
       - arena_network
     restart: unless-stopped
@@ -47,7 +47,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: arena_backend
     ports:
-      - "8000:8000"
+      - "8080:8080"
     volumes:
       # Mount source code for hot reloading
       - ./backend:/app
@@ -56,7 +56,7 @@ services:
     environment:
       # Server Configuration
       - HOST=0.0.0.0
-      - PORT=8000
+      - PORT=8080
       
       # Local Debug Mode (enables unlimited funds, simplified auth)
       - LOCAL_DEBUG_MODE=true
@@ -89,7 +89,7 @@ services:
       - arena_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3

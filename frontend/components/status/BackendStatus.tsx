@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { getSocket } from '@/lib/socket';
-import getApiBaseUrl from '@/lib/api';
+import getApiBaseUrl, { getApiHost, getAppEnvLabel } from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
 
 type HealthResponse = {
@@ -16,6 +16,16 @@ export default function BackendStatus() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const appEnvLabel = getAppEnvLabel();
+  const apiHost = getApiHost();
+
+  const appEnvClassName =
+    appEnvLabel === 'DEV'
+      ? 'status-inactive'
+      : appEnvLabel === 'PRE'
+        ? 'text-warning'
+        : 'status-active';
+
   useEffect(() => {
     let mounted = true;
     const API_URL = getApiBaseUrl();
@@ -87,7 +97,17 @@ export default function BackendStatus() {
             Tables: <span className="text-cyberBlue">{health?.active_tables ?? '-'}</span>
           </span>
           <span className="text-foreground opacity-70">
-            Mode: <span className={health?.local_debug_mode ? 'status-inactive' : 'status-active'}>{health?.local_debug_mode ? 'DEBUG' : 'PROD'}</span>
+            Env: <span className={appEnvClassName}>{appEnvLabel}</span>
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-foreground opacity-70">API Host</span>
+          <span className="text-cyberBlue">{apiHost}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-foreground opacity-70">Backend Debug</span>
+          <span className={health?.local_debug_mode ? 'status-inactive' : 'status-active'}>
+            {health?.local_debug_mode ? 'ON' : 'OFF'}
           </span>
         </div>
         {error && (

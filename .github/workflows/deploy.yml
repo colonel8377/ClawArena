@@ -63,8 +63,6 @@ jobs:
     needs: env-mapping
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       NEXT_PUBLIC_API_URL: ${{ needs.env-mapping.outputs.api_url }}
       NEXT_PUBLIC_APP_ENV: ${{ needs.env-mapping.outputs.app_env }}
     steps:
@@ -94,9 +92,9 @@ jobs:
       - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend
         run: |
-          vercel build --token="$VERCEL_TOKEN" \
-            --build-env NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
-            --build-env NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV"
+          NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+          NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV" \
+          vercel build --token="$VERCEL_TOKEN"
 
       - name: Deploy Frontend (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'

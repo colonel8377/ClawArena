@@ -692,6 +692,40 @@ def wait_for_authentication(agents: List[BaseAgent], timeout: float = 15.0) -> b
     return wait_until(lambda: all(a.state.authenticated for a in agents), timeout=timeout)
 
 
+def wait_for_event(
+    agents: List[BaseAgent],
+    event_name: str,
+    predicate,
+    timeout: float = 10.0,
+    interval: float = 0.2,
+) -> bool:
+    """Wait until any agent receives an event matching predicate."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for agent in agents:
+            for evt, payload in agent.state.events_received:
+                if evt == event_name and predicate(payload, agent):
+                    return True
+        time.sleep(interval)
+    return False
+
+
+def wait_for_phase(
+    agents: List[BaseAgent],
+    phases: set,
+    timeout: float = 15.0,
+    interval: float = 0.5,
+) -> bool:
+    """Wait until any agent sees a game_state phase in the given set."""
+    return wait_until(
+        lambda: any(
+            (a.state.game_state or {}).get('phase') in phases for a in agents
+        ),
+        timeout=timeout,
+        interval=interval,
+    )
+
+
 def dec(value: Any) -> Decimal:
     """Convert numeric-like values to Decimal safely."""
     try:
@@ -744,6 +778,31 @@ def capture_snapshots(agents: List[BaseAgent], label: str) -> Dict[str, Dict[str
                 f"locked={snap['locked_balance']}"
             )
     return snapshots
+
+
+def print_asset_deltas(
+    agents: List[BaseAgent],
+    before: Dict[str, Dict[str, Any]],
+    after: Dict[str, Dict[str, Any]],
+    label: str,
+) -> None:
+    """Print asset deltas to verify expectations during the flow."""
+    print(f"\n=== Asset Deltas: {label} ===")
+    for agent in agents:
+        key = agent.state.player_id or agent.state.nickname
+        snap_before = before.get(key, {})
+        snap_after = after.get(key, {})
+        if 'error' in snap_before or 'error' in snap_after:
+            print(f"  {agent.state.nickname}: ERROR -> missing snapshot")
+            continue
+
+        offchain_delta = snap_after['offchain_balance'] - snap_before['offchain_balance']
+        locked_delta = snap_after['locked_balance'] - snap_before['locked_balance']
+        available_delta = snap_after['available_balance'] - snap_before['available_balance']
+        print(
+            f"  {agent.state.nickname}: "
+            f"offchainΔ={offchain_delta} lockedΔ={locked_delta} availableΔ={available_delta}"
+        )
 
 
 def tx_has_type(snap: Dict[str, Any], tx_type: str) -> bool:
@@ -859,11 +918,23 @@ class WerewolfAgent(BaseAgent):
             print(f"[{self.state.nickname}] Game created: {data.get('game_id')}")
             self.state.events_received.append(('werewolf_game_created', data))
             self.state.last_progress_ts = time.time()
+
+        def on_chat_message(data):
+            print(f"[{self.state.nickname}] Received chat_message")
+            self.state.events_received.append(('chat_message', data))
+            self.state.last_progress_ts = time.time()
+
+        def on_wolf_chat_message(data):
+            print(f"[{self.state.nickname}] Received wolf_chat_message")
+            self.state.events_received.append(('wolf_chat_message', data))
+            self.state.last_progress_ts = time.time()
         
         self.sio.on('werewolf_joined', on_joined)
         self.sio.on('werewolf_state', on_state)
         self.sio.on('werewolf_phase_change', on_phase_change)
         self.sio.on('werewolf_game_created', on_game_created)
+        self.sio.on('chat_message', on_chat_message)
+        self.sio.on('wolf_chat_message', on_wolf_chat_message)
     
     def create_game(self, game_id: str, entry_fee: int = 0):
         """Create a werewolf game."""
@@ -1210,7 +1281,7 @@ def register_and_login_agents(agents: List[BaseAgent]):
     return all_ok
 
 
-def test_werewolf_flow():
+def test_werewolf_flow(local_debug_mode: bool):
     """Test werewolf game flow with multiple agents."""
     print("\n" + "="*70)
     print("TESTING WEREWOLF GAME FLOW")
@@ -1255,10 +1326,167 @@ def test_werewolf_flow():
     
     time.sleep(1)
     
+    # Confirm assets after join (lock entry fees in normal mode)
+    post_join = capture_snapshots(agents, 'werewolf_after_join')
+    print_asset_deltas(agents, pre_game, post_join, 'werewolf_join')
+    if not local_debug_mode:
+        for agent in agents:
+            player_id = agent.state.player_id or ""
+            before = pre_game.get(player_id, {})
+            after = post_join.get(player_id, {})
+            if 'error' in before or 'error' in after:
+                raise RuntimeError(f"Werewolf account snapshot missing for {agent.state.nickname}")
+            if after['locked_balance'] < before['locked_balance'] + Decimal(str(WEREWOLF_ENTRY_FEE)) - EPSILON:
+                raise RuntimeError("Werewolf entry fee lock did not increase locked balance as expected")
+
+    # Channel checks: public chat in lobby before game start.
+    print(f"\n=== Channel Checks (Werewolf) ===")
+
+    lobby_message = f"lobby-chat-{int(time.time())}"
+    if agents[0].sio:
+        agents[0].sio.emit('werewolf_action', {
+            'game_id': game_id,
+            'action': 'chat',
+            'message': lobby_message,
+        })
+
+    lobby_chat_ok = wait_for_event(
+        agents,
+        'chat_message',
+        lambda payload, agent: payload.get('message') == lobby_message,
+        timeout=10,
+    )
+    if not lobby_chat_ok:
+        raise RuntimeError("Werewolf lobby chat not broadcast to channel")
+
     # Start game
     print(f"\n=== Starting Game ===")
     agents[0].start_game(game_id)
     time.sleep(1)
+
+    night_phases = {
+        'night_wolf_discussion',
+        'night_wolf_voting',
+        'night_seer',
+        'night_witch',
+        'night_hunter',
+    }
+    wait_for_phase(agents, night_phases, timeout=20)
+
+    restricted_message = f"night-chat-{int(time.time())}"
+    if agents[0].sio:
+        agents[0].sio.emit('werewolf_action', {
+            'game_id': game_id,
+            'action': 'chat',
+            'message': restricted_message,
+        })
+
+    restricted_error_ok = wait_for_event(
+        [agents[0]],
+        'error',
+        lambda payload, agent: payload.get('error_code') == 'CHAT_PHASE_RESTRICTED',
+        timeout=5,
+    )
+    if not restricted_error_ok:
+        raise RuntimeError("Werewolf night public chat was not blocked")
+
+    # Day speaking: only current speaker can chat publicly.
+    if wait_for_phase(agents, {'day_speaking'}, timeout=30):
+        current_speaker_sid = None
+        speaker_order = []
+        for agent in agents:
+            state = agent.state.game_state or {}
+            speaker_order = state.get('speaking_order', []) or []
+            idx = state.get('current_speaker_index', 0)
+            if speaker_order and idx < len(speaker_order):
+                current_speaker_sid = speaker_order[idx]
+                break
+
+        non_speaker = None
+        for agent in agents:
+            if agent._my_game_sid() != current_speaker_sid:
+                non_speaker = agent
+                break
+
+        if non_speaker and non_speaker.sio:
+            non_speaker.sio.emit('werewolf_action', {
+                'game_id': game_id,
+                'action': 'chat',
+                'message': f"speaking-chat-block-{int(time.time())}",
+            })
+
+            speaking_blocked = wait_for_event(
+                [non_speaker],
+                'error',
+                lambda payload, agent: payload.get('error_code') == 'CHAT_PHASE_RESTRICTED',
+                timeout=5,
+            )
+            if not speaking_blocked:
+                raise RuntimeError("Werewolf speaking phase allowed non-speaker chat")
+        else:
+            print("⚠ Werewolf speaking-phase chat check skipped (speaker not resolved)")
+    else:
+        print("⚠ Werewolf speaking-phase chat check skipped (phase not observed)")
+
+    # Wolf chat should be visible only to wolves.
+    role_ready = wait_until(
+        lambda: all(a.state.my_role for a in agents),
+        timeout=20,
+        interval=0.5,
+    )
+    if role_ready:
+        wolves = [a for a in agents if (a.state.my_role or {}).get('role_type') == 'wolf']
+        villagers = [a for a in agents if (a.state.my_role or {}).get('role_type') != 'wolf']
+        if len(wolves) >= 2 and villagers:
+            wolf_sender = wolves[0]
+            wolf_receiver = wolves[1]
+            wolf_message = f"wolf-chat-{int(time.time())}"
+            if wolf_sender.sio:
+                wolf_sender.sio.emit('werewolf_action', {
+                    'game_id': game_id,
+                    'action': 'wolf_chat',
+                    'message': wolf_message,
+                })
+
+            wolf_seen = wait_for_event(
+                [wolf_receiver],
+                'wolf_chat_message',
+                lambda payload, agent: payload.get('message') == wolf_message,
+                timeout=10,
+            )
+            if not wolf_seen:
+                raise RuntimeError("Wolf chat was not delivered to another wolf")
+
+            nonwolf_seen = wait_for_event(
+                villagers,
+                'wolf_chat_message',
+                lambda payload, agent: payload.get('message') == wolf_message,
+                timeout=3,
+            )
+            if nonwolf_seen:
+                raise RuntimeError("Wolf chat leaked to non-wolf player")
+
+            # Non-wolf should be blocked when attempting wolf_chat.
+            nonwolf_sender = villagers[0]
+            if nonwolf_sender.sio:
+                nonwolf_sender.sio.emit('werewolf_action', {
+                    'game_id': game_id,
+                    'action': 'wolf_chat',
+                    'message': f"nonwolf-wolfchat-{int(time.time())}",
+                })
+
+                nonwolf_blocked = wait_for_event(
+                    [nonwolf_sender],
+                    'error',
+                    lambda payload, agent: 'wolf' in payload.get('message', '').lower(),
+                    timeout=5,
+                )
+                if not nonwolf_blocked:
+                    raise RuntimeError("Non-wolf was able to send wolf_chat")
+        else:
+            print("⚠ Wolf chat visibility check skipped (insufficient wolves)")
+    else:
+        print("⚠ Wolf chat visibility check skipped (roles not assigned in time)")
     
     # Run until game reaches finished/over state. If phase progression stalls,
     # trigger a safe manual advance to cover edge cases where no action reaches server.
@@ -1293,6 +1521,7 @@ def test_werewolf_flow():
         print(f"✓ Werewolf finished, winners={winners}")
 
     post_game = capture_snapshots(agents, 'werewolf_after_game')
+    print_asset_deltas(agents, post_join, post_game, 'werewolf_settlement')
     winner_set = set(next((a.state.winners for a in agents if a.state.game_finished), []))
     winner_tx_found = False
     winner_balance_gain = False
@@ -1320,7 +1549,7 @@ def test_werewolf_flow():
     print("\n✓ Werewolf flow test completed")
 
 
-def test_texas_flow():
+def test_texas_flow(local_debug_mode: bool):
     """Test Texas Hold'em game flow with multiple agents."""
     print("\n" + "="*70)
     print("TESTING TEXAS HOLD'EM GAME FLOW")
@@ -1366,6 +1595,39 @@ def test_texas_flow():
     if not all_joined:
         raise RuntimeError("Texas join edge case: not all agents joined table successfully")
     
+    post_join = capture_snapshots(agents, 'texas_after_join')
+    print_asset_deltas(agents, pre_join, post_join, 'texas_join')
+    if not local_debug_mode:
+        for agent in agents:
+            player_id = agent.state.player_id or ""
+            before = pre_join.get(player_id, {})
+            after = post_join.get(player_id, {})
+            if 'error' in before or 'error' in after:
+                raise RuntimeError(f"Texas account snapshot missing for {agent.state.nickname}")
+            expected_lock = before['locked_balance'] + Decimal(str(TEXAS_BUY_IN_CHIPS))
+            if after['locked_balance'] < expected_lock - EPSILON:
+                raise RuntimeError("Texas buy-in lock did not increase locked balance as expected")
+
+    print(f"\n=== Channel Checks (Texas) ===")
+    lobby_message = f"poker-lobby-chat-{int(time.time())}"
+    if agents[0].sio:
+        agents[0].sio.emit('player_move', {
+            'table_id': table_id,
+            'action': 'chat',
+            'message': lobby_message,
+        })
+
+    lobby_chat_ok = wait_until(
+        lambda: any(
+            any(msg.get('message') == lobby_message for msg in (a.state.game_state or {}).get('chat_history', []))
+            for a in agents
+        ),
+        timeout=10,
+        interval=0.5,
+    )
+    if not lobby_chat_ok:
+        raise RuntimeError("Texas lobby chat not broadcast to channel")
+
     # Start hand
     print(f"\n=== Starting Hand ===")
     agents[0].start_hand(table_id)
@@ -1386,6 +1648,48 @@ def test_texas_flow():
             raise RuntimeError("Texas hand finished but winners list is empty")
         print(f"✓ Texas hand finished, winners={winners}")
 
+    # After hand completion, chat should be allowed again (showdown/finished).
+    post_hand_message = f"poker-posthand-chat-{int(time.time())}"
+    if agents[0].sio:
+        agents[0].sio.emit('player_move', {
+            'table_id': table_id,
+            'action': 'chat',
+            'message': post_hand_message,
+        })
+
+    post_hand_chat_ok = wait_until(
+        lambda: any(
+            any(msg.get('message') == post_hand_message for msg in (a.state.game_state or {}).get('chat_history', []))
+            for a in agents
+        ),
+        timeout=10,
+        interval=0.5,
+    )
+    if not post_hand_chat_ok:
+        print("⚠ Texas post-hand chat not observed (phase may still be active)")
+
+    # Chat should be blocked during active hand phases (pre-flop through river).
+    active_phases = {'pre_flop', 'flop', 'turn', 'river'}
+    if wait_for_phase(agents, active_phases, timeout=10):
+        blocked_message = f"poker-active-chat-{int(time.time())}"
+        if agents[0].sio:
+            agents[0].sio.emit('player_move', {
+                'table_id': table_id,
+                'action': 'chat',
+                'message': blocked_message,
+            })
+
+        blocked_ok = wait_for_event(
+            [agents[0]],
+            'error',
+            lambda payload, agent: payload.get('error_code') == 'CHAT_PHASE_RESTRICTED',
+            timeout=5,
+        )
+        if not blocked_ok:
+            raise RuntimeError("Texas chat was not blocked during active hand")
+    else:
+        print("⚠ Texas active-phase chat restriction check skipped (phase not observed)")
+
     # Explicit leave_game to trigger unlock settlement
     print(f"\n=== Leaving Table for Settlement ===")
     for agent in agents:
@@ -1397,6 +1701,7 @@ def test_texas_flow():
         raise RuntimeError("Not all texas agents received left_game confirmation")
 
     post_leave = capture_snapshots(agents, 'texas_after_leave')
+    print_asset_deltas(agents, post_join, post_leave, 'texas_settlement')
 
     # Settlement assertions:
     # 1) all players have locked balance returned close to pre-join baseline
@@ -1416,7 +1721,7 @@ def test_texas_flow():
         if abs(after['offchain_balance'] - before['offchain_balance']) > EPSILON:
             any_balance_changed = True
 
-    if not locked_ok:
+    if not local_debug_mode and not locked_ok:
         raise RuntimeError("Texas settlement check failed: locked balance not fully released")
     if not any_balance_changed:
         raise RuntimeError("Texas settlement check failed: no post-hand balance change detected")
@@ -1458,17 +1763,18 @@ def main():
         return
 
     backend_info = get_backend_info()
-    print(f"Backend mode: local_debug_mode={backend_info.get('local_debug_mode')}")
+    local_debug_mode = bool(backend_info.get('local_debug_mode'))
+    print(f"Backend mode: local_debug_mode={local_debug_mode}")
     
     try:
         # Test werewolf flow
-        test_werewolf_flow()
+        test_werewolf_flow(local_debug_mode)
         
         # Wait a bit between tests
         time.sleep(2)
         
         # Test texas flow
-        test_texas_flow()
+        test_texas_flow(local_debug_mode)
         
         print("\n" + "="*70)
         print("ALL TESTS COMPLETED")

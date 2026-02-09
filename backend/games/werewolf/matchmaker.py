@@ -8,6 +8,7 @@ It manages a queue of players and starts games when conditions are met.
 import asyncio
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Dict, List, Optional, Callable
 
 
@@ -17,6 +18,7 @@ class QueuedPlayer:
     sid: str
     wallet_address: str
     nickname: str
+    entry_fee: Decimal = Decimal("0")
     join_time: float = field(default_factory=time.time)
 
 
@@ -57,7 +59,13 @@ class WerewolfMatchmaker:
         self._task: Optional[asyncio.Task] = None
         self._running = False
     
-    def add_player(self, sid: str, wallet_address: str, nickname: str = "Player") -> bool:
+    def add_player(
+        self,
+        sid: str,
+        wallet_address: str,
+        nickname: str = "Player",
+        entry_fee: Decimal = Decimal("0"),
+    ) -> bool:
         """
         Add a player to the matchmaking queue.
         
@@ -76,7 +84,8 @@ class WerewolfMatchmaker:
         player = QueuedPlayer(
             sid=sid,
             wallet_address=wallet_address,
-            nickname=nickname
+            nickname=nickname,
+            entry_fee=entry_fee,
         )
         self.queue.append(player)
         self.queue_sids.add(sid)

@@ -606,6 +606,7 @@ async def werewolf_timeout_checker():
                                 'refund_players': result.get('refund_players', []),
                                 'timestamp': datetime.utcnow().isoformat()
                             })
+                            await handle_werewolf_game_abort(game_id, result.get('reason'))
                             continue
                         
                         # Emit phase change
@@ -645,15 +646,20 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
     """
     game = werewolf_games.get(game_id)
     
-    # Determine winner team
+    total_entry_fees = Decimal("0")
+    prize_pool = Decimal("0")
     winner_team = None
-    if game and winners:
-        # Check if any winner is a wolf
-        for player in game.players:
-            if player['wallet_address'] in winners:
-                if player.get('role') and hasattr(player['role'], 'team'):
-                    winner_team = player['role'].team.value
-                    break
+    if game:
+        total_entry_fees = sum(player['entry_fee_paid'] for player in game.players)
+        prize_pool = total_entry_fees * WEREWOLF_PRIZE_MULTIPLIER
+
+        if winners:
+            # Check if any winner is a wolf
+            for player in game.players:
+                if player['wallet_address'] in winners:
+                    if player.get('role') and hasattr(player['role'], 'team'):
+                        winner_team = player['role'].team.value
+                        break
     
     # Persist game end to MySQL
     try:
@@ -662,7 +668,8 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
             winner_team=winner_team,
             winners=winners,
             was_aborted=False,
-            final_state=game.to_dict() if game else None
+            final_state=game.to_dict() if game else None,
+            prize_pool=prize_pool
         )
     except Exception as e:
         print(f"Failed to persist game end: {e}")
@@ -671,10 +678,14 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
     
     # Handle prize distribution and refunds
     try:
+        if game:
+            await _unlock_werewolf_entry_fees(
+                game,
+                game_id,
+                description="Werewolf entry fee principal unlock"
+            )
+
         if game and winners:
-            # 计算奖金池：所有入场费的总和 × 奖金倍数
-            total_entry_fees = sum(player['entry_fee_paid'] for player in game.players)
-            prize_pool = total_entry_fees * WEREWOLF_PRIZE_MULTIPLIER
             prize_per_winner = prize_pool / len(winners)
 
             print(f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners")
@@ -688,22 +699,61 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
                 )
                 print(f"Awarded {float(prize_per_winner)} tokens to winner: {winner_address[:8]}...")
         elif game and not winners:
-            # 平局或游戏异常结束，退还所有入场费
             print("Werewolf game ended without winners, refunding entry fees")
-            for player in game.players:
-                await unlock_balance(
-                    player['wallet_address'],
-                    player['entry_fee_paid'],
-                    game_session_id=game_id,
-                    description="Werewolf game refund - no winners"
-                )
-                print(f"Refunded {float(player['entry_fee_paid'])} tokens to: {player['wallet_address'][:8]}...")
         else:
             print("No game data found for prize distribution")
     except Exception as e:
         print(f"Failed to handle prize distribution: {e}")
         import traceback
         traceback.print_exc()
+
+
+async def handle_werewolf_game_abort(game_id: str, reason: Optional[str] = None):
+    """Handle werewolf game abort: record results and refund entry fees."""
+    game = werewolf_games.get(game_id)
+
+    try:
+        await persistence_manager.on_game_ended(
+            game_id=game_id,
+            winner_team=None,
+            winners=[],
+            was_aborted=True,
+            final_state=game.to_dict() if game else None,
+            prize_pool=Decimal("0")
+        )
+    except Exception as e:
+        print(f"Failed to persist aborted game end: {e}")
+        import traceback
+        traceback.print_exc()
+
+    try:
+        if game:
+            await _unlock_werewolf_entry_fees(
+                game,
+                game_id,
+                description="Werewolf game refund - aborted"
+            )
+            print(f"Werewolf game aborted: refunded entry fees ({reason or 'no reason'})")
+        else:
+            print("No game data found for aborted refund")
+    except Exception as e:
+        print(f"Failed to refund aborted werewolf game: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def _unlock_werewolf_entry_fees(game: WerewolfGame, game_id: str, description: str) -> None:
+    """Unlock entry fees for all players in a werewolf game."""
+    for player in game.players:
+        entry_fee = player.get('entry_fee_paid') or Decimal("0")
+        if entry_fee <= 0:
+            continue
+        await unlock_balance(
+            player['wallet_address'],
+            entry_fee,
+            game_session_id=game_id,
+            description=description
+        )
 
 
 # ============================================================================
@@ -1228,7 +1278,7 @@ async def join_game(sid, data):
             buy_in_tokens = Decimal(str(data['tokens']))
             buy_in_chips = buy_in_tokens / TEXAS_CHIP_TO_TOKEN_RATIO
         else:
-            buy_in_chips = data.get('chips', 1000)
+            buy_in_chips = Decimal(str(data.get('chips', 1000)))
             buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
 
         if not table_id:
@@ -1456,9 +1506,9 @@ async def player_move(sid, data):
 @sio.event
 async def poker_action(sid, data):
     """
-    Alternative handler for poker actions (used in agent_rules.md).
+    Alternative handler for poker actions (used in SKILL.md).
     
-    This is an alias for player_move that matches the protocol in agent_rules.md.
+    This is an alias for player_move that matches the protocol in SKILL.md.
     
     Expected data: {
         'game_id': str,
@@ -1592,6 +1642,12 @@ async def leave_game(sid, data):
             return
         
         table = poker_tables[table_id]
+
+        if table.engine.phase in POKER_ACTIVE_PHASES:
+            await sio.emit('error', {
+                'message': 'Cannot leave during active hand. Fold or wait for the hand to finish.'
+            }, room=sid)
+            return
         
         # Capture balances before remove to settle locked funds correctly.
         player_dict = next((p for p in table.players if p.get('sid') == sid), None)
@@ -1599,6 +1655,12 @@ async def leave_game(sid, data):
         
         # Remove from table
         table.remove_player(sid)
+
+        if sid in table.engine.players:
+            await sio.emit('error', {
+                'message': 'Leave request deferred until the current hand completes.'
+            }, room=sid)
+            return
         
         # Leave Socket.IO room
         await sio.leave_room(sid, table_id)
@@ -1864,7 +1926,8 @@ async def join_werewolf_game(sid, data):
                 game_id=game_id,
                 player_id=player_id,
                 socket_sid=sid,
-                nickname=nickname
+                nickname=nickname,
+                entry_paid=game.entry_fee
             )
             
             # Persist core state to Redis
@@ -2380,40 +2443,111 @@ async def on_game_matched(players, game_size: int):
     """
     import uuid
     
+    if not players:
+        return
+
+    entry_fee = getattr(players[0], 'entry_fee', Decimal("0"))
+
+    eligible_players = []
+    for player in players:
+        player_entry_fee = getattr(player, 'entry_fee', entry_fee)
+        if player_entry_fee != entry_fee:
+            await sio.emit('error', {
+                'message': f'Entry fee mismatch. Expected {float(entry_fee)} tokens.'
+            }, room=player.sid)
+            continue
+
+        if entry_fee > 0:
+            try:
+                current_balance = await get_balance(player.wallet_address)
+                if current_balance < entry_fee:
+                    await sio.emit('error', {
+                        'message': (
+                            f'Insufficient balance for werewolf matchmaking entry fee. '
+                            f'Required: {float(entry_fee)} tokens, '
+                            f'Available: {float(current_balance)}'
+                        )
+                    }, room=player.sid)
+                    continue
+            except Exception as e:
+                await sio.emit('error', {
+                    'message': f'Failed to verify entry fee balance: {str(e)}'
+                }, room=player.sid)
+                continue
+
+        eligible_players.append(player)
+
+    if len(eligible_players) < WerewolfMatchmaker.MIN_PLAYERS:
+        return
+
     # Generate unique game ID
     game_id = f"werewolf_auto_{uuid.uuid4().hex[:8]}"
-    
+
     # Create game
-    game = WerewolfGame(game_id)
+    game = WerewolfGame(game_id, entry_fee=entry_fee)
     werewolf_games[game_id] = game
-    
+
     # Persist game creation to MySQL
     await persistence_manager.on_game_created(
         game_id=game_id,
         game_type="werewolf",
-        entry_fee=Decimal("0")
+        entry_fee=entry_fee
     )
-    
-    # Add all players to game
-    for player in players:
+
+    seated_players = []
+    for player in eligible_players:
         # Add player to game
-        game.add_player(player.sid, player.wallet_address, nickname=player.nickname)
-        
+        if not game.add_player(player.sid, player.wallet_address, nickname=player.nickname):
+            await sio.emit('error', {
+                'message': 'Could not join auto-matched werewolf game'
+            }, room=player.sid)
+            continue
+
+        if entry_fee > 0:
+            try:
+                await lock_balance(player.wallet_address, entry_fee, game_session_id=game_id)
+            except Exception as e:
+                game.remove_player(player.sid)
+                await sio.emit('error', {
+                    'message': f'Failed to lock werewolf entry fee: {str(e)}'
+                }, room=player.sid)
+                continue
+
         # Persist player join to MySQL
         await persistence_manager.on_player_joined(
             game_id=game_id,
             player_id=player.wallet_address,
             socket_sid=player.sid,
-            nickname=player.nickname
+            nickname=player.nickname,
+            entry_paid=entry_fee
         )
-        
+
         # Update session
         if player.sid in player_sessions:
             player_sessions[player.sid]['game_id'] = game_id
-        
+
         # Join Socket.IO room
         await sio.enter_room(player.sid, game_id)
-    
+        seated_players.append(player)
+
+    if len(seated_players) < WerewolfMatchmaker.MIN_PLAYERS:
+        for player in seated_players:
+            if entry_fee > 0:
+                try:
+                    await unlock_balance(
+                        player.wallet_address,
+                        entry_fee,
+                        game_session_id=game_id,
+                        description='Werewolf matchmaking cancelled after seat failures'
+                    )
+                except Exception:
+                    pass
+            if player.sid in player_sessions:
+                player_sessions[player.sid]['game_id'] = None
+            await sio.leave_room(player.sid, game_id)
+        werewolf_games.pop(game_id, None)
+        return
+
     # Start the game
     game.start_game()
     
@@ -2435,7 +2569,7 @@ async def on_game_matched(players, game_size: int):
     )
     
     # Notify all players
-    for player in players:
+    for player in seated_players:
         await sio.emit('matchmaking_game_started', {
             'game_id': game_id,
             'player_count': game_size
@@ -2568,6 +2702,11 @@ async def join_matchmaking(sid, data):
         player_name = player_sessions[sid]['player_name'] or 'Player'
         nickname = requested_name[:32] if requested_name else player_name
         
+        entry_fee = Decimal(str(data.get('entry_fee', 0)))
+        if entry_fee < 0:
+            await sio.emit('error', {'message': 'Invalid entry fee amount'}, room=sid)
+            return
+
         # Initialize matchmaker if needed
         if werewolf_matchmaker is None:
             werewolf_matchmaker = WerewolfMatchmaker(
@@ -2575,12 +2714,39 @@ async def join_matchmaking(sid, data):
                 fallback_warning_callback=on_matchmaking_fallback
             )
             werewolf_matchmaker.start()
+
+        if werewolf_matchmaker.get_queue_size() > 0:
+            queued_fee = werewolf_matchmaker.queue[0].entry_fee
+            if queued_fee != entry_fee:
+                await sio.emit('error', {
+                    'message': (
+                        f'Entry fee mismatch. Current queue requires {float(queued_fee)} tokens.'
+                    )
+                }, room=sid)
+                return
+
+        if entry_fee > 0:
+            try:
+                current_balance = await get_balance(player_id)
+                if current_balance < entry_fee:
+                    await sio.emit('error', {
+                        'message': (
+                            f'Insufficient balance for werewolf matchmaking entry fee. '
+                            f'Required: {float(entry_fee)} tokens, '
+                            f'Available: {float(current_balance)}'
+                        )
+                    }, room=sid)
+                    return
+            except Exception as e:
+                await sio.emit('error', {'message': f'Balance check failed: {str(e)}'}, room=sid)
+                return
         
         # Add to queue
-        if werewolf_matchmaker.add_player(sid, player_id, nickname):
+        if werewolf_matchmaker.add_player(sid, player_id, nickname, entry_fee):
             queue_info = werewolf_matchmaker.get_queue_info()
             await sio.emit('matchmaking_joined', {
                 'queue_size': queue_info['size'],
+                'entry_fee': float(entry_fee),
                 'message': 'Joined matchmaking queue'
             }, room=sid)
         else:

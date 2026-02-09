@@ -123,6 +123,7 @@ class ChatMessage:
 class DeathEvent:
     """Represents a player death event."""
     sid: str
+    wallet_address: str
     nickname: str
     cause: str  # 'wolf_kill', 'poison', 'vote', 'hunter_shot'
     role_revealed: Optional[str] = None  # Role revealed on death (for vote deaths)
@@ -130,6 +131,7 @@ class DeathEvent:
     def to_dict(self) -> Dict:
         return {
             'sid': self.sid,
+            'wallet_address': self.wallet_address,
             'nickname': self.nickname,
             'cause': self.cause,
             'role_revealed': self.role_revealed
@@ -1038,6 +1040,7 @@ class WerewolfGame(BaseGame):
             if target:
                 death = DeathEvent(
                     sid=self.pending_wolf_kill,
+                    wallet_address=target['wallet_address'],
                     nickname=target['nickname'],
                     cause='wolf_kill'
                 )
@@ -1055,6 +1058,7 @@ class WerewolfGame(BaseGame):
             if target:
                 death = DeathEvent(
                     sid=poison_target,
+                    wallet_address=target['wallet_address'],
                     nickname=target['nickname'],
                     cause='poison'
                 )
@@ -1073,6 +1077,7 @@ class WerewolfGame(BaseGame):
             if target and target['is_alive']:
                 death = DeathEvent(
                     sid=self.hunter_shot,
+                    wallet_address=target['wallet_address'],
                     nickname=target['nickname'],
                     cause='hunter_shot',
                     role_revealed=target['role'].role_type.value if target.get('role') else None
@@ -1116,6 +1121,7 @@ class WerewolfGame(BaseGame):
         if eliminated:
             death = DeathEvent(
                 sid=eliminated_sid,
+                wallet_address=eliminated['wallet_address'],
                 nickname=eliminated['nickname'],
                 cause='vote',
                 role_revealed=eliminated['role'].role_type.value if eliminated.get('role') else None

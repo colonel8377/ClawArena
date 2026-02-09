@@ -805,25 +805,42 @@ async def handle_login(login_key: str) -> Dict:
                 'user': _serialize_user(user)
             }
         
-        # Check if last login was on a different day
+        # Check if last login was on a different day.
+        # Do reward + last_login_date update atomically in SQL to prevent
+        # concurrent login paths from granting duplicate rewards.
         reward_granted = False
-        if user.last_login_date is None or user.last_login_date.date() < today_utc:
-            # Grant daily reward using atomic operation - use str() to maintain precision
-            balance_before = user.offchain_balance
-            await db.execute(
-                text("UPDATE user_ledger SET offchain_balance = offchain_balance + :reward WHERE wallet_address = :wallet"),
-                {"reward": str(DAILY_LOGIN_REWARD), "wallet": player_id}
-            )
-            user.last_login_date = now_utc
-            reward_granted = True
-            await db.commit()
-            await db.refresh(user)
+        today_start_utc = datetime(now_utc.year, now_utc.month, now_utc.day)
+        reward_update_result = await db.execute(
+            text("""
+                UPDATE user_ledger
+                SET offchain_balance = offchain_balance + :reward,
+                    last_login_date = :now_utc,
+                    updated_at = :now_utc
+                WHERE wallet_address = :wallet
+                  AND (last_login_date IS NULL OR last_login_date < :today_start)
+            """),
+            {
+                "reward": str(DAILY_LOGIN_REWARD),
+                "now_utc": now_utc,
+                "today_start": today_start_utc,
+                "wallet": player_id,
+            }
+        )
 
-            # Update cache
-            await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        if reward_update_result.rowcount > 0:
+            reward_granted = True
+
+        await db.commit()
+        await db.refresh(user)
+
+        # Update cache after login flow so balance/last_login_date stays fresh.
+        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+
+        if reward_granted:
             await invalidate_leaderboard_cache()
 
-            # Log daily reward transaction
+            # Balance before reward is deterministic from refreshed post-state.
+            balance_before = user.offchain_balance - DAILY_LOGIN_REWARD
             await log_transaction(
                 wallet_address=user.wallet_address,
                 tx_type=TransactionType.DAILY_REWARD,

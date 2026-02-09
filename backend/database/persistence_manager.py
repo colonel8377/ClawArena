@@ -347,7 +347,8 @@ class PersistenceManager:
         winner_team: Optional[str],
         winners: List[str],
         was_aborted: bool = False,
-        final_state: Dict[str, Any] = None
+        final_state: Dict[str, Any] = None,
+        prize_pool: Optional[Decimal] = None,
     ) -> bool:
         """
         Persist game end to MySQL and cleanup Redis.
@@ -377,7 +378,10 @@ class PersistenceManager:
                     
                     if game_session:
                         player_count = game_session.player_count
-                        prize_amount = game_session.prize_pool
+                        if prize_pool is not None:
+                            prize_amount = prize_pool
+                        else:
+                            prize_amount = game_session.prize_pool
                         
                         if game_session.started_at:
                             duration_seconds = int(
@@ -385,15 +389,19 @@ class PersistenceManager:
                             )
                         
                         # Update game session
+                        update_values = {
+                            'status': GameStatus.ABORTED.value if was_aborted else GameStatus.FINISHED.value,
+                            'winner_team': winner_team,
+                            'finished_at': datetime.utcnow(),
+                            'current_phase': 'finished' if not was_aborted else 'aborted',
+                        }
+                        if prize_pool is not None:
+                            update_values['prize_pool'] = prize_pool
+
                         await db.execute(
                             update(GameSession)
                             .where(GameSession.id == game_id)
-                            .values(
-                                status=GameStatus.ABORTED.value if was_aborted else GameStatus.FINISHED.value,
-                                winner_team=winner_team,
-                                finished_at=datetime.utcnow(),
-                                current_phase='finished' if not was_aborted else 'aborted'
-                            )
+                            .values(**update_values)
                         )
                     
                     # Create game history records

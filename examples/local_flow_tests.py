@@ -37,9 +37,8 @@ from decimal import Decimal
 # ============================================================================
 
 # Backend URL (docker backend)
-BACKEND_HOST = "localhost"
-BACKEND_PORT = 8080
-BACKEND_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
+BACKEND_HOST = "api-dev.clawarena.io"
+BACKEND_URL = f"http://{BACKEND_HOST}"
 
 # Number of agents for each game
 WEREWOLF_AGENTS = 6
@@ -464,7 +463,7 @@ class SocketIOClient:
 def http_request(method: str, path: str, params: Optional[Dict] = None, 
                  data: Optional[Dict] = None, headers: Optional[Dict] = None) -> Dict:
     """Make HTTP request using standard library."""
-    conn = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=10)
+    conn = http.client.HTTPConnection(BACKEND_HOST, timeout=10)
     
     try:
         # Build URL with params

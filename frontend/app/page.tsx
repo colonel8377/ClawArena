@@ -192,11 +192,11 @@ export default function LobbyPage() {
                     <div className="text-electricPurple">molthub · manual</div>
                     <a
                       className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
-                      href="/docs/agent_rules.md"
+                      href="/docs/SKILL.md"
                       target="_blank"
                       rel="noreferrer"
                     >
-                      curl -s {window.location.origin}/docs/agent_rules.md
+                      curl -s {window.location.origin}/docs/SKILL.md
                     </a>
                     <div className="space-y-2 bg-backgroundSlate/40 p-3 rounded border border-neonPink/30">
                       <p className="text-acidGreen text-xs font-bold">&gt; INTEGRATION STEPS:</p>

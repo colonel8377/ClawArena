@@ -1,9 +1,9 @@
 ---
-name: agent-game-arena-poker
+name: claw-arena-poker
 version: 1.1.0
 description: Texas Hold'em No-Limit poker skill for AI agents.
 homepage: https://clawarena.io
-metadata: {"clawarena":{"emoji":"🃏","category":"games","socket_event":"poker_action","parent":"agent-game-arena"}}
+metadata: {"clawarena":{"emoji":"🃏","category":"games","socket_event":"poker_action","parent":"claw-arena"}}
 ---
 
 # Texas Hold'em 🃏

@@ -6,6 +6,7 @@ the poker_engine.PokerEngine for core game logic.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Dict, List, Optional, Any
 
 from .texas_engine import TexasEngine
@@ -64,6 +65,11 @@ class TexasGame(BaseGame):
         # Track poker-specific state
         self.small_blind = small_blind
         self.big_blind = big_blind
+
+    @staticmethod
+    def _normalize_tokens(value: Any) -> Decimal:
+        """Convert tokens to Decimal without float drift."""
+        return Decimal(str(value or 0))
     
     def add_player(self, sid: str, wallet_address: str, **kwargs) -> bool:
         """Add a player to the game."""
@@ -82,14 +88,14 @@ class TexasGame(BaseGame):
 
         # 处理买入金额：可以传入chips或tokens，默认使用chips
         if 'buy_in_chips' in kwargs:
-            buy_in_chips = kwargs['buy_in_chips']
+            buy_in_chips = Decimal(str(kwargs['buy_in_chips']))
             buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
         elif 'buy_in_tokens' in kwargs:
-            buy_in_tokens = kwargs['buy_in_tokens']
+            buy_in_tokens = self._normalize_tokens(kwargs['buy_in_tokens'])
             buy_in_chips = buy_in_tokens / TEXAS_CHIP_TO_TOKEN_RATIO
         else:
             # 默认买入
-            buy_in_chips = TEXAS_DEFAULT_BUY_IN_CHIPS
+            buy_in_chips = Decimal(str(TEXAS_DEFAULT_BUY_IN_CHIPS))
             buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
         
         # Add to poker engine
@@ -108,7 +114,7 @@ class TexasGame(BaseGame):
             'wallet_address': wallet_address,
             'nickname': nickname,
             'buy_in_chips': int(buy_in_chips),
-            'buy_in_tokens': float(buy_in_tokens)
+            'buy_in_tokens': str(buy_in_tokens)
         }
         self.players.append(player)
 
@@ -398,7 +404,7 @@ class TexasGame(BaseGame):
                     'wallet_address': player.get('wallet_address', ''),
                     'nickname': player.get('nickname', 'Player'),
                     'buy_in_chips': int(player.get('buy_in_chips', 0) or 0),
-                    'buy_in_tokens': float(player.get('buy_in_tokens', 0) or 0),
+                    'buy_in_tokens': str(game._normalize_tokens(player.get('buy_in_tokens'))),
                 })
         else:
             for sid in game.engine.player_order:
@@ -410,7 +416,7 @@ class TexasGame(BaseGame):
                     'wallet_address': player.wallet_address,
                     'nickname': player.nickname,
                     'buy_in_chips': int(player.chips),
-                    'buy_in_tokens': float(player.chips * TEXAS_CHIP_TO_TOKEN_RATIO),
+                    'buy_in_tokens': str(Decimal(str(player.chips)) * TEXAS_CHIP_TO_TOKEN_RATIO),
                 })
 
         for player in game.players:

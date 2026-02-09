@@ -6,7 +6,7 @@
 
 :root {
   color-scheme: dark;
-  --font-base: 'Inter', 'SF Pro Text', system-ui, sans-serif;
+  --font-base: 'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Consolas', 'Monaco', 'Courier New', monospace;
   --background: 12 16 22;
   --background-slate: 20 26 34;
   --foreground: 238 242 248;

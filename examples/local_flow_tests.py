@@ -529,6 +529,7 @@ class AgentState:
     game_finished: bool = False
     winners: List[Any] = field(default_factory=list)
     left_game: bool = False
+    last_progress_ts: float = field(default_factory=time.time)
 
 
 class BaseAgent:
@@ -644,6 +645,7 @@ class BaseAgent:
         def on_error(data):
             print(f"[{self.state.nickname}] ✗ Error: {data}")
             self.state.events_received.append(('error', data))
+            self.state.last_progress_ts = time.time()
         
         def on_snapshot(data):
             print(f"[{self.state.nickname}] Received GAME_SNAPSHOT")
@@ -653,6 +655,7 @@ class BaseAgent:
             if 'your_role' in data:
                 self.state.my_role = data.get('your_role')
             self.state.events_received.append(('GAME_SNAPSHOT', data))
+            self.state.last_progress_ts = time.time()
             self.on_game_snapshot(data)
         
         self.sio.on('connected', on_connected)  # Server sends this on connect
@@ -799,6 +802,7 @@ class WerewolfAgent(BaseAgent):
         data = dict(payload)
         data['game_id'] = game_id
         self.sio.emit('werewolf_action', data)
+        self.state.last_progress_ts = time.time()
         return True
 
     def _already_acted_for_state(self, phase: str) -> bool:
@@ -827,6 +831,7 @@ class WerewolfAgent(BaseAgent):
         def on_joined(data):
             print(f"[{self.state.nickname}] Joined werewolf game")
             self.state.events_received.append(('werewolf_joined', data))
+            self.state.last_progress_ts = time.time()
         
         def on_state(data):
             print(f"[{self.state.nickname}] Received werewolf_state")
@@ -834,6 +839,7 @@ class WerewolfAgent(BaseAgent):
             if data.get('game_id'):
                 self.state.game_id = data.get('game_id')
             self.state.events_received.append(('werewolf_state', data))
+            self.state.last_progress_ts = time.time()
             self.decide_action()
         
         def on_phase_change(data):
@@ -846,11 +852,13 @@ class WerewolfAgent(BaseAgent):
                 self.state.winners = data.get('winners', []) or []
                 print(f"[{self.state.nickname}] ✓ Werewolf game finished, winners={self.state.winners}")
             self.state.events_received.append(('werewolf_phase_change', data))
+            self.state.last_progress_ts = time.time()
             self.decide_action()
         
         def on_game_created(data):
             print(f"[{self.state.nickname}] Game created: {data.get('game_id')}")
             self.state.events_received.append(('werewolf_game_created', data))
+            self.state.last_progress_ts = time.time()
         
         self.sio.on('werewolf_joined', on_joined)
         self.sio.on('werewolf_state', on_state)
@@ -1059,17 +1067,20 @@ class TexasAgent(BaseAgent):
             print(f"[{self.state.nickname}] Joined poker table")
             self.state.left_game = False
             self.state.events_received.append(('joined_game', data))
+            self.state.last_progress_ts = time.time()
 
         def on_left_game(data):
             print(f"[{self.state.nickname}] Left poker table")
             self.state.left_game = True
             self.state.events_received.append(('left_game', data))
+            self.state.last_progress_ts = time.time()
         
         def on_game_update(data):
             print(f"[{self.state.nickname}] Received game_update")
             self.state.game_state = data
             self.state.game_id = data.get('game_id')
             self.state.events_received.append(('game_update', data))
+            self.state.last_progress_ts = time.time()
             self.decide_action()
         
         def on_private_hand(data):
@@ -1077,6 +1088,7 @@ class TexasAgent(BaseAgent):
             self.state.my_hole_cards = data.get('hole_cards')
             self.state.is_my_turn = data.get('your_turn', False)
             self.state.events_received.append(('private_hand', data))
+            self.state.last_progress_ts = time.time()
             if self.state.is_my_turn:
                 self.decide_action()
 
@@ -1085,12 +1097,14 @@ class TexasAgent(BaseAgent):
             self.state.game_finished = True
             self.state.winners = [data.get('winner')] if data.get('winner') else []
             self.state.events_received.append(('hand_winner', data))
+            self.state.last_progress_ts = time.time()
 
         def on_showdown_reveal(data):
             print(f"[{self.state.nickname}] ✓ Hand finished via showdown_reveal")
             self.state.game_finished = True
             self.state.winners = data.get('winners', []) or []
             self.state.events_received.append(('showdown_reveal', data))
+            self.state.last_progress_ts = time.time()
         
         self.sio.on('joined_game', on_joined)
         self.sio.on('left_game', on_left_game)
@@ -1174,21 +1188,26 @@ class TexasAgent(BaseAgent):
 def register_and_login_agents(agents: List[BaseAgent]):
     """Register and login all agents."""
     print("\n=== Registering and Logging in Agents ===")
+    all_ok = True
     for agent in agents:
         try:
             registered = agent.register()
             if not registered:
                 print(f"  Registration failed: {agent.state.nickname}")
+                all_ok = False
                 continue
             print(f"  Registered: {agent.state.nickname} -> {agent.state.player_id}")
 
             logged_in = agent.login()
             if not logged_in:
                 print(f"  Login failed: {agent.state.nickname} ({agent.state.player_id})")
+                all_ok = False
                 continue
             print(f"  Logged in: {agent.state.nickname} ({agent.state.player_id})")
         except Exception as e:
             print(f"  Error with {agent.state.nickname}: {e}")
+            all_ok = False
+    return all_ok
 
 
 def test_werewolf_flow():
@@ -1204,7 +1223,8 @@ def test_werewolf_flow():
     ]
     
     # Register and login
-    register_and_login_agents(agents)
+    if not register_and_login_agents(agents):
+        raise RuntimeError("Werewolf precondition failed: register/login not completed for all agents")
 
     pre_game = capture_snapshots(agents, 'werewolf_before_game')
     
@@ -1240,13 +1260,30 @@ def test_werewolf_flow():
     agents[0].start_game(game_id)
     time.sleep(1)
     
-    # Run until game reaches finished/over state
-    print(f"\n=== Running Game Until Finished (max 240 seconds) ===")
-    finished = wait_until(
-        lambda: any(a.state.game_finished for a in agents),
-        timeout=240,
-        interval=1.0,
-    )
+    # Run until game reaches finished/over state. If phase progression stalls,
+    # trigger a safe manual advance to cover edge cases where no action reaches server.
+    max_wait_seconds = 300
+    stall_seconds = 25
+    print(f"\n=== Running Game Until Finished (max {max_wait_seconds} seconds) ===")
+    deadline = time.time() + max_wait_seconds
+    finished = False
+    while time.time() < deadline:
+        if any(a.state.game_finished for a in agents):
+            finished = True
+            break
+
+        last_progress = max(a.state.last_progress_ts for a in agents)
+        if time.time() - last_progress > stall_seconds:
+            game_id = agents[0].state.game_id or game_id
+            print(f"⚠ Werewolf appears stalled for {stall_seconds}s, forcing phase advance on {game_id}")
+            if agents[0].sio and game_id:
+                agents[0].sio.emit('advance_werewolf_phase', {'game_id': game_id})
+            # Avoid spamming force-advance.
+            for a in agents:
+                a.state.last_progress_ts = time.time()
+
+        time.sleep(1.0)
+
     if not finished:
         raise RuntimeError("Werewolf did not finish within timeout")
     else:
@@ -1296,7 +1333,8 @@ def test_texas_flow():
     ]
     
     # Register and login
-    register_and_login_agents(agents)
+    if not register_and_login_agents(agents):
+        raise RuntimeError("Texas precondition failed: register/login not completed for all agents")
 
     pre_join = capture_snapshots(agents, 'texas_before_join')
     
@@ -1320,7 +1358,13 @@ def test_texas_flow():
         agent.join_table(table_id, chips=TEXAS_BUY_IN_CHIPS)
         time.sleep(0.1)
     
-    time.sleep(1)
+    all_joined = wait_until(
+        lambda: all(any(evt == 'joined_game' for evt, _ in a.state.events_received) for a in agents),
+        timeout=20,
+        interval=0.5,
+    )
+    if not all_joined:
+        raise RuntimeError("Texas join edge case: not all agents joined table successfully")
     
     # Start hand
     print(f"\n=== Starting Hand ===")

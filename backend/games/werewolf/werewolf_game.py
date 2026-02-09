@@ -12,6 +12,7 @@ The design follows real-world Werewolf rules and is optimized for AI agent gamep
 import random
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Set
 
@@ -159,12 +160,16 @@ class WerewolfGame(BaseGame):
     def __init__(
         self,
         game_id: str,
+        entry_fee: Decimal = Decimal("0"),
         on_phase_change: Optional[Callable[..., Awaitable[None]]] = None,
         on_game_end: Optional[Callable[..., Awaitable[None]]] = None,
         on_timeout: Optional[Callable[..., Awaitable[None]]] = None
     ):
         """Initialize a Werewolf game."""
         super().__init__(game_id, game_type="werewolf", timeout_seconds=DEFAULT_TIMEOUT)
+
+        # Economy fields used by Socket handlers and settlement code.
+        self.entry_fee: Decimal = Decimal(str(entry_fee))
         
         # Game state
         self.phase = WerewolfPhase.WAITING
@@ -232,6 +237,7 @@ class WerewolfGame(BaseGame):
             'sid': sid,
             'wallet_address': wallet_address,
             'nickname': nickname,
+            'entry_fee_paid': self.entry_fee,
             'role': None,
             'is_alive': True,
             'status': 'alive',  # 'alive', 'zombie', 'dead'
@@ -1463,6 +1469,7 @@ class WerewolfGame(BaseGame):
         return {
             'game_id': self.game_id,
             'game_type': self.game_type,
+            'entry_fee': str(self.entry_fee),
             'phase': self.phase.value,
             'day_count': self.day_count,
             'players': players_data,
@@ -1519,7 +1526,7 @@ class WerewolfGame(BaseGame):
             Restored WerewolfGame instance
         """
         game_id = data.get('game_id', 'restored_game')
-        game = cls(game_id)
+        game = cls(game_id, entry_fee=Decimal(str(data.get('entry_fee', '0'))))
         
         # Restore basic state
         game.game_type = data.get('game_type', 'werewolf')
@@ -1558,6 +1565,7 @@ class WerewolfGame(BaseGame):
                 'sid': p_data.get('sid'),
                 'wallet_address': p_data.get('wallet_address'),
                 'nickname': p_data.get('nickname', 'Player'),
+                'entry_fee_paid': Decimal(str(p_data.get('entry_fee_paid', data.get('entry_fee', '0')))),
                 'is_alive': p_data.get('is_alive', True),
                 'status': p_data.get('status', 'alive'),
                 'consecutive_timeouts': p_data.get('consecutive_timeouts', 0),

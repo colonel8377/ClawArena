@@ -37,7 +37,7 @@ from database.persistence_manager import persistence_manager
 from database.redis_manager import redis_manager
 from economy.account import (
     register_user, handle_login, add_balance, get_balance,
-    get_account_summary, transfer_balance, batch_get_balances,
+    get_account_summary, transfer_balance, batch_get_balances, deduct_balance,
     InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError, unlock_balance,
     lock_balance, get_leaderboard
 )
@@ -1606,16 +1606,39 @@ async def leave_game(sid, data):
         if sid in player_sessions:
             player_sessions[sid]['table_id'] = None
         
-        # If player had chips, convert to tokens and unlock funds
-        if player_dict and engine_player and engine_player.chips > 0:
-            token_amount = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
-            # 解锁剩余资金
-            await unlock_balance(
-                player_dict['wallet_address'],
-                token_amount,
-                game_session_id=table_id,
-                description="Texas Hold'em game exit refund"
-            )
+        # Settle table funds on leave so locked balance is fully released.
+        # Current accounting model locks full buy-in at join; on leave we:
+        # 1) unlock full principal (buy-in) to clear locked funds
+        # 2) apply PnL delta separately (win => add, loss => deduct)
+        if player_dict and engine_player:
+            wallet_address = player_dict['wallet_address']
+            buy_in_tokens = Decimal(str(player_dict.get('buy_in_tokens', 0) or 0))
+            chips_tokens = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
+
+            # In normal mode this clears all lock; in local debug it's a no-op.
+            if buy_in_tokens > 0:
+                await unlock_balance(
+                    wallet_address,
+                    buy_in_tokens,
+                    game_session_id=table_id,
+                    description="Texas Hold'em buy-in principal unlock"
+                )
+
+            pnl_delta = chips_tokens - buy_in_tokens
+            if pnl_delta > 0:
+                await add_balance(
+                    wallet_address,
+                    pnl_delta,
+                    tx_type=TransactionType.GAME_WIN,
+                    description="Texas Hold'em settlement profit"
+                )
+            elif pnl_delta < 0:
+                await deduct_balance(
+                    wallet_address,
+                    -pnl_delta,
+                    tx_type=TransactionType.GAME_ENTRY,
+                    description="Texas Hold'em settlement loss"
+                )
         
         # Notify player
         await sio.emit('left_game', {'table_id': table_id}, room=sid)
@@ -1756,7 +1779,7 @@ async def create_werewolf_game(sid, data):
                 await sio.emit('error', {'message': 'Game already exists'}, room=sid)
                 return
             
-            werewolf_games[game_id] = WerewolfGame(game_id)
+            werewolf_games[game_id] = WerewolfGame(game_id, entry_fee=entry_fee)
             
             # Persist to MySQL (cold storage)
             await persistence_manager.on_game_created(

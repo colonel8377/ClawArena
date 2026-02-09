@@ -29,6 +29,7 @@ jobs:
       deploy_env: ${{ steps.map.outputs.deploy_env }}
       railway_env: ${{ steps.map.outputs.railway_env }}
       api_url: ${{ steps.map.outputs.api_url }}
+      app_env: ${{ steps.map.outputs.app_env }}
       vercel_prod: ${{ steps.map.outputs.vercel_prod }}
     steps:
       - id: map
@@ -40,16 +41,19 @@ jobs:
             echo "deploy_env=prod" >> "$GITHUB_OUTPUT"
             echo "railway_env=production" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "app_env=prod" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=true" >> "$GITHUB_OUTPUT"
           elif [ "$TARGET" = "pre" ]; then
             echo "deploy_env=pre" >> "$GITHUB_OUTPUT"
             echo "railway_env=preview" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api-pre.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "app_env=pre" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=false" >> "$GITHUB_OUTPUT"
           else
             echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
             echo "railway_env=development" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api-dev.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "app_env=dev" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -62,6 +66,7 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       NEXT_PUBLIC_API_URL: ${{ needs.env-mapping.outputs.api_url }}
+      NEXT_PUBLIC_APP_ENV: ${{ needs.env-mapping.outputs.app_env }}
     steps:
       - uses: actions/checkout@v4
 
@@ -86,9 +91,12 @@ jobs:
         working-directory: frontend
         run: vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
 
-      - name: Build Frontend (inject NEXT_PUBLIC_API_URL)
+      - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend
-        run: vercel build --token="$VERCEL_TOKEN" --build-env NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL"
+        run: |
+          vercel build --token="$VERCEL_TOKEN" \
+            --build-env NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+            --build-env NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV"
 
       - name: Deploy Frontend (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'

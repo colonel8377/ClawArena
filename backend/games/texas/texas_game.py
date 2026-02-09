@@ -7,7 +7,7 @@ the poker_engine.PokerEngine for core game logic.
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 from .texas_engine import TexasEngine
 from .game_config import (
@@ -65,6 +65,7 @@ class TexasGame(BaseGame):
         # Track poker-specific state
         self.small_blind = small_blind
         self.big_blind = big_blind
+        self.pending_removals: Set[str] = set()
 
     @staticmethod
     def _normalize_tokens(value: Any) -> Decimal:
@@ -163,6 +164,8 @@ class TexasGame(BaseGame):
                 return False
         else:
             return False
+
+        self._purge_pending_removals()
         
         # Start first hand
         result = self.engine.start_hand()
@@ -172,6 +175,43 @@ class TexasGame(BaseGame):
             return True
         
         return False
+
+    def mark_player_auto_settled(self, sid: str) -> None:
+        """Mark a player for removal after an auto settlement."""
+        if sid:
+            self.pending_removals.add(sid)
+
+    def _purge_pending_removals(self) -> None:
+        """Remove players queued for removal once a hand is no longer active."""
+        if not self.pending_removals:
+            return
+
+        removable = list(self.pending_removals)
+        for sid in removable:
+            if sid not in self.engine.players:
+                self.pending_removals.discard(sid)
+                self.players = [p for p in self.players if p.get('sid') != sid]
+                self.channel.remove_participant(sid)
+                continue
+
+            # Try engine remove first; if still present (e.g., showdown), force remove.
+            self.engine.remove_player(sid)
+            if sid in self.engine.players:
+                self.engine.players.pop(sid, None)
+                if sid in self.engine.player_order:
+                    self.engine.player_order.remove(sid)
+                if self.engine.dealer_sid == sid:
+                    self.engine.dealer_sid = None
+                if self.engine.small_blind_sid == sid:
+                    self.engine.small_blind_sid = None
+                if self.engine.big_blind_sid == sid:
+                    self.engine.big_blind_sid = None
+                if self.engine.current_player_sid == sid:
+                    self.engine.current_player_sid = None
+
+            self.players = [p for p in self.players if p.get('sid') != sid]
+            self.channel.remove_participant(sid)
+            self.pending_removals.discard(sid)
     
     def _reset_timeout_tracking(self, sid: str):
         """

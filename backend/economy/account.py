@@ -806,14 +806,18 @@ async def handle_login(login_key: str) -> Dict:
             }
         
         # Check if last login was on a different day.
-        # Do reward + last_login_date update atomically in SQL to prevent
-        # concurrent login paths from granting duplicate rewards.
+        # Do reward + last_login_date update atomically to prevent duplicate rewards,
+        # but skip the daily reward on the registration day.
         reward_granted = False
         today_start_utc = datetime(now_utc.year, now_utc.month, now_utc.day)
+        eligible_for_reward = user.created_at is None or user.created_at.date() < today_utc
         reward_update_result = await db.execute(
             text("""
                 UPDATE user_ledger
-                SET offchain_balance = offchain_balance + :reward,
+                SET offchain_balance = offchain_balance + CASE
+                        WHEN (created_at IS NULL OR created_at < :today_start) THEN :reward
+                        ELSE 0
+                    END,
                     last_login_date = :now_utc,
                     updated_at = :now_utc
                 WHERE wallet_address = :wallet
@@ -827,7 +831,7 @@ async def handle_login(login_key: str) -> Dict:
             }
         )
 
-        if reward_update_result.rowcount > 0:
+        if reward_update_result.rowcount > 0 and eligible_for_reward:
             reward_granted = True
 
         await db.commit()
@@ -1054,7 +1058,8 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
     """
     Lock balance for in-game use (prevents double-spending).
     
-    Atomically moves funds from offchain_balance to locked_balance.
+    Atomically reserves funds by increasing locked_balance while leaving
+    offchain_balance (total balance) unchanged.
     
     Args:
         wallet_address: Ethereum wallet address
@@ -1089,12 +1094,11 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
         balance_before = user.offchain_balance
         locked_before = user.locked_balance
 
-        # Atomic lock operation: deduct from offchain_balance and add to locked_balance
+        # Atomic lock operation: increase locked_balance only.
         result = await db.execute(
             text("""
                 UPDATE user_ledger
-                SET offchain_balance = offchain_balance - :amount,
-                    locked_balance = locked_balance + :amount
+                SET locked_balance = locked_balance + :amount
                 WHERE wallet_address = :wallet
                 AND (offchain_balance - locked_balance) >= :amount
             """),
@@ -1115,7 +1119,7 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
         await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
         await invalidate_leaderboard_cache()
 
-        # Log lock transaction (this moves funds to locked state)
+        # Log lock transaction (funds moved to locked state; total balance unchanged)
         await log_transaction(
             wallet_address=user.wallet_address,
             tx_type=TransactionType.GAME_ENTRY,
@@ -1140,7 +1144,7 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     """
     Unlock balance after game completion.
     
-    Atomically moves funds from locked_balance back to offchain_balance.
+    Atomically releases funds by decreasing locked_balance only.
     
     Args:
         wallet_address: Ethereum wallet address
@@ -1175,12 +1179,11 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
         balance_before = user.offchain_balance
         locked_before = user.locked_balance
 
-        # Atomic unlock operation
+        # Atomic unlock operation: decrease locked_balance only.
         result = await db.execute(
             text("""
                 UPDATE user_ledger
-                SET offchain_balance = offchain_balance + :amount,
-                    locked_balance = locked_balance - :amount
+                SET locked_balance = locked_balance - :amount
                 WHERE wallet_address = :wallet
                 AND locked_balance >= :amount
             """),

@@ -7,7 +7,7 @@ and in-app token economy settlement.
 
 import asyncio
 import signal
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Dict, Optional, List, Any
 
@@ -69,6 +69,7 @@ POKER_ACTIVE_PHASES = {
     PokerPhase.TURN,
     PokerPhase.RIVER,
 }
+POKER_AWAY_AUTO_SETTLE_SECONDS = 10 * 60
 
 
 # Rate limiting
@@ -180,6 +181,143 @@ werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
 texas_matchmaker: Optional[TexasMatchmaker] = None
 werewolf_timeout_task: Optional[asyncio.Task] = None
 poker_timeout_task: Optional[asyncio.Task] = None
+werewolf_settlement_locks: Dict[str, asyncio.Lock] = {}
+werewolf_finalized_games: Dict[str, str] = {}
+poker_disconnected_since: Dict[str, Dict[str, datetime]] = {}
+
+
+def _get_werewolf_settlement_lock(game_id: str) -> asyncio.Lock:
+    lock = werewolf_settlement_locks.get(game_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        werewolf_settlement_locks[game_id] = lock
+    return lock
+
+
+def _mark_poker_disconnected(table_id: str, player_id: str, seen_at: Optional[datetime] = None) -> None:
+    if not table_id or not player_id:
+        return
+    table_map = poker_disconnected_since.setdefault(table_id, {})
+    table_map[player_id] = seen_at or datetime.utcnow()
+
+
+def _clear_poker_disconnected(table_id: str, player_id: str) -> None:
+    table_map = poker_disconnected_since.get(table_id)
+    if not table_map:
+        return
+    table_map.pop(player_id, None)
+    if not table_map:
+        poker_disconnected_since.pop(table_id, None)
+
+
+def _forget_poker_disconnect_table(table_id: str) -> None:
+    poker_disconnected_since.pop(table_id, None)
+
+
+async def _settle_texas_player(
+    table_id: str,
+    table: TexasGame,
+    player_dict: Dict[str, Any],
+    reason: str,
+    auto_remove_after_hand: bool = False,
+) -> bool:
+    """Settle one poker seat: unlock buy-in principal, then apply PnL."""
+    wallet_address = player_dict.get('wallet_address')
+    sid = player_dict.get('sid')
+    if not wallet_address or not sid:
+        return False
+
+    if player_dict.get('auto_settled'):
+        return False
+
+    engine_player = table.engine.players.get(sid)
+    if engine_player is None:
+        return False
+
+    buy_in_tokens = Decimal(str(player_dict.get('buy_in_tokens', 0) or 0))
+    chips_tokens = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
+
+    try:
+        if buy_in_tokens > 0:
+            await unlock_balance(
+                wallet_address,
+                buy_in_tokens,
+                game_session_id=table_id,
+                description=f"Texas Hold'em buy-in principal unlock ({reason})"
+            )
+
+        pnl_delta = chips_tokens - buy_in_tokens
+        if pnl_delta > 0:
+            await add_balance(
+                wallet_address,
+                pnl_delta,
+                tx_type=TransactionType.GAME_WIN,
+                description=f"Texas Hold'em settlement profit ({reason})"
+            )
+        elif pnl_delta < 0:
+            await deduct_balance(
+                wallet_address,
+                -pnl_delta,
+                tx_type=TransactionType.GAME_ENTRY,
+                description=f"Texas Hold'em settlement loss ({reason})"
+            )
+    except Exception as e:
+        print(f"[TexasAutoSettle] Settlement failed for {wallet_address} on {table_id}: {e}")
+        return False
+
+    player_dict['auto_settled'] = True
+    player_dict['auto_settled_at'] = datetime.utcnow().isoformat()
+    player_dict['auto_settle_reason'] = reason
+
+    if auto_remove_after_hand:
+        table.remove_player(sid)
+        table.mark_player_auto_settled(sid)
+    else:
+        table.remove_player(sid)
+
+    await _emit_poker_event(table_id, 'PLAYER_AUTO_SETTLED', {
+        'table_id': table_id,
+        'player_id': wallet_address,
+        'reason': reason,
+        'timestamp': datetime.utcnow().isoformat(),
+    })
+
+    asyncio.create_task(table.save_checkpoint('auto_settle'))
+    return True
+
+
+async def _check_disconnected_texas_players(table_id: str, table: TexasGame) -> None:
+    """Auto-settle disconnected poker players after 10 minutes away."""
+    now = datetime.utcnow()
+    for player in list(table.players):
+        sid = player.get('sid')
+        player_id = player.get('wallet_address')
+        if not sid or not player_id:
+            continue
+
+        # Reconnected or currently online: clear away timer.
+        if sid in player_sessions:
+            _clear_poker_disconnected(table_id, player_id)
+            continue
+
+        # Start away timer if not tracked yet.
+        table_map = poker_disconnected_since.setdefault(table_id, {})
+        disconnected_at = table_map.setdefault(player_id, now)
+
+        if (now - disconnected_at) < timedelta(seconds=POKER_AWAY_AUTO_SETTLE_SECONDS):
+            continue
+
+        hand_active = table.engine.phase in POKER_ACTIVE_PHASES
+        settled = await _settle_texas_player(
+            table_id=table_id,
+            table=table,
+            player_dict=player,
+            reason='auto-away-timeout',
+            auto_remove_after_hand=hand_active,
+        )
+        if settled:
+            _clear_poker_disconnected(table_id, player_id)
+            await broadcast_game_state(table_id)
 
 
 def _set_spectator_subscription(sid: str, game_type: str, room_id: str, reveal: bool) -> None:
@@ -464,6 +602,7 @@ async def poker_timeout_checker():
             await asyncio.sleep(POKER_TIMEOUT_CHECK_INTERVAL)
 
             for table_id, table in list(poker_tables.items()):
+                await _check_disconnected_texas_players(table_id, table)
                 engine = table.engine
                 if engine.phase not in POKER_ACTIVE_PHASES:
                     continue
@@ -644,102 +783,116 @@ async def handle_werewolf_game_end(game_id: str, winners: list):
     
     Uses PersistenceManager for unified MySQL persistence.
     """
-    game = werewolf_games.get(game_id)
-    
-    total_entry_fees = Decimal("0")
-    prize_pool = Decimal("0")
-    winner_team = None
-    if game:
-        total_entry_fees = sum(player['entry_fee_paid'] for player in game.players)
-        prize_pool = total_entry_fees * WEREWOLF_PRIZE_MULTIPLIER
+    lock = _get_werewolf_settlement_lock(game_id)
+    async with lock:
+        if game_id in werewolf_finalized_games:
+            print(f"[WerewolfSettle] Game {game_id} already finalized")
+            return
+        werewolf_finalized_games[game_id] = "ended"
 
-        if winners:
-            # Check if any winner is a wolf
-            for player in game.players:
-                if player['wallet_address'] in winners:
-                    if player.get('role') and hasattr(player['role'], 'team'):
-                        winner_team = player['role'].team.value
-                        break
+        game = werewolf_games.get(game_id)
+    
+        total_entry_fees = Decimal("0")
+        prize_pool = Decimal("0")
+        winner_team = None
+        if game:
+            total_entry_fees = sum(player['entry_fee_paid'] for player in game.players)
+            prize_pool = total_entry_fees * WEREWOLF_PRIZE_MULTIPLIER
+
+            if winners:
+                # Check if any winner is a wolf
+                for player in game.players:
+                    if player['wallet_address'] in winners:
+                        if player.get('role') and hasattr(player['role'], 'team'):
+                            winner_team = player['role'].team.value
+                            break
     
     # Persist game end to MySQL
-    try:
-        await persistence_manager.on_game_ended(
-            game_id=game_id,
-            winner_team=winner_team,
-            winners=winners,
-            was_aborted=False,
-            final_state=game.to_dict() if game else None,
-            prize_pool=prize_pool
-        )
-    except Exception as e:
-        print(f"Failed to persist game end: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Handle prize distribution and refunds
-    try:
-        if game:
-            await _unlock_werewolf_entry_fees(
-                game,
-                game_id,
-                description="Werewolf entry fee principal unlock"
+        try:
+            await persistence_manager.on_game_ended(
+                game_id=game_id,
+                winner_team=winner_team,
+                winners=winners,
+                was_aborted=False,
+                final_state=game.to_dict() if game else None,
+                prize_pool=prize_pool
             )
-
-        if game and winners:
-            prize_per_winner = prize_pool / len(winners)
-
-            print(f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners")
-
-            for winner_address in winners:
-                await add_balance(
-                    winner_address,
-                    prize_per_winner,
-                    tx_type=TransactionType.GAME_WIN,
-                    description="Werewolf game prize"
+        except Exception as e:
+            print(f"Failed to persist game end: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Handle prize distribution and refunds
+        try:
+            if game:
+                await _unlock_werewolf_entry_fees(
+                    game,
+                    game_id,
+                    description="Werewolf entry fee principal unlock"
                 )
-                print(f"Awarded {float(prize_per_winner)} tokens to winner: {winner_address[:8]}...")
-        elif game and not winners:
-            print("Werewolf game ended without winners, refunding entry fees")
-        else:
-            print("No game data found for prize distribution")
-    except Exception as e:
-        print(f"Failed to handle prize distribution: {e}")
-        import traceback
-        traceback.print_exc()
+
+            if game and winners:
+                prize_per_winner = prize_pool / len(winners)
+
+                print(f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners")
+
+                for winner_address in winners:
+                    await add_balance(
+                        winner_address,
+                        prize_per_winner,
+                        tx_type=TransactionType.GAME_WIN,
+                        description="Werewolf game prize"
+                    )
+                    print(f"Awarded {float(prize_per_winner)} tokens to winner: {winner_address[:8]}...")
+            elif game and not winners:
+                print("Werewolf game ended without winners, refunding entry fees")
+            else:
+                print("No game data found for prize distribution")
+        except Exception as e:
+            print(f"Failed to handle prize distribution: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 async def handle_werewolf_game_abort(game_id: str, reason: Optional[str] = None):
     """Handle werewolf game abort: record results and refund entry fees."""
-    game = werewolf_games.get(game_id)
+    lock = _get_werewolf_settlement_lock(game_id)
+    async with lock:
+        if game_id in werewolf_finalized_games:
+            print(f"[WerewolfSettle] Abort skipped; game {game_id} already finalized")
+            return
+        werewolf_finalized_games[game_id] = "aborted"
 
-    try:
-        await persistence_manager.on_game_ended(
-            game_id=game_id,
-            winner_team=None,
-            winners=[],
-            was_aborted=True,
-            final_state=game.to_dict() if game else None,
-            prize_pool=Decimal("0")
-        )
-    except Exception as e:
-        print(f"Failed to persist aborted game end: {e}")
-        import traceback
-        traceback.print_exc()
+        game = werewolf_games.get(game_id)
 
-    try:
-        if game:
-            await _unlock_werewolf_entry_fees(
-                game,
-                game_id,
-                description="Werewolf game refund - aborted"
+        try:
+            await persistence_manager.on_game_ended(
+                game_id=game_id,
+                winner_team=None,
+                winners=[],
+                was_aborted=True,
+                final_state=game.to_dict() if game else None,
+                prize_pool=Decimal("0")
             )
-            print(f"Werewolf game aborted: refunded entry fees ({reason or 'no reason'})")
-        else:
-            print("No game data found for aborted refund")
-    except Exception as e:
-        print(f"Failed to refund aborted werewolf game: {e}")
-        import traceback
-        traceback.print_exc()
+        except Exception as e:
+            print(f"Failed to persist aborted game end: {e}")
+            import traceback
+            traceback.print_exc()
+
+        try:
+            if game:
+                await _unlock_werewolf_entry_fees(
+                    game,
+                    game_id,
+                    description="Werewolf game refund - aborted"
+                )
+                print(f"Werewolf game aborted: refunded entry fees ({reason or 'no reason'})")
+            else:
+                print("No game data found for aborted refund")
+        except Exception as e:
+            print(f"Failed to refund aborted werewolf game: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 async def _unlock_werewolf_entry_fees(game: WerewolfGame, game_id: str, description: str) -> None:
@@ -1109,7 +1262,11 @@ async def disconnect(sid):
         
         # Remove from table if in one
         if session['table_id'] and session['table_id'] in poker_tables:
-            table = poker_tables[session['table_id']]
+            table_id = session['table_id']
+            table = poker_tables[table_id]
+            player_id = session.get('player_id')
+            if player_id:
+                _mark_poker_disconnected(table_id, player_id)
             # Keep in-hand seats for reconnection and timeout auto-play.
             # Remove only when no hand is active.
             if table.engine.phase in POKER_ACTIVE_PHASES:
@@ -1117,9 +1274,6 @@ async def disconnect(sid):
                 # Persist SID-preserving in-hand state immediately so restart can
                 # still recover the table even when no further action happens.
                 asyncio.create_task(table.save_state_to_redis())
-            else:
-                table.remove_player(sid)
-                await broadcast_game_state(session['table_id'])
         
         # Remove from matchmaking queue if in one
         if werewolf_matchmaker:
@@ -1242,6 +1396,7 @@ async def handle_reconnection(sid: str, player_id: str):
 
                 # Update session
                 player_sessions[sid]['table_id'] = table_id
+                _clear_poker_disconnected(table_id, player_id)
                 
                 # Join Socket.IO room
                 await sio.enter_room(sid, table_id)
@@ -1668,6 +1823,8 @@ async def leave_game(sid, data):
         # Update session
         if sid in player_sessions:
             player_sessions[sid]['table_id'] = None
+        if player_dict:
+            _clear_poker_disconnected(table_id, player_dict.get('wallet_address', ''))
         
         # Settle table funds on leave so locked balance is fully released.
         # Current accounting model locks full buy-in at join; on leave we:
@@ -1834,6 +1991,11 @@ async def create_werewolf_game(sid, data):
         if not game_id:
             await sio.emit('error', {'message': 'game_id required'}, room=sid)
             return
+        if entry_fee <= 0:
+            await sio.emit('error', {
+                'message': 'Werewolf games must require a positive entry fee'
+            }, room=sid)
+            return
         
         # Use distributed lock to prevent race conditions on game creation
         async with redis_manager.lock(f"game_create:{game_id}"):
@@ -1889,6 +2051,12 @@ async def join_werewolf_game(sid, data):
         
         player_id = player_sessions[sid]['player_id']
         game = werewolf_games[game_id]
+
+        if game.entry_fee <= 0:
+            await sio.emit('error', {
+                'message': 'Free werewolf rooms are not allowed'
+            }, room=sid)
+            return
 
         # 检查余额是否足够支付入场费
         try:
@@ -2447,6 +2615,12 @@ async def on_game_matched(players, game_size: int):
         return
 
     entry_fee = getattr(players[0], 'entry_fee', Decimal("0"))
+    if entry_fee <= 0:
+        for player in players:
+            await sio.emit('error', {
+                'message': 'Free werewolf rooms are not allowed'
+            }, room=player.sid)
+        return
 
     eligible_players = []
     for player in players:
@@ -2703,8 +2877,10 @@ async def join_matchmaking(sid, data):
         nickname = requested_name[:32] if requested_name else player_name
         
         entry_fee = Decimal(str(data.get('entry_fee', 0)))
-        if entry_fee < 0:
-            await sio.emit('error', {'message': 'Invalid entry fee amount'}, room=sid)
+        if entry_fee <= 0:
+            await sio.emit('error', {
+                'message': 'Werewolf matchmaking requires a positive entry fee'
+            }, room=sid)
             return
 
         # Initialize matchmaker if needed

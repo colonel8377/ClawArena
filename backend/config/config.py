@@ -45,7 +45,13 @@ SERVER_PRIVATE_KEY = os.getenv(
 )
 
 # CORS configuration
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*').split(',')
+def _parse_allowed_origins(raw_value: str):
+    """Parse/trim ALLOWED_ORIGINS into a clean list for CORS matching."""
+    origins = [item.strip() for item in raw_value.split(',') if item.strip()]
+    return origins or ['*']
+
+
+ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv('ALLOWED_ORIGINS', '*'))
 
 
 def _parse_allowed_hosts(raw_value: str):

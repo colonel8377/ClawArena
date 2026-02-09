@@ -11,10 +11,28 @@ const normalizeAppEnv = (value?: string): AppEnv | null => {
   return null;
 };
 
+const normalizeApiBase = (value: string): string => {
+  const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+
+  try {
+    const url = new URL(withScheme);
+    if (url.hostname === 'www.clawarena.io') {
+      const match = url.pathname.match(/^\/(api(?:-dev|-pre)?\.clawarena\.io)\/?$/);
+      if (match) {
+        return `https://${match[1]}`;
+      }
+    }
+  } catch {
+    return withScheme.replace(/\/$/, '');
+  }
+
+  return withScheme.replace(/\/$/, '');
+};
+
 export const getApiBaseUrl = (): string => {
   const envBase = process.env.NEXT_PUBLIC_API_URL?.trim();
   const base = envBase && envBase.length > 0 ? envBase : defaultBase;
-  return base.replace(/\/$/, '');
+  return normalizeApiBase(base);
 };
 
 export const getAppEnv = (): AppEnv => {

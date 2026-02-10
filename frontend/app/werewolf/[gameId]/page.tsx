@@ -1,705 +1,88 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import { getSocket } from '@/lib/socket';
-import RoleCard from '@/components/werewolf/RoleCard';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { useSpectatorSocket } from '@/hooks/useSpectatorSocket';
+import { useWerewolfStore } from '@/store/werewolfStore';
 import { useUiMode } from '@/components/UiModeProvider';
+import DayNightCycle from '@/components/werewolf/DayNightCycle';
+import GodViewBoard from '@/components/werewolf/GodViewBoard';
+import InteractionGraph from '@/components/werewolf/InteractionGraph';
+import { motion, AnimatePresence } from 'framer-motion';
 
-type RoleInfo = { role?: string; team?: string; description?: string };
-
-interface SpectatePlayer {
-  sid: string;
-  nickname: string;
-  role?: string | RoleInfo;
-  is_alive: boolean;
-  voted_for?: string;
-}
-
-interface ChatMessage {
-  nickname: string;
-  message: string;
-  timestamp?: string;
-  phase?: string;
-  is_wolf_chat?: boolean;
-}
-
-interface DeathInfo {
-  sid?: string;
-  nickname?: string;
-  cause?: string;
-  role_revealed?: string;
-}
-
-interface ActionTrace {
-  game_id: string;
-  phase: string;
-  actor_sid?: string;
-  actor_nickname?: string;
-  action: string;
-  message?: string;
-  target?: { sid?: string; nickname?: string } | null;
-  visibility?: string;
-  seer_result?: string;
-  timestamp?: string;
-}
-
-interface GameState {
-  game_id: string;
-  phase: string;
-  day_count: number;
-  players: SpectatePlayer[];
-  last_action?: string;
-  eliminated_last_night?: string;
-  votes?: Record<string, string>;
-  chat_messages?: ChatMessage[];
-  wolf_chat?: ChatMessage[];
-  current_speaker?: string;
-}
-
-export default function WerewolfDetailPage() {
-  const params = useParams();
-  const gameId = params.gameId as string;
-  
-  const [connected, setConnected] = useState(false);
-  const [gameState, setGameState] = useState<GameState | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [gameLog, setGameLog] = useState<string[]>([]);
-  const [actionTimeline, setActionTimeline] = useState<ActionTrace[]>([]);
-  const lastSocketUpdateRef = useRef(0);
+export default function WerewolfGamePage() {
+  const { gameId } = useParams() as { gameId: string };
   const { readingMode } = useUiMode();
+  
+  const { 
+    gameState, 
+    setGameState, 
+    addAction,
+    actionTimeline,
+    setConnected
+  } = useWerewolfStore();
 
-  const revealAll = readingMode === 'human';
-  const revealModeLabel = revealAll ? 'REVEAL VIEW' : 'MASKED VIEW';
-  const apiUrl = useMemo(() => {
-    const url = new URL(`${getApiBaseUrl()}/api/spectate/werewolf/${gameId}`);
-    // HTTP spectator endpoint is always masked by backend policy.
-    // Full role visibility for authorized observers comes from read-only socket events.
-    return url.toString();
-  }, [gameId]);
-
-  const appendGameLog = (message: string) => {
-    setGameLog((prev) => [...prev.slice(-39), message]);
-  };
-
-  const appendActionTimeline = (entry: ActionTrace) => {
-    setActionTimeline((prev) => [...prev.slice(-79), entry]);
-  };
-
-  const formatPhaseLabel = (phase?: string) => {
-    if (!phase) return 'UNKNOWN';
-    return phase
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, (char) => char.toUpperCase());
-  };
-
-  const formatDeathLabel = (death: string | DeathInfo) => {
-    if (typeof death === 'string') return death;
-    const who = death.nickname || (death.sid ? `Player ${death.sid}` : 'Unknown');
-    const by = death.cause ? ` (${death.cause})` : '';
-    return `${who}${by}`;
-  };
-
-  useEffect(() => {
-    const socket = getSocket();
-    if (!socket) return;
-    const activeSocket = socket;
-
-    setConnected(activeSocket.connected);
-
-    function onConnect() {
-      setConnected(true);
-      activeSocket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
+  useSpectatorSocket({
+    namespace: 'werewolf',
+    tableId: gameId,
+    revealMode: readingMode === 'human',
+    events: {
+      game_state: (data) => setGameState(data),
+      werewolf_state: (data) => setGameState(data),
+      connect: () => setConnected(true),
+      disconnect: () => setConnected(false),
+      // If backend sends specific action events, bind them here.
+      // Based on search results, 'werewolf_vote', 'werewolf_night_action' might be useful
+      // But 'game_state' seems to contain most info including last_action or action logs
     }
+  });
 
-    function onDisconnect() {
-      setConnected(false);
-    }
-
-    activeSocket.on('connect', onConnect);
-    activeSocket.on('disconnect', onDisconnect);
-
-    const onGameState = (data: GameState) => {
-      if (data.game_id === gameId) {
-        lastSocketUpdateRef.current = Date.now();
-        setGameState(data);
-        setError(null);
-      }
-    };
-
-    activeSocket.on('game_state', onGameState);
-    activeSocket.on('werewolf_state', onGameState);
-
-    const onPhaseChange = (data: {
-      phase?: string;
-      day_count?: number;
-      deaths?: Array<string | DeathInfo>;
-      eliminated?: string;
-      game_over?: boolean;
-      winners?: string[];
-    }) => {
-      appendGameLog(
-        `Phase -> ${formatPhaseLabel(data.phase)} (Day ${data.day_count || '?'})`
-      );
-      if (data.deaths && data.deaths.length > 0) {
-        appendGameLog(`Deaths: ${data.deaths.map(formatDeathLabel).join(', ')}`);
-      }
-      if (data.eliminated) {
-        appendGameLog(`Eliminated: ${data.eliminated}`);
-      }
-      if (data.game_over) {
-        appendGameLog(`Game Over${data.winners?.length ? ` | Winners: ${data.winners.join(', ')}` : ''}`);
-      }
-    };
-
-    const onPlayerThinking = (data: { player_sid?: string; action_type?: string }) => {
-      appendGameLog(
-        `Agent ${data.player_sid || 'unknown'} is thinking (${data.action_type || 'action'})`
-      );
-    };
-
-    const onPublicChat = (chat: ChatMessage) => {
-      appendGameLog(`Public chat: ${chat.nickname || 'Unknown'} -> ${chat.message || ''}`);
-    };
-
-    const onWolfChat = (chat: ChatMessage) => {
-      appendGameLog(`Wolf chat: ${chat.nickname || 'Unknown'} -> ${chat.message || ''}`);
-    };
-
-    const onActionTrace = (trace: ActionTrace) => {
-      if (trace.game_id !== gameId) return;
-      appendActionTimeline(trace);
-    };
-
-    activeSocket.on('werewolf_phase_change', onPhaseChange);
-    activeSocket.on('player_thinking', onPlayerThinking);
-    activeSocket.on('chat_message', onPublicChat);
-    activeSocket.on('wolf_chat_message', onWolfChat);
-    activeSocket.on('werewolf_action_trace', onActionTrace);
-
-    if (activeSocket.connected) {
-      activeSocket.emit('join_spectate', { game_id: gameId, reveal: revealAll });
-    }
-
-    return () => {
-      activeSocket.off('connect', onConnect);
-      activeSocket.off('disconnect', onDisconnect);
-      activeSocket.off('game_state', onGameState);
-      activeSocket.off('werewolf_state', onGameState);
-      activeSocket.off('werewolf_phase_change', onPhaseChange);
-      activeSocket.off('player_thinking', onPlayerThinking);
-      activeSocket.off('chat_message', onPublicChat);
-      activeSocket.off('wolf_chat_message', onWolfChat);
-      activeSocket.off('werewolf_action_trace', onActionTrace);
-      activeSocket.emit('leave_spectate', { game_id: gameId });
-    };
-  }, [apiUrl, gameId, revealAll]);
-
-  useEffect(() => {
-    const fetchGameState = async (isInitial = false) => {
-      if (isInitial) {
-        setLoading(true);
-      }
-      try {
-        const res = await botFetch(apiUrl);
-        if (!res.ok) {
-          setError('Game not found or has ended');
-          setGameState(null);
-          return;
-        }
-        const data = await res.json();
-        setError(null);
-        setGameState(data);
-      } catch {
-        if (!connected) {
-          setError('Failed to load game state');
-          setGameState(null);
-        }
-      } finally {
-        if (isInitial) {
-          setLoading(false);
-        }
-      }
-    };
-
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    const loop = async () => {
-      const socketHealthy = connected && Date.now() - lastSocketUpdateRef.current < 10_000;
-      if (!socketHealthy) {
-        await fetchGameState(false);
-      }
-      const nextDelay = socketHealthy ? 10_000 : 3_000;
-      if (!cancelled) {
-        timer = setTimeout(loop, nextDelay);
-      }
-    };
-
-    fetchGameState(true).finally(() => {
-      if (!cancelled) {
-        loop();
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [apiUrl, connected]);
-
-  const getRoleStatus = (player: SpectatePlayer): 'Alive' | 'Dead' => {
-    return player.is_alive ? 'Alive' : 'Dead';
-  };
-
-  const getRoleType = (role?: string | RoleInfo): 'Werewolf' | 'Seer' | 'Witch' | 'Hunter' | 'Villager' => {
-    const rawRole = typeof role === 'string' ? role : role?.role;
-    if (!rawRole || rawRole === '???') return 'Villager';
-    const normalizedRole = rawRole.toLowerCase();
-    if (normalizedRole.includes('werewolf') || normalizedRole.includes('wolf')) return 'Werewolf';
-    if (normalizedRole.includes('seer') || normalizedRole.includes('prophet')) return 'Seer';
-    if (normalizedRole.includes('witch')) return 'Witch';
-    if (normalizedRole.includes('hunter')) return 'Hunter';
-    return 'Villager';
-  };
-
-  const getRoleLabel = (role?: string | RoleInfo) => {
-    const rawRole = typeof role === 'string' ? role : role?.role;
-    return rawRole || '???';
-  };
-
-  const hasVisibleRole = (role?: string | RoleInfo) => {
-    const rawRole = typeof role === 'string' ? role : role?.role;
-    return !!rawRole && rawRole !== '???';
-  };
-
-  const getRoleIcon = (role?: string | undefined): React.ReactNode => {
-    const roleType = getRoleType(role);
-    const baseClass = "w-5 h-5";
-    
-    switch (roleType) {
-      case 'Werewolf': 
-        return (
-          <svg viewBox="0 0 24 24" className={`${baseClass} text-neonPink`}>
-            <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
-            <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
-            <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
-          </svg>
-        );
-      case 'Seer': 
-        return (
-          <svg viewBox="0 0 24 24" className={`${baseClass} text-electricPurple`}>
-            <ellipse cx="12" cy="12" rx="10" ry="6" fill="none" stroke="currentColor" strokeWidth="2"/>
-            <circle cx="12" cy="12" r="3" fill="currentColor"/>
-          </svg>
-        );
-      case 'Witch': 
-        return (
-          <svg viewBox="0 0 24 24" className={`${baseClass} text-acidGreen`}>
-            <path fill="currentColor" d="M9 2v6l-3 6v6c0 1 1 2 6 2s6-1 6-2v-6l-3-6V2h-6z"/>
-            <rect x="10" y="0" width="4" height="3" fill="currentColor"/>
-          </svg>
-        );
-      case 'Hunter': 
-        return (
-          <svg viewBox="0 0 24 24" className={`${baseClass} text-warning`}>
-            <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="2"/>
-            <circle cx="12" cy="12" r="2" fill="currentColor"/>
-            <path stroke="currentColor" strokeWidth="2" d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
-          </svg>
-        );
-      case 'Villager': 
-        return (
-          <svg viewBox="0 0 24 24" className={`${baseClass} text-cyberBlue`}>
-            <circle cx="12" cy="7" r="4" fill="currentColor"/>
-            <path fill="currentColor" d="M6 14v7h5v-4h2v4h5v-7l-2-2H8l-2 2z"/>
-          </svg>
-        );
-      default: 
-        return (
-          <svg viewBox="0 0 24 24" className={`${baseClass} text-foreground/50`}>
-            <text x="12" y="16" textAnchor="middle" fontSize="14" fill="currentColor">?</text>
-          </svg>
-        );
-    }
-  };
-
-  const getPhaseIcon = (phase?: string) => {
-    const normalized = (phase || '').toLowerCase();
-    if (!normalized) return '⏳';
-    if (normalized.startsWith('night_')) return '🌙';
-    if (normalized.startsWith('day_announcement')) return '📢';
-    if (normalized.startsWith('day_speaking')) return '💬';
-    if (normalized.startsWith('day_voting')) return '🗳️';
-    if (normalized.includes('hunter')) return '🎯';
-    if (normalized === 'waiting') return '⏳';
-    if (normalized === 'finished') return '🏁';
-    if (normalized === 'aborted') return '🛑';
-    return '⏳';
-  };
-
-  const isDayPhase = (phase?: string) => (phase || '').toLowerCase().startsWith('day_');
-
-  const sidToName = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const player of gameState?.players || []) {
-      if (player.sid) {
-        map.set(player.sid, player.nickname || 'Player');
-      }
-    }
-    return map;
-  }, [gameState?.players]);
-
-  if (loading) {
+  if (!gameState) {
     return (
-      <div className="min-h-screen scanline-effect flex items-center justify-center">
-        <div className="cyber-card p-8 rounded-lg text-center">
-          <div className="text-5xl mb-4 animate-pulse">🐺</div>
-          <div className="text-cyberBlue font-orbitron text-xl animate-pulse">
-            LOADING GAME...
-          </div>
-          <div className="text-xs text-foreground/50 mt-2">Game: {gameId}</div>
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-black text-purple-500 font-mono">
+        <div className="animate-pulse">SYNCHRONIZING NEURAL LINK...</div>
       </div>
     );
   }
-
-  if (error || !gameState) {
-    return (
-      <div className="min-h-screen scanline-effect flex items-center justify-center">
-        <div className="cyber-card p-8 rounded-lg text-center">
-          <div className="text-5xl mb-4">❌</div>
-          <div className="text-danger font-orbitron text-xl mb-4">
-            {error || 'GAME NOT FOUND'}
-          </div>
-          <Link 
-            href="/werewolf"
-            className="inline-flex items-center gap-2 px-4 py-2 border border-cyberBlue text-cyberBlue hover:bg-cyberBlue/10 rounded transition-colors"
-          >
-            <span>←</span>
-            <span>Back to Games</span>
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const alivePlayers = gameState.players?.filter((p) => p.is_alive) || [];
-  const deadPlayers = gameState.players?.filter((p) => !p.is_alive) || [];
-
-  const resolveVoteTargetName = (voteTarget: string) => {
-    // Never leak raw socket identifiers in spectator UI.
-    return sidToName.get(voteTarget) || 'Unknown Player';
-  };
 
   return (
-    <div className="min-h-screen scanline-effect">
-      <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">
-        {/* Header */}
-        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              <Link 
-                href="/werewolf"
-                className="icon-badge border-cyberBlue hover:neon-glow-blue transition-all"
-              >
-                ←
-              </Link>
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">🐺</span>
-                <div>
-                  <h2 className="text-xl text-cyberBlue font-orbitron text-glow-blue">
-                    WEREWOLF
-                  </h2>
-                  <p className="text-xs text-foreground/50 font-mono">{gameId}</p>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className={`status-badge ${revealAll ? 'status-badge-live' : 'status-badge-offline'}`}>
-                {revealModeLabel}
-              </div>
-              <div className={`status-badge ${connected ? 'status-badge-live' : 'status-badge-offline'}`}>
-                {connected ? '📡 LIVE' : '📴 POLLING'}
-              </div>
-            </div>
-          </div>
+    <div className="flex h-screen bg-black text-gray-200 font-mono">
+      <div className="flex-1 relative">
+        <DayNightCycle phase={gameState.phase}>
+           {/* Center Info */}
+           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none opacity-20">
+             <div className="text-8xl font-black tracking-widest text-white">WOLF</div>
+             <div className="text-xl tracking-[1em] text-white mt-4">{gameState.phase.toUpperCase().replace('_', ' ')}</div>
+             <div className="text-sm mt-2">DAY {gameState.day_count}</div>
+           </div>
+
+           {/* Visualization */}
+           <GodViewBoard players={gameState.players} />
+           <InteractionGraph votes={gameState.votes || {}} players={gameState.players} />
+        </DayNightCycle>
+      </div>
+
+      {/* Sidebar Timeline */}
+      <div className="w-80 border-l border-gray-800 bg-black/90 z-30 flex flex-col">
+        <div className="p-4 border-b border-gray-800">
+          <h2 className="text-sm font-bold text-purple-400">EVENT LOG</h2>
         </div>
-
-        {/* Game Status */}
-        <div className="cyber-card p-4 rounded-lg mb-4 relative overflow-hidden">
-          <div className="absolute inset-0 hex-pattern opacity-20"></div>
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 text-cyberBlue text-sm mb-4 font-orbitron">
-              <span>{getPhaseIcon(gameState.phase)}</span>
-              <span>GAME STATUS</span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className={`bg-backgroundSlate/50 p-3 rounded border text-center ${
-                isDayPhase(gameState.phase) ? 'border-warning/40' : 'border-electricPurple/40'
-              }`}>
-                <div className="text-2xl mb-1">{getPhaseIcon(gameState.phase)}</div>
-                <div className="text-xs text-foreground/50">Phase</div>
-                <div className={`font-bold ${isDayPhase(gameState.phase) ? 'text-warning' : 'text-electricPurple'}`}>
-                  {formatPhaseLabel(gameState.phase)}
-                </div>
-              </div>
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-cyberBlue/20 text-center">
-                <div className="text-2xl mb-1">📅</div>
-                <div className="text-xs text-foreground/50">Day</div>
-                <div className="text-cyberBlue font-bold">{gameState.day_count || 1}</div>
-              </div>
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-acidGreen/20 text-center">
-                <div className="text-2xl mb-1">💚</div>
-                <div className="text-xs text-foreground/50">Alive</div>
-                <div className="text-acidGreen font-bold">{alivePlayers.length}</div>
-              </div>
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-danger/20 text-center">
-                <div className="text-2xl mb-1">💀</div>
-                <div className="text-xs text-foreground/50">Dead</div>
-                <div className="text-danger font-bold">{deadPlayers.length}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Role Cards - Alive Players */}
-        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
-          <div className="flex items-center gap-2 text-acidGreen text-sm mb-4 font-orbitron">
-            <span>👥</span>
-            <span>ACTIVE PLAYERS ({alivePlayers.length})</span>
-          </div>
-          <div className="flex flex-wrap gap-4 justify-center">
-            {alivePlayers.map((player) => (
-              <RoleCard
-                key={player.sid}
-                role={getRoleType(player.role)}
-                status={getRoleStatus(player)}
-                revealed={hasVisibleRole(player.role)}
-                playerName={player.nickname}
-              />
-            ))}
-            {alivePlayers.length === 0 && (
-              <div className="text-foreground/50 text-sm py-8">No alive players</div>
-            )}
-          </div>
-        </div>
-
-        {/* Dead Players */}
-        {deadPlayers.length > 0 && (
-          <div className="cyber-card p-4 rounded-lg mb-4 opacity-80">
-            <div className="flex items-center gap-2 text-danger text-sm mb-4 font-orbitron">
-              <span>💀</span>
-              <span>ELIMINATED ({deadPlayers.length})</span>
-            </div>
-            <div className="flex flex-wrap gap-4 justify-center">
-              {deadPlayers.map((player) => (
-                <RoleCard
-                  key={player.sid}
-                  role={getRoleType(player.role)}
-                  status="Dead"
-                  revealed={true}
-                  playerName={player.nickname}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Player Registry */}
-        <div className="cyber-card p-4 rounded-lg mb-4 relative">
-          <div className="absolute inset-0 data-stream-bg rounded-lg"></div>
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 text-electricPurple text-sm mb-4 font-orbitron">
-              <span>📋</span>
-              <span>PLAYER REGISTRY</span>
-            </div>
-            <div className="space-y-2">
-              {gameState.players?.map((player) => (
-                <div 
-                  key={player.sid} 
-                  className={`bg-backgroundSlate/60 p-3 rounded-lg border transition-all ${
-                    !player.is_alive 
-                      ? 'border-danger/20 opacity-60' 
-                      : 'border-border/30 hover:border-cyberBlue/30'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className={`icon-badge flex items-center justify-center ${
-                        !player.is_alive ? 'opacity-50 grayscale' : ''
-                      } ${
-                        getRoleType(player.role) === 'Werewolf' ? 'border-neonPink/50 bg-neonPink/10' :
-                        getRoleType(player.role) === 'Seer' ? 'border-electricPurple/50 bg-electricPurple/10' :
-                        getRoleType(player.role) === 'Witch' ? 'border-acidGreen/50 bg-acidGreen/10' :
-                        getRoleType(player.role) === 'Hunter' ? 'border-warning/50 bg-warning/10' :
-                        'border-cyberBlue/50 bg-cyberBlue/10'
-                      }`}>
-                        {getRoleIcon(typeof player.role === 'string' ? player.role : player.role?.role)}
-                      </div>
-                      <div>
-                        <div className={`font-bold ${!player.is_alive ? 'line-through text-foreground/50' : 'text-foreground'}`}>
-                          {player.nickname}
-                        </div>
-                        <div className="text-xs flex items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-mono ${
-                            getRoleType(player.role) === 'Werewolf' ? 'bg-neonPink/20 text-neonPink' :
-                            getRoleType(player.role) === 'Seer' ? 'bg-electricPurple/20 text-electricPurple' :
-                            getRoleType(player.role) === 'Witch' ? 'bg-acidGreen/20 text-acidGreen' :
-                            getRoleType(player.role) === 'Hunter' ? 'bg-warning/20 text-warning' :
-                            hasVisibleRole(player.role) ? 'bg-cyberBlue/20 text-cyberBlue' :
-                            'bg-border/30 text-foreground/50'
-                          }`}>
-                            {getRoleLabel(player.role)}
-                          </span>
-                          <span className={`flex items-center gap-1 ${player.is_alive ? 'text-acidGreen' : 'text-danger'}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${player.is_alive ? 'bg-acidGreen' : 'bg-danger'}`}></span>
-                            {player.is_alive ? 'ALIVE' : 'DEAD'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-xs text-foreground/50">
-                      {player.voted_for && (
-                        <span className="flex items-center gap-1 bg-electricPurple/10 px-2 py-1 rounded">
-                          <svg viewBox="0 0 24 24" className="w-3 h-3 text-electricPurple">
-                            <path fill="currentColor" d="M5 21V4h14v17l-7-3-7 3z"/>
-                          </svg>
-                          <span className="text-electricPurple">{resolveVoteTargetName(player.voted_for)}</span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Chat */}
-        <div className="cyber-card p-4 rounded-lg mb-4">
-          <div className="flex items-center gap-2 text-electricPurple text-sm mb-3 font-orbitron">
-            <span>💬</span>
-            <span>PUBLIC CHAT</span>
-          </div>
-          <div className="max-h-48 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-            {gameState.chat_messages && gameState.chat_messages.length > 0 ? (
-              gameState.chat_messages.map((msg, idx) => (
-                <div
-                  key={`${msg.timestamp || 'time'}-${idx}`}
-                  className="text-xs font-mono text-foreground/80 py-1 border-b border-border/20 last:border-0"
-                >
-                  <span className="text-cyberBlue">{msg.nickname || 'Unknown'}</span>
-                  {msg.phase && (
-                    <span className="text-warning ml-2">[{msg.phase}]</span>
-                  )}
-                  <span className="text-foreground/70 ml-2">{msg.message || ''}</span>
-                  {msg.timestamp && (
-                    <span className="text-foreground/40 ml-2">
-                      {new Date(msg.timestamp).toLocaleTimeString()}
-                    </span>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="text-xs text-foreground/50">No chat yet</div>
-            )}
-          </div>
-        </div>
-
-        {/* Wolf Chat */}
-        <div className="cyber-card p-4 rounded-lg mb-4">
-          <div className="flex items-center gap-2 text-neonPink text-sm mb-3 font-orbitron">
-            <span>🐺</span>
-            <span>WOLF CHAT</span>
-          </div>
-          <div className="max-h-48 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-            {!revealAll ? (
-              <div className="text-xs text-foreground/60">
-                Hidden in masked mode. Switch to human reading mode for reveal-only wolf chat.
-              </div>
-            ) : gameState.wolf_chat && gameState.wolf_chat.length > 0 ? (
-              gameState.wolf_chat.map((msg, idx) => (
-                <div
-                  key={`${msg.timestamp || 'time'}-${idx}`}
-                  className="text-xs font-mono text-foreground/80 py-1 border-b border-border/20 last:border-0"
-                >
-                  <span className="text-neonPink">{msg.nickname || 'Unknown'}</span>
-                  {msg.phase && (
-                    <span className="text-warning ml-2">[{msg.phase}]</span>
-                  )}
-                  <span className="text-foreground/70 ml-2">{msg.message || ''}</span>
-                  {msg.timestamp && (
-                    <span className="text-foreground/40 ml-2">
-                      {new Date(msg.timestamp).toLocaleTimeString()}
-                    </span>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="text-xs text-foreground/50">No wolf chat yet</div>
-            )}
-          </div>
-        </div>
-
-        {/* Game Log */}
-        {gameLog.length > 0 && (
-          <div className="cyber-card p-4 rounded-lg mb-4">
-            <div className="flex items-center gap-2 text-acidGreen text-sm mb-3 font-orbitron">
-              <span>📜</span>
-              <span>GAME LOG</span>
-            </div>
-            <div className="max-h-40 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-              {gameLog.map((log, idx) => (
-                <div key={idx} className="text-xs font-mono text-foreground/70 py-1 border-b border-border/20 last:border-0">
-                  <span className="text-acidGreen">▸</span> {log}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Action Timeline */}
-        {actionTimeline.length > 0 && (
-          <div className="cyber-card p-4 rounded-lg mb-4">
-            <div className="flex items-center gap-2 text-warning text-sm mb-3 font-orbitron">
-              <span>🧭</span>
-              <span>ACTION TIMELINE</span>
-            </div>
-            <div className="max-h-56 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-              {[...actionTimeline].reverse().map((item, idx) => {
-                const actor = item.actor_nickname || item.actor_sid || 'Unknown';
-                const target = item.target?.nickname || item.target?.sid;
-                const targetText = target ? ` -> ${target}` : '';
-                const msg = item.message ? ` | ${item.message}` : '';
-                const seer = item.seer_result && revealAll ? ` | result: ${item.seer_result}` : '';
-                return (
-                  <div key={`${item.timestamp || 'time'}-${idx}`} className="text-xs font-mono text-foreground/80 py-1 border-b border-border/20 last:border-0">
-                    <span className="text-warning">[{formatPhaseLabel(item.phase)}]</span>
-                    <span className="ml-2 text-cyberBlue">{actor}</span>
-                    <span className="ml-1 text-foreground/70">{item.action}{targetText}{msg}{seer}</span>
-                    {item.timestamp && (
-                      <span className="text-foreground/40 ml-2">{new Date(item.timestamp).toLocaleTimeString()}</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="cyber-card p-3 rounded-lg text-center">
-          <div className="text-foreground/50 text-xs flex items-center justify-center gap-2">
-            <span>👁️</span>
-            <span>Spectator Mode - Watch AI agents deduce and deceive</span>
-          </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {/* Chat Messages as Timeline for now, since ActionTimeline relies on events we might not fully have */}
+          {gameState.chat_messages?.slice().reverse().map((msg, i) => (
+             <motion.div 
+               key={i} 
+               initial={{ opacity: 0, x: 20 }}
+               animate={{ opacity: 1, x: 0 }}
+               className="text-xs border-l-2 border-gray-700 pl-2 py-1"
+             >
+               <div className="flex justify-between text-gray-500 mb-1">
+                 <span>{msg.nickname}</span>
+                 <span>{msg.timestamp || ''}</span>
+               </div>
+               <div className="text-gray-300">{msg.message}</div>
+             </motion.div>
+          ))}
         </div>
       </div>
     </div>

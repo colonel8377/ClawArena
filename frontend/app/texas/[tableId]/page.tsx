@@ -1,547 +1,87 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import { getSocket } from '@/lib/socket';
-import PlayingCard, { Rank } from '@/components/poker/PlayingCard';
-import ChipIcon from '@/components/poker/ChipIcon';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { useSpectatorSocket } from '@/hooks/useSpectatorSocket';
+import { useTexasStore } from '@/store/texasStore';
 import { useUiMode } from '@/components/UiModeProvider';
+import PlayerSeat from '@/components/texas/PlayerSeat';
+import CommunityCards from '@/components/texas/CommunityCards';
+import ChipStream from '@/components/texas/ChipStream';
+import ActionTimeline from '@/components/texas/ActionTimeline';
 
-interface SpectatorPlayer {
-  sid: string;
-  nickname: string;
-  chips: number;
-  status: string;
-  cards?: string[];
-  hole_cards?: string[];
-  current_bet?: number;
-  last_action?: string;
-}
-
-interface ChatMessage {
-  nickname: string;
-  message: string;
-  action?: string;
-  timestamp?: string;
-}
-
-interface GameState {
-  game_id: string;
-  phase: string;
-  pot: number;
-  current_bet: number;
-  community_cards: string[];
-  players: SpectatorPlayer[];
-  dealer_position?: number;
-  current_player?: string;
-  small_blind?: number;
-  big_blind?: number;
-  chat_history?: ChatMessage[];
-}
-
-export default function TexasDetailPage() {
-  const params = useParams();
-  const tableId = params.tableId as string;
-  
-  const [connected, setConnected] = useState(false);
-  const [gameState, setGameState] = useState<GameState | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [tableLog, setTableLog] = useState<string[]>([]);
-  const lastSocketUpdateRef = useRef(0);
-  const isFetchInFlightRef = useRef(false);
-  const pendingStateRef = useRef<GameState | null>(null);
-  const rafFlushRef = useRef<number | null>(null);
+export default function TexasTablePage() {
+  const { tableId } = useParams() as { tableId: string };
   const { readingMode } = useUiMode();
+  
+  const { 
+    gameState, 
+    setGameState, 
+    addLog,
+    setConnected
+  } = useTexasStore();
 
-  const revealAll = readingMode === 'human';
-  const revealModeLabel = revealAll ? 'REVEAL VIEW' : 'MASKED VIEW';
-  // HTTP spectator endpoint is always masked by design.
-  // Full reveal is delivered only through read-only Socket.IO subscriptions.
-  const apiUrl = useMemo(() => `${getApiBaseUrl()}/api/spectate/poker/${tableId}`, [tableId]);
-
-  useEffect(() => {
-    const socket = getSocket();
-    if (!socket) return;
-    const activeSocket = socket;
-
-    setConnected(activeSocket.connected);
-
-    function onConnect() {
-      setConnected(true);
-      activeSocket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
+  useSpectatorSocket({
+    namespace: 'texas',
+    tableId,
+    revealMode: readingMode === 'human',
+    events: {
+      game_state: (data) => setGameState(data),
+      connect: () => setConnected(true),
+      disconnect: () => setConnected(false),
+      texas_action: (data) => addLog(`${data.nickname} ${data.action} ${data.amount || ''}`),
+      hand_winner: (data) => addLog(`Winner: ${data.winners.join(', ')} (Pot: ${data.amount})`)
     }
+  });
 
-    function onDisconnect() {
-      setConnected(false);
-    }
-
-    activeSocket.on('connect', onConnect);
-    activeSocket.on('disconnect', onDisconnect);
-
-    const onGameState = (data: GameState) => {
-      if (data.game_id === tableId) {
-        lastSocketUpdateRef.current = Date.now();
-        // Batch bursts of socket updates into one paint frame to reduce UI jitter.
-        pendingStateRef.current = data;
-        if (rafFlushRef.current == null) {
-          rafFlushRef.current = window.requestAnimationFrame(() => {
-            rafFlushRef.current = null;
-            if (pendingStateRef.current) {
-              setGameState(pendingStateRef.current);
-            }
-          });
-        }
-        setError(null);
-      }
-    };
-
-    const onHandWinner = (data: { winner?: { nickname?: string }; reason?: string; pot?: number }) => {
-      const winnerName = data?.winner?.nickname || 'Unknown';
-      const pot = typeof data?.pot === 'number' ? data.pot : 0;
-      setTableLog((prev) => [...prev.slice(-19), `Hand winner: ${winnerName} (+${pot})${data?.reason ? ` - ${data.reason}` : ''}`]);
-    };
-
-    const onShowdown = (data: { winners?: Array<{ nickname?: string; amount?: number }> }) => {
-      const winners = (data?.winners || [])
-        .map((w) => `${w.nickname || 'Unknown'}(+${w.amount || 0})`)
-        .join(', ');
-      setTableLog((prev) => [...prev.slice(-19), winners ? `Showdown: ${winners}` : 'Showdown reached']);
-    };
-
-    activeSocket.on('game_state', onGameState);
-    activeSocket.on('game_update', onGameState);
-    activeSocket.on('hand_winner', onHandWinner);
-    activeSocket.on('showdown_reveal', onShowdown);
-
-    if (activeSocket.connected) {
-      activeSocket.emit('join_spectate', { table_id: tableId, reveal: revealAll });
-    }
-
-    return () => {
-      if (rafFlushRef.current != null) {
-        window.cancelAnimationFrame(rafFlushRef.current);
-        rafFlushRef.current = null;
-      }
-      activeSocket.off('connect', onConnect);
-      activeSocket.off('disconnect', onDisconnect);
-      activeSocket.off('game_state', onGameState);
-      activeSocket.off('game_update', onGameState);
-      activeSocket.off('hand_winner', onHandWinner);
-      activeSocket.off('showdown_reveal', onShowdown);
-      activeSocket.emit('leave_spectate', { table_id: tableId });
-    };
-  }, [apiUrl, revealAll, tableId]);
-
-  useEffect(() => {
-    const fetchGameState = async (isInitial = false) => {
-      if (isFetchInFlightRef.current) {
-        return;
-      }
-      isFetchInFlightRef.current = true;
-      if (isInitial) {
-        setLoading(true);
-      }
-      try {
-        const res = await botFetch(apiUrl);
-        if (!res.ok) {
-          setError('Game not found or has ended');
-          setGameState(null);
-          return;
-        }
-        const data = await res.json();
-        setError(null);
-        setGameState(data);
-      } catch {
-        if (!connected) {
-          setError('Failed to load game state');
-          setGameState(null);
-        }
-      } finally {
-        isFetchInFlightRef.current = false;
-        if (isInitial) {
-          setLoading(false);
-        }
-      }
-    };
-
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    const loop = async () => {
-      const socketHealthy = connected && Date.now() - lastSocketUpdateRef.current < 10_000;
-      if (!socketHealthy) {
-        await fetchGameState(false);
-      }
-      const nextDelay = socketHealthy ? 10_000 : 3_000;
-      if (!cancelled) {
-        timer = setTimeout(loop, nextDelay);
-      }
-    };
-
-    fetchGameState(true).finally(() => {
-      if (!cancelled) {
-        loop();
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [apiUrl, connected]);
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'active': return '✅';
-      case 'folded': return '❌';
-      case 'allin': return '🔥';
-      default: return '⏳';
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'active': return 'text-acidGreen';
-      case 'folded': return 'text-danger opacity-50';
-      case 'allin': return 'text-warning';
-      default: return 'text-foreground/50';
-    }
-  };
-
-  const getPhaseIcon = (phase?: string) => {
-    switch (phase?.toLowerCase()) {
-      case 'preflop': return '🎴';
-      case 'flop': return '🃏';
-      case 'turn': return '🔄';
-      case 'river': return '🌊';
-      case 'showdown': return '🏆';
-      default: return '⏳';
-    }
-  };
-
-  const parseCard = (card: string): { suit: 'hearts' | 'diamonds' | 'clubs' | 'spades'; rank: string } | null => {
-    if (!card || card === '??' || card === '**') return null;
-    const suitMap: Record<string, 'hearts' | 'diamonds' | 'clubs' | 'spades'> = {
-      '♥': 'hearts', '♦': 'diamonds', '♣': 'clubs', '♠': 'spades',
-      'h': 'hearts', 'd': 'diamonds', 'c': 'clubs', 's': 'spades',
-      'H': 'hearts', 'D': 'diamonds', 'C': 'clubs', 'S': 'spades',
-    };
-    const rank = card.slice(0, -1);
-    const suitChar = card.slice(-1);
-    const suit = suitMap[suitChar];
-    if (suit) return { suit, rank };
-    return null;
-  };
-
-  if (loading) {
+  if (!gameState) {
     return (
-      <div className="min-h-screen scanline-effect flex items-center justify-center">
-        <div className="cyber-card p-8 rounded-lg text-center">
-          <div className="text-5xl mb-4 animate-pulse">🃏</div>
-          <div className="text-cyberBlue font-orbitron text-xl animate-pulse">
-            LOADING GAME...
-          </div>
-          <div className="text-xs text-foreground/50 mt-2">Table: {tableId}</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !gameState) {
-    return (
-      <div className="min-h-screen scanline-effect flex items-center justify-center">
-        <div className="cyber-card p-8 rounded-lg text-center">
-          <div className="text-5xl mb-4">❌</div>
-          <div className="text-danger font-orbitron text-xl mb-4">
-            {error || 'GAME NOT FOUND'}
-          </div>
-          <Link 
-            href="/texas"
-            className="inline-flex items-center gap-2 px-4 py-2 border border-cyberBlue text-cyberBlue hover:bg-cyberBlue/10 rounded transition-colors"
-          >
-            <span>←</span>
-            <span>Back to Games</span>
-          </Link>
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-black text-green-500 font-mono">
+        <div className="animate-pulse">CONNECTING TO SATELLITE...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen scanline-effect">
-      <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">
-        {/* Header */}
-        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              <Link 
-                href="/texas"
-                className="icon-badge border-cyberBlue hover:neon-glow-blue transition-all"
-              >
-                ←
-              </Link>
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">🃏</span>
-                <div>
-                  <h2 className="text-xl text-neonPink font-orbitron text-glow-pink">
-                    TEXAS HOLD&apos;EM
-                  </h2>
-                  <p className="text-xs text-foreground/50 font-mono">{tableId}</p>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className={`status-badge ${revealAll ? 'status-badge-live' : 'status-badge-offline'}`}>
-                {revealModeLabel}
-              </div>
-              <div className={`status-badge ${connected ? 'status-badge-live' : 'status-badge-offline'}`}>
-                {connected ? '📡 LIVE' : '📴 POLLING'}
-              </div>
-            </div>
+    <div className="flex h-screen bg-[#0a0a0a] text-gray-200 overflow-hidden font-mono">
+      {/* Main Game Area */}
+      <div className="flex-1 relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-green-900/20 via-black to-black">
+        {/* Table Felt */}
+        <div className="absolute inset-4 m-auto w-[80%] h-[70%] border-[20px] border-[#1a1a1a] rounded-[200px] bg-[#0f2a15] shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-green-900/30 text-6xl font-black tracking-widest pointer-events-none select-none">
+            CLAW ARENA
           </div>
         </div>
 
-        {/* Game Status */}
-        <div className="cyber-card p-4 rounded-lg mb-4 relative overflow-hidden">
-          <div className="absolute inset-0 hex-pattern opacity-20"></div>
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 text-neonPink text-sm mb-4 font-orbitron">
-              <span>{getPhaseIcon(gameState.phase)}</span>
-              <span>GAME STATUS</span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-neonPink/20 text-center">
-                <div className="text-2xl mb-1">{getPhaseIcon(gameState.phase)}</div>
-                <div className="text-xs text-foreground/50">Phase</div>
-                <div className="text-neonPink font-bold">{gameState.phase?.toUpperCase() || 'WAITING'}</div>
-              </div>
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-acidGreen/20 text-center">
-                <div className="flex justify-center mb-1">
-                  <ChipIcon className="w-6 h-6 text-acidGreen" />
-                </div>
-                <div className="text-xs text-foreground/50">Pot</div>
-                <div className="text-acidGreen font-bold flex items-center justify-center gap-1">
-                  <ChipIcon className="w-4 h-4 text-acidGreen" />
-                  <span>{gameState.pot || 0}</span>
-                </div>
-              </div>
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-warning/20 text-center">
-                <div className="text-2xl mb-1">🎯</div>
-                <div className="text-xs text-foreground/50">Current Bet</div>
-                <div className="text-warning font-bold">{gameState.current_bet || 0}</div>
-              </div>
-              <div className="bg-backgroundSlate/50 p-3 rounded border border-cyberBlue/20 text-center">
-                <div className="text-2xl mb-1">👥</div>
-                <div className="text-xs text-foreground/50">Players</div>
-                <div className="text-cyberBlue font-bold">{gameState.players?.length || 0}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Community Cards */}
-        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
-          <div className="flex items-center gap-2 text-warning text-sm mb-4 font-orbitron">
-            <span>🎴</span>
-            <span>COMMUNITY CARDS</span>
-          </div>
-          <div className="flex flex-wrap gap-3 justify-center py-4">
-            {gameState.community_cards && gameState.community_cards.length > 0 ? (
-              gameState.community_cards.map((card, idx) => {
-                const parsed = parseCard(card);
-                if (parsed) {
-                  return <PlayingCard key={idx} suit={parsed.suit} rank={parsed.rank as Rank} />;
-                }
-                return <PlayingCard key={idx} suit="spades" rank="A" hidden />;
-              })
-            ) : (
-              <div className="flex gap-3">
-                {[1, 2, 3, 4, 5].map((i) => (
-                  <PlayingCard key={i} suit="spades" rank="A" hidden />
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Game Components */}
+        <CommunityCards cards={gameState.community_cards || []} />
+        
+        {/* Pot Display */}
+        <div className="absolute top-[35%] left-1/2 -translate-x-1/2 bg-black/60 px-4 py-1 rounded-full border border-green-800 text-green-400 font-bold z-10">
+          POT: ${gameState.pot}
         </div>
 
         {/* Players */}
-        <div className="cyber-card p-4 rounded-lg mb-4 relative">
-          <div className="absolute inset-0 data-stream-bg rounded-lg"></div>
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 text-cyberBlue text-sm mb-4 font-orbitron">
-              <span>🪑</span>
-              <span>PLAYERS AT TABLE</span>
-            </div>
-            <div className="space-y-2">
-              {gameState.players?.map((player, idx) => (
-                <div 
-                  key={player.sid} 
-                  className={`bg-backgroundSlate/60 p-3 rounded-lg border transition-all ${
-                    gameState.current_player === player.sid 
-                      ? 'border-acidGreen neon-glow-green' 
-                      : 'border-border/30 hover:border-neonPink/30'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="icon-badge-sm border-neonPink/30">
-                        {idx + 1}
-                      </div>
-                      <div className="icon-badge border-cyberBlue/30">
-                        🤖
-                      </div>
-                      <div>
-                        <div className="font-bold text-foreground">{player.nickname}</div>
-                        <div className={`text-xs flex items-center gap-1 ${getStatusColor(player.status)}`}>
-                          <span>{getStatusIcon(player.status)}</span>
-                          <span>{player.status?.toUpperCase() || 'WAITING'}</span>
-                          {gameState.current_player === player.sid && (
-                            <span className="ml-2 text-acidGreen">⟵ TURN</span>
-                          )}
-                        </div>
-                        {player.last_action && (
-                          <div className="text-[10px] text-warning mt-1">Action: {player.last_action}</div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-6 text-sm">
-                      <div className="text-center">
-                        <div className="text-xs text-foreground/50">Chips</div>
-                        <div className="text-cyberBlue font-bold flex items-center gap-1">
-                          <ChipIcon className="w-4 h-4 text-cyberBlue" />
-                          <span>{player.chips}</span>
-                        </div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-xs text-foreground/50">Bet</div>
-                        <div className="text-warning font-bold flex items-center gap-1">
-                          <ChipIcon className="w-4 h-4 text-warning" />
-                          <span>{player.current_bet || 0}</span>
-                        </div>
-                      </div>
-                      <div className="flex gap-1">
-                        {player.hole_cards && player.hole_cards.length > 0 ? (
-                          player.hole_cards.map((card, cardIdx) => {
-                            const parsed = parseCard(card);
-                            if (parsed) {
-                              return (
-                                <PlayingCard 
-                                  key={cardIdx} 
-                                  suit={parsed.suit} 
-                                  rank={parsed.rank as Rank}
-                                  className="!w-12 !h-16"
-                                />
-                              );
-                            }
-                            return (
-                              <PlayingCard 
-                                key={cardIdx} 
-                                suit="spades" 
-                                rank="A" 
-                                hidden 
-                                className="!w-12 !h-16"
-                              />
-                            );
-                          })
-                        ) : player.cards && player.cards.length > 0 ? (
-                          player.cards.map((card, cardIdx) => {
-                            const parsed = parseCard(card);
-                            if (parsed) {
-                              return (
-                                <PlayingCard 
-                                  key={cardIdx} 
-                                  suit={parsed.suit} 
-                                  rank={parsed.rank as Rank}
-                                  className="!w-12 !h-16"
-                                />
-                              );
-                            }
-                            return (
-                              <PlayingCard 
-                                key={cardIdx} 
-                                suit="spades" 
-                                rank="A" 
-                                hidden 
-                                className="!w-12 !h-16"
-                              />
-                            );
-                          })
-                        ) : (
-                          <div className="flex gap-1">
-                            <PlayingCard suit="spades" rank="A" hidden className="!w-12 !h-16" />
-                            <PlayingCard suit="spades" rank="A" hidden className="!w-12 !h-16" />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        {gameState.players.map((player, idx) => (
+          <PlayerSeat 
+            key={player.sid} 
+            player={player} 
+            index={idx} 
+            totalPlayers={gameState.players.length}
+            communityCards={gameState.community_cards}
+          />
+        ))}
 
-        {/* Chat */}
-        <div className="cyber-card p-4 rounded-lg mb-4">
-          <div className="flex items-center gap-2 text-electricPurple text-sm mb-3 font-orbitron">
-            <span>💬</span>
-            <span>TABLE CHAT</span>
-          </div>
-          <div className="max-h-48 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-            {gameState.chat_history && gameState.chat_history.length > 0 ? (
-              gameState.chat_history.map((msg, idx) => (
-                <div
-                  key={`${msg.timestamp || 'time'}-${idx}`}
-                  className="text-xs font-mono text-foreground/80 py-1 border-b border-border/20 last:border-0"
-                >
-                  <span className="text-cyberBlue">{msg.nickname || 'Unknown'}</span>
-                  {msg.action && (
-                    <span className="text-warning ml-2">[{msg.action}]</span>
-                  )}
-                  <span className="text-foreground/70 ml-2">{msg.message || ''}</span>
-                  {msg.timestamp && (
-                    <span className="text-foreground/40 ml-2">
-                      {new Date(msg.timestamp).toLocaleTimeString()}
-                    </span>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="text-xs text-foreground/50">No chat yet</div>
-            )}
-          </div>
-        </div>
+        {/* Animations */}
+        <ChipStream 
+          players={gameState.players} 
+          pot={gameState.pot} 
+        />
+      </div>
 
-        {/* Table Log */}
-        {tableLog.length > 0 && (
-          <div className="cyber-card p-4 rounded-lg mb-4">
-            <div className="flex items-center gap-2 text-acidGreen text-sm mb-3 font-orbitron">
-              <span>📜</span>
-              <span>TABLE EVENTS</span>
-            </div>
-            <div className="max-h-40 overflow-y-auto bg-backgroundSlate/50 p-3 rounded border border-border/30">
-              {tableLog.map((log, idx) => (
-                <div key={idx} className="text-xs font-mono text-foreground/70 py-1 border-b border-border/20 last:border-0">
-                  <span className="text-acidGreen">▸</span> {log}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="cyber-card p-3 rounded-lg text-center">
-          <div className="text-foreground/50 text-xs flex items-center justify-center gap-2">
-            <span>👁️</span>
-            <span>Spectator Mode - Watching agent gameplay in real-time</span>
-          </div>
-        </div>
+      {/* Sidebar Info */}
+      <div className="w-80 border-l border-gray-800 bg-black/90 z-30">
+        <ActionTimeline />
       </div>
     </div>
   );

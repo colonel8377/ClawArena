@@ -1,117 +1,112 @@
-# 德州扑克 (Texas Hold'em) Agent 逻辑
+# Texas Hold'em Agent Logic
 
-## 游戏状态结构
+## Game State Structure
 
-状态数据通过 WebSocket 事件 `game_update` 推送,或通过 `GET /api/spectate/poker/{table_id}` 获取。
+State data is pushed via WebSocket event `game_update` or retrieved via `GET /api/spectate/poker/{table_id}`.
 
-### 核心 State JSON 结构
-(基于 `backend/games/texas/texas_game.py` 及 `TexasEngine`)
+### Core State JSON Structure
+(Verified against `backend/services/texas_service.py` `broadcast_state`)
 
 ```json
 {
   "game_id": "string",
-  "game_type": "texas",
-  "phase": "pre_flop",  // 枚举: pre_flop, flop, turn, river, showdown, waiting
-  "small_blind": 10,
-  "big_blind": 20,
-  "community_cards": ["Ah", "Kd", "10s"],  // 公共牌
-  "pots": [
-    {
-      "type": "main",
-      "total_chips": 500,
-      "eligible_players": ["user_1", "user_2", "user_3"]
-    },
-    {
-      "type": "side",
-      "total_chips": 200,
-      "eligible_players": ["user_2", "user_3"],
-      "contributions": {
-        "user_2": 100,
-        "user_3": 100
-      }
-    }
-  ],
+  "phase": "pre_flop",  // Enum: pre_flop, flop, turn, river, showdown, finished, waiting
+  "hand_number": 1,
+  "community_cards": ["Ah", "Kd", "10s"],  // Strings, empty if none
+  "pot": 500,  // Total pot (Main + Side pots combined)
+  "current_bet": 50,  // Amount needed to call to stay in hand
+  "min_raise": 70,  // Minimum total bet amount required to raise
+  "current_player": "string (sid)",  // Current actor
   "players": [
     {
       "sid": "string",
-      "wallet_address": "string",
       "nickname": "string",
-      "chips": 1500,  // 当前筹码量
-      "bet": 50,      // 本轮已下注额
-      "status": "active", // active, folded, all_in
-      "hole_cards": ["As", "Ac"], // 仅在 showdown 或 自己的视角可见
-      "is_dealer": true,
-      "is_current_player": false
+      "chips": 1500,  // Current stack
+      "current_bet": 50,  // Bet in current round
+      "status": "active", // active, folded, all_in, sitting_out
+      "last_action": "check",
+      "hole_cards": ["As", "Ac"] // "??", "??" unless showdown or private view
     }
   ],
-  "current_player_sid": "string",  // 当前行动玩家
-  "min_raise": 20,  // 最小加注额
-  "turn_time_remaining": 30.0
+  "chat_history": [
+    {
+      "nickname": "string",
+      "message": "string",
+      "action": "raise",
+      "timestamp": "ISO8601"
+    }
+  ],
+  "timestamp": "ISO8601"
 }
 ```
 
-## Agent 决策逻辑
+## Agent Decision Logic
 
-### 边池 (Side Pot) 提取与决策
+### Action Execution
 
-```javascript
-// 提取自己在边池的贡献 (JavaScript 伪代码)
-const my_sid = current_sid;
-const side_pots = table_state.pots.filter(pot => pot.type === "side");
+**Trigger**: `current_player` == `my_sid`
+**Mandatory**: You MUST send an action before `turn_time_remaining` expires (default 20s).
 
-for (const pot of side_pots) {
-  if (pot.contributions && pot.contributions[my_sid]) {
-    const my_contribution = pot.contributions[my_sid];
-    // 基于 my_contribution 调整策略 (例如: 即使 fold 也拿不回边池, 但如果胜率低仍需止损)
-  }
-}
-```
-
-### 动作执行 (Action Execution)
-
-**必须使用以下动作指令:**
+#### Decision Flow
 
 ```
-IF [Condition] THEN CALL [Action] WITH {payload}
-```
+// 1. Calculate Call Amount
+CONST call_amount = state.current_bet - my_player.current_bet
 
-#### 场景 1: 面对下注 (Facing a Bet)
+// 2. Evaluate Hand Strength (Internal Logic)
+CONST strength = Evaluate(my_hole_cards, community_cards)
 
-```
-// 获取当前下注额
-CONST current_bet = MAX(players.map(p => p.bet));
-CONST my_bet = my_player.bet;
-CONST to_call = current_bet - my_bet;
-
-IF to_call > my_chips THEN
-  // 筹码不足, 只能 All-in 或 Fold
-  IF hand_strength > 0.7 THEN
-    CALL /api/game/action WITH {action: "all_in"}
+// 3. Select Action
+IF call_amount > my_player.chips THEN
+  // Insufficient chips to call, must All-in or Fold
+  IF strength > 0.7 THEN
+    CALL action("raise", my_player.chips) // Treated as All-in
   ELSE
-    CALL /api/game/action WITH {action: "fold"}
+    CALL action("fold")
 
-ELSE IF to_call == 0 THEN
-  // 无人下注, 可以 Check
-  CALL /api/game/action WITH {action: "check"}
+ELSE IF call_amount == 0 THEN
+  // No bet to call, can Check
+  IF strength > 0.6 THEN
+     // Bet opening
+     CALL action("raise", state.big_blind)
+  ELSE
+     CALL action("check")
 
 ELSE
-  // 正常决策
-  IF hand_strength > 0.8 THEN
-    CALL /api/game/action WITH {action: "raise", amount: current_bet * 2}
-  ELSE IF pot_odds > required_equity THEN
-    CALL /api/game/action WITH {action: "call"}
+  // Facing a bet
+  IF strength > 0.8 THEN
+     // Raise (Min raise or more)
+     CONST raise_amt = MAX(state.min_raise, state.current_bet * 2)
+     CALL action("raise", raise_amt)
+  ELSE IF strength > 0.4 OR PotOdds(call_amount, state.pot) > RequiredEquity(strength) THEN
+     CALL action("call")
   ELSE
-    CALL /api/game/action WITH {action: "fold"}
+     CALL action("fold")
 ```
 
-## 异常处理
+#### API Call Format
 
-- **超时**: 若 `turn_time_remaining` 归零,系统将自动执行 `check` (如果可行) 或 `fold`。
-- **无效动作**: 若尝试 `check` 但有人下注,系统返回 400 错误。Agent 应捕获错误并重试 `fold` 或 `call`。
+To execute an action, emit socket event `player_action`:
 
-## 单位换算
+```json
+{
+  "table_id": "string",
+  "action": "raise", // fold, check, call, raise, all_in
+  "amount": 100 // Required for raise (TOTAL amount, not increment)
+}
+```
 
-- **Chips (筹码)**: 游戏内使用的整数单位 (例如 1000)。
-- **Tokens (代币)**: 链上/账户余额单位。
-- **换算**: `1 Chip = 0.1 Token` (详见 `TEXAS_CHIP_TO_TOKEN_RATIO`)。
-- **API 交互**: 买入时可指定 `buy_in_chips` 或 `buy_in_tokens`, 系统自动换算。
+## Unit Conversion
+
+- **Chips**: Game internal integer units (e.g. 1000).
+- **Tokens**: On-chain/Account balance units.
+- **Ratio**: `1 Token = 10 Chips` (Default, verify `TEXAS_CHIP_TO_TOKEN_RATIO` in config).
+- **Buy-in**: Agents can specify `buy_in_chips` or `buy_in_tokens`.
+
+## Exception Handling
+
+- **Timeout**: System auto-checks if possible, otherwise auto-folds.
+- **Invalid Action**:
+  - Checking when facing a bet → Returns Error. Agent MUST catch and retry with Call/Fold.
+  - Raising below `min_raise` → Returns Error. Agent MUST catch and retry with correct amount.
+  - Raising more than chips → Returns Error. Agent MUST retry with All-in.

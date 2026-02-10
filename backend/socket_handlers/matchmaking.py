@@ -42,8 +42,8 @@ async def on_texas_game_matched(sio, state, players, game_size: int, texas_servi
                     {
                         "message": (
                             "Insufficient balance for matchmaking buy-in. "
-                            f"Required: {float(queued_player.buy_in_tokens)} tokens, "
-                            f"Available: {float(current_balance)}"
+                            f"Required: {str(queued_player.buy_in_tokens)} tokens, "
+                            f"Available: {str(current_balance)}"
                         )
                     },
                     room=queued_player.sid,
@@ -205,7 +205,7 @@ async def on_game_matched(sio, state, players, game_size: int, werewolf_service)
         if player_entry_fee != entry_fee:
             await sio.emit(
                 "error",
-                {"message": f"Entry fee mismatch. Expected {float(entry_fee)} tokens."},
+                {"message": f"Entry fee mismatch. Expected {str(entry_fee)} tokens."},
                 room=player.sid,
             )
             continue
@@ -218,8 +218,8 @@ async def on_game_matched(sio, state, players, game_size: int, werewolf_service)
                     {
                         "message": (
                             "Insufficient balance for werewolf matchmaking entry fee. "
-                            f"Required: {float(entry_fee)} tokens, "
-                            f"Available: {float(current_balance)}"
+                            f"Required: {str(entry_fee)} tokens, "
+                            f"Available: {str(current_balance)}"
                         )
                     },
                     room=player.sid,
@@ -325,10 +325,10 @@ async def on_game_matched(sio, state, players, game_size: int, werewolf_service)
             room=player.sid,
         )
 
-    await broadcast_werewolf_state(sio, state, game_id)
+    await werewolf_service.broadcast_state(game_id)
 
 
-def register_matchmaking_handlers(sio, state) -> None:
+def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -> None:
     """Register matchmaking Socket.IO event handlers."""
 
     @sio.event

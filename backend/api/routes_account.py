@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from backend.economy.account import (
     register_user, handle_login, get_balance,
     get_account_summary, transfer_balance, batch_get_balances,
@@ -13,6 +13,8 @@ from backend.economy.account import (
     get_leaderboard
 )
 from backend.app.limiter import limiter
+from backend.app.dependencies import get_current_user
+from backend.database.models import UserLedger
 
 router = APIRouter()
 
@@ -95,8 +97,17 @@ async def api_get_account_summary(request: Request, player_id: str):
 
 @router.post("/api/transfer")
 @limiter.limit("10/minute")
-async def api_transfer_balance(request: Request, from_player_id: str, to_player_id: str, amount: str):
+async def api_transfer_balance(
+    request: Request, 
+    from_player_id: str, 
+    to_player_id: str, 
+    amount: str,
+    current_user: UserLedger = Depends(get_current_user)
+):
     """Transfer balance between two accounts."""
+    if from_player_id != current_user.wallet_address:
+        raise HTTPException(status_code=403, detail="Cannot transfer from another player's account")
+
     try:
         parsed_amount = Decimal(amount)
         result = await transfer_balance(from_player_id, to_player_id, parsed_amount)

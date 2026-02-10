@@ -373,7 +373,7 @@ def register_common_handlers(sio, state) -> None:
                 await sio.emit("error", {"message": "Login key too long (max 128)"}, room=sid)
                 return
 
-            from economy.account import handle_login
+            from backend.economy.account import handle_login
 
             login_result = await handle_login(login_key, grant_reward=False)
             user = login_result.get("user", {})

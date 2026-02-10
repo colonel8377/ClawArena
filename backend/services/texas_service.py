@@ -7,11 +7,9 @@ from typing import Optional, Any
 
 from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
 from backend.database.persistence_manager import persistence_manager
-from backend.database.models import TransactionType
 from backend.games.texas.texas_engine import PokerPhase
 from backend.services.base import BaseService
 from backend.services.settlement_service import SettlementService
-from backend.economy.account import add_balance, deduct_balance, unlock_balance
 
 POKER_ACTIVE_PHASES = {
     PokerPhase.PRE_FLOP,
@@ -33,6 +31,12 @@ class TexasService(BaseService):
         self._sio = sio
         self._settlement_service = settlement_service
         self._timeout_interval = timeout_interval
+        self._table_locks = {}
+
+    def _get_table_lock(self, table_id: str) -> asyncio.Lock:
+        if table_id not in self._table_locks:
+            self._table_locks[table_id] = asyncio.Lock()
+        return self._table_locks[table_id]
 
     async def start(self) -> None:
         if self._state.poker_timeout_task and not self._state.poker_timeout_task.done():
@@ -136,15 +140,18 @@ class TexasService(BaseService):
 
         if reveal_sids:
             reveal_state = table.get_game_state(for_spectator=True, reveal_all=True)
-            for target_sid in reveal_sids:
-                await self._sio.emit("game_update", reveal_state, room=target_sid)
+            await asyncio.gather(
+                *(self._sio.emit("game_update", reveal_state, room=target_sid) for target_sid in reveal_sids),
+                return_exceptions=True
+            )
 
         if not is_showdown:
+            private_tasks = []
             for player_dict in table.players:
                 player_sid = player_dict["sid"]
                 player = engine.players.get(player_sid)
                 if player and player.hole_cards:
-                    await self._sio.emit(
+                    private_tasks.append(self._sio.emit(
                         "private_hand",
                         {
                             "game_id": table_id,
@@ -153,7 +160,9 @@ class TexasService(BaseService):
                             "timestamp": datetime.utcnow().isoformat(),
                         },
                         room=player_sid,
-                    )
+                    ))
+            if private_tasks:
+                await asyncio.gather(*private_tasks, return_exceptions=True)
 
         await asyncio.create_task(table.save_state_to_redis())
 
@@ -171,25 +180,26 @@ class TexasService(BaseService):
         await self.broadcast_state(table_id)
 
     async def player_move(self, table_id: str, sid: str, action: str, amount: Any = 0, chat_message: Optional[str] = None) -> None:
-        if not table_id or table_id not in self._state.poker_tables:
-            await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
-            return
-        if not action:
-            await self._sio.emit("error", {"message": "Action required"}, room=sid)
-            return
-
-        table = self._state.poker_tables[table_id]
-        action_kwargs = {}
-        if action == "raise":
-            try:
-                action_kwargs["amount"] = self._coerce_raise_amount(amount)
-            except ValueError as exc:
-                await self._sio.emit("error", {"message": str(exc)}, room=sid)
+        async with self._get_table_lock(table_id):
+            if not table_id or table_id not in self._state.poker_tables:
+                await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
                 return
-        if chat_message:
-            action_kwargs["message"] = chat_message
+            if not action:
+                await self._sio.emit("error", {"message": "Action required"}, room=sid)
+                return
 
-        result = table.process_action(sid, action, **action_kwargs)
+            table = self._state.poker_tables[table_id]
+            action_kwargs = {}
+            if action == "raise":
+                try:
+                    action_kwargs["amount"] = self._coerce_raise_amount(amount)
+                except ValueError as exc:
+                    await self._sio.emit("error", {"message": str(exc)}, room=sid)
+                    return
+            if chat_message:
+                action_kwargs["message"] = chat_message
+
+            result = table.process_action(sid, action, **action_kwargs)
         if not result.get("success"):
             # Chat is decoupled from turn-based action validation. If chat was
             # accepted, persist and broadcast it even when the action fails.
@@ -432,78 +442,86 @@ class TexasService(BaseService):
             try:
                 await asyncio.sleep(self._timeout_interval)
 
-                for table_id, table in list(self._state.poker_tables.items()):
-                    await self._check_disconnected_players(table_id, table)
-                    engine = table.engine
-                    if engine.phase not in POKER_ACTIVE_PHASES:
-                        continue
+                # Copy keys to avoid modification during iteration
+                table_ids = list(self._state.poker_tables.keys())
 
-                    current_sid = engine.current_player_sid
-                    if not current_sid:
-                        continue
+                for table_id in table_ids:
+                    async with self._get_table_lock(table_id):
+                        if table_id not in self._state.poker_tables:
+                            continue
+                        table = self._state.poker_tables[table_id]
 
-                    if engine.get_turn_time_remaining() > 0:
-                        continue
+                        await self._check_disconnected_players(table_id, table)
+                        engine = table.engine
+                        if engine.phase not in POKER_ACTIVE_PHASES:
+                            continue
 
-                    print(f"[PokerTimeout] Table {table_id} player {current_sid} timed out")
-                    result = engine.handle_timeout(current_sid)
+                        current_sid = engine.current_player_sid
+                        if not current_sid:
+                            continue
 
-                    if not result.get("success"):
-                        print(
-                            f"[PokerTimeout] Failed to auto-act on {table_id}: {result.get('error')}"
-                        )
-                        continue
+                        if engine.get_turn_time_remaining() > 0:
+                            continue
 
-                    table.update_player_action_time(current_sid)
+                        print(f"[PokerTimeout] Table {table_id} player {current_sid} timed out")
+                        result = engine.handle_timeout(current_sid)
 
-                    await self._sio.emit(
-                        "PLAYER_TIMEOUT",
-                        {
-                            "table_id": table_id,
-                            "player_sid": current_sid,
-                            "action": result.get("action", "fold"),
-                            "timestamp": datetime.utcnow().isoformat(),
-                        },
-                        room=table_id,
-                    )
-
-                    await asyncio.create_task(table.save_checkpoint("timeout_action"))
-                    await self.broadcast_state(table_id)
-
-                    if result.get("hand_over"):
-                        winner_info = result.get("winner", {})
-                        payload = {
-                            "winner": winner_info,
-                            "reason": "All other players folded",
-                            "pot": winner_info.get("amount", 0),
-                        }
-                        await self._sio.emit("hand_winner", payload, room=table_id)
-                        await self._sio.emit("hand_winner", payload, room=self._poker_spectator_room(table_id))
-                        
-                        await asyncio.create_task(table.save_checkpoint("hand_end"))
-                        continue
-
-                    if result.get("advance_phase"):
-                        phase_result = engine.advance_phase()
-                        await self.broadcast_state(table_id)
-                        await asyncio.create_task(table.save_checkpoint("phase_change"))
-
-                        if engine.phase == PokerPhase.SHOWDOWN:
-                            showdown_result = (
-                                phase_result if isinstance(phase_result, dict) else {}
+                        if not result.get("success"):
+                            print(
+                                f"[PokerTimeout] Failed to auto-act on {table_id}: {result.get('error')}"
                             )
+                            continue
+
+                        table.update_player_action_time(current_sid)
+
+                        await self._sio.emit(
+                            "PLAYER_TIMEOUT",
+                            {
+                                "table_id": table_id,
+                                "player_sid": current_sid,
+                                "action": result.get("action", "fold"),
+                                "timestamp": datetime.utcnow().isoformat(),
+                            },
+                            room=table_id,
+                        )
+
+                        await asyncio.create_task(table.save_checkpoint("timeout_action"))
+                        await self.broadcast_state(table_id)
+
+                        if result.get("hand_over"):
+                            winner_info = result.get("winner", {})
                             payload = {
-                                "player_hands": showdown_result.get(
-                                    "player_hands", engine.get_all_hole_cards()
-                                ),
-                                "community_cards": engine.cards_to_strings(
-                                    engine.community_cards
-                                ),
-                                "winners": showdown_result.get("winners", []),
+                                "winner": winner_info,
+                                "reason": "All other players folded",
+                                "pot": winner_info.get("amount", 0),
                             }
-                            await self._sio.emit("showdown_reveal", payload, room=table_id)
-                            await self._sio.emit("showdown_reveal", payload, room=self._poker_spectator_room(table_id))
-                            await asyncio.create_task(table.save_checkpoint("showdown"))
+                            await self._sio.emit("hand_winner", payload, room=table_id)
+                            await self._sio.emit("hand_winner", payload, room=self._poker_spectator_room(table_id))
+                            
+                            await asyncio.create_task(table.save_checkpoint("hand_end"))
+                            continue
+
+                        if result.get("advance_phase"):
+                            phase_result = engine.advance_phase()
+                            await self.broadcast_state(table_id)
+                            await asyncio.create_task(table.save_checkpoint("phase_change"))
+
+                            if engine.phase == PokerPhase.SHOWDOWN:
+                                showdown_result = (
+                                    phase_result if isinstance(phase_result, dict) else {}
+                                )
+                                payload = {
+                                    "player_hands": showdown_result.get(
+                                        "player_hands", engine.get_all_hole_cards()
+                                    ),
+                                    "community_cards": engine.cards_to_strings(
+                                        engine.community_cards
+                                    ),
+                                    "winners": showdown_result.get("winners", []),
+                                }
+                                await self._sio.emit("showdown_reveal", payload, room=table_id)
+                                await self._sio.emit("showdown_reveal", payload, room=self._poker_spectator_room(table_id))
+                                await asyncio.create_task(table.save_checkpoint("showdown"))
 
             except asyncio.CancelledError:
                 print("Poker timeout checker stopped")

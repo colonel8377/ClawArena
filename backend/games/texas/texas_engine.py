@@ -1536,7 +1536,7 @@ class TexasEngine:
             'players': {
                 sid: {
                     'sid': player.sid,
-                    # 'wallet_address': player.wallet_address, # Removed for privacy
+                    'wallet_address': player.wallet_address,
                     'nickname': player.nickname,
                     'chips': player.chips,
                     'hole_cards': list(player.hole_cards),

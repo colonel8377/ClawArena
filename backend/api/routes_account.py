@@ -1,7 +1,7 @@
 """Account and Economy routes."""
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 from fastapi import APIRouter, Request, HTTPException
@@ -9,6 +9,7 @@ from ..economy.account import (
     register_user, handle_login, get_balance,
     get_account_summary, transfer_balance, batch_get_balances,
     InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError,
+    AmbiguousLoginIdentifierError,
     get_leaderboard
 )
 from ..app.limiter import limiter
@@ -53,8 +54,12 @@ async def api_login(
 
         result = await handle_login(resolved_login_key)
         return result
-    except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
+    except InvalidWalletAddressError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except UserNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except AmbiguousLoginIdentifierError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
@@ -67,7 +72,7 @@ async def api_get_balance(request: Request, player_id: str):
         balance = await get_balance(player_id)
         return {
             "player_id": player_id,
-            "balance": float(balance)
+            "balance": str(balance)
         }
     except (UserNotFoundError, InvalidWalletAddressError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -90,11 +95,14 @@ async def api_get_account_summary(request: Request, player_id: str):
 
 @router.post("/api/transfer")
 @limiter.limit("10/minute")
-async def api_transfer_balance(request: Request, from_player_id: str, to_player_id: str, amount: float):
+async def api_transfer_balance(request: Request, from_player_id: str, to_player_id: str, amount: str):
     """Transfer balance between two accounts."""
     try:
-        result = await transfer_balance(from_player_id, to_player_id, Decimal(str(amount)))
+        parsed_amount = Decimal(amount)
+        result = await transfer_balance(from_player_id, to_player_id, parsed_amount)
         return result
+    except (InvalidOperation, ValueError) as e:
+        raise HTTPException(status_code=400, detail="Invalid amount")
     except InvalidAmountError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except InsufficientBalanceError as e:
@@ -113,7 +121,7 @@ async def api_batch_get_balances(request: Request, player_ids: List[str]):
             raise HTTPException(status_code=400, detail="Too many player IDs (max 50)")
         balances = await batch_get_balances(player_ids)
         return {
-            "balances": {addr: float(bal) for addr, bal in balances.items()}
+            "balances": {addr: str(bal) for addr, bal in balances.items()}
         }
     except HTTPException:
         raise

@@ -563,15 +563,12 @@ class TexasEngine:
         Chat is permitted during all phases, but card information is censored
         during active hand phases (PRE_FLOP through RIVER) to prevent cheating.
         """
-        # Validate it's this player's turn
-        if not self._is_player_turn(sid):
-            return {'success': False, 'error': 'Not your turn'}
-        
         player = self.players.get(sid)
-        if not player or not player.can_act():
-            return {'success': False, 'error': 'Player cannot act'}
-        
+        if not player:
+            return {'success': False, 'error': 'Player not found'}
+
         chat_blocked = False
+        chat_payload: Optional[ChatMessage] = None
 
         # Enforce chat limits (length and spam control could be added here)
         if chat_message and len(chat_message) > 200:
@@ -581,16 +578,35 @@ class TexasEngine:
         if chat_message and check_chat_phase(self.phase, self.CHAT_ALLOWED_PHASES):
             chat_blocked = True
             chat_message = None
-        
+
         # Process chat message (only if allowed by phase)
         if chat_message:
-            chat_entry = ChatMessage(
+            chat_payload = ChatMessage(
                 player_sid=sid,
                 player_nickname=player.nickname,
                 message=chat_message,
                 action=action
             )
-            self.chat_history.append(chat_entry)
+            self.chat_history.append(chat_payload)
+
+        # Validate it's this player's turn for gameplay actions.
+        if not self._is_player_turn(sid):
+            result = {'success': False, 'error': 'Not your turn'}
+            if chat_payload:
+                result['chat'] = chat_payload.message
+                result['player_nickname'] = player.nickname
+            if chat_blocked:
+                result['chat_blocked'] = True
+            return result
+
+        if not player.can_act():
+            result = {'success': False, 'error': 'Player cannot act'}
+            if chat_payload:
+                result['chat'] = chat_payload.message
+                result['player_nickname'] = player.nickname
+            if chat_blocked:
+                result['chat_blocked'] = True
+            return result
         
         # Validate and execute action
         result = self._execute_action(sid, action, amount)
@@ -602,7 +618,8 @@ class TexasEngine:
             player.consecutive_timeouts = 0
             
             # Add chat to result for broadcasting
-            result['chat'] = chat_message
+            if chat_payload:
+                result['chat'] = chat_payload.message
             result['player_nickname'] = player.nickname
             
             # Notify caller that chat was stripped due to phase restriction
@@ -1110,34 +1127,27 @@ class TexasEngine:
             
             prev_level = level
 
-        # Cleanup: Merge any "dead" pots (no eligible winners) into the Main Pot.
-        # Dead money (from folds) belongs to the Main Pot winners.
+        # Cleanup: Merge any "dead" pots (no eligible winners) based on configured strategy.
         valid_pots = [p for p in self.pots if p.eligible_players]
         dead_money = sum(p.amount for p in self.pots if not p.eligible_players)
-        
-        if valid_pots:
-            # Add all dead money to the Main Pot (the first valid pot, which covers the base stakes)
+
+        if not valid_pots:
+            return
+
+        if dead_money <= 0:
+            self.pots = valid_pots
+            return
+
+        if DEAD_POT_MERGE_STRATEGY == 'MAIN_POT':
             valid_pots[0].amount += dead_money
-            self.pots = valid_pots
-        elif dead_money > 0:
-            # Edge case: All pots are dead (should be impossible at Showdown with active players).
-            # If it happens, we leave the dead pots (or could refund, but that violates poker rules).
-            # We'll just leave self.pots as is, which might result in no winners found,
-            # effectively burning the tokens (deflationary).
+        elif DEAD_POT_MERGE_STRATEGY == 'BURN':
             pass
-        # This handles the case where a folded player bet more than anyone else.
-        # That extra money should belong to the winner of the highest pot.
-        valid_pots = [p for p in self.pots if p.eligible_players]
-        dead_pots = [p for p in self.pots if not p.eligible_players]
-        
-        if valid_pots:
-            # Add dead money to the highest valid pot (the last one)
-            for dp in dead_pots:
-                valid_pots[-1].amount += dp.amount
-            self.pots = valid_pots
+        elif DEAD_POT_MERGE_STRATEGY == 'REFUND':
+            pass
         else:
-            # If NO valid pots (everyone folded?), keep as is (will be handled by winner taking all)
-            pass
+            valid_pots[0].amount += dead_money
+
+        self.pots = valid_pots
     
     def _evaluate_and_distribute_pots(self, showdown_players: List[str]) -> Dict[str, Any]:
         """Evaluate hands and distribute pots to winners."""

@@ -114,8 +114,8 @@ def _serialize_user(user: UserLedger) -> Dict[str, Any]:
         'player_id': user.wallet_address,
         'player_name': user.player_name,
         'address': user.address,
-        'balance': float(user.offchain_balance),
-        'locked_balance': float(user.locked_balance),
+        'balance': str(user.offchain_balance),
+        'locked_balance': str(user.locked_balance),
         'created_at': user.created_at.isoformat() if user.created_at else None,
         'last_login_date': user.last_login_date.isoformat() if user.last_login_date else None,
     }
@@ -281,9 +281,9 @@ async def get_account_summary(wallet_address: str) -> Dict[str, Any]:
                 transactions.append({
                     'id': tx.id,
                     'type': tx.tx_type,
-                    'amount': float(tx.amount),
-                    'balance_before': float(tx.balance_before),
-                    'balance_after': float(tx.balance_after),
+                    'amount': str(tx.amount),
+                    'balance_before': str(tx.balance_before),
+                    'balance_after': str(tx.balance_after),
                     'description': tx.description,
                     'created_at': tx.created_at.isoformat() if tx.created_at else None
                 })
@@ -347,18 +347,32 @@ async def transfer_balance(
 
         # Perform transfer using atomic SQL
         try:
-            # Deduct from sender
-            await db.execute(
-                text("UPDATE user_ledger SET offchain_balance = offchain_balance - :amount WHERE wallet_address = :wallet"),
+            # Deduct from sender with balance guard to avoid TOCTOU race.
+            deduct_result = await db.execute(
+                text("""
+                    UPDATE user_ledger
+                    SET offchain_balance = offchain_balance - :amount
+                    WHERE wallet_address = :wallet
+                    AND (offchain_balance - locked_balance) >= :amount
+                """),
                 {"amount": str(amount), "wallet": from_wallet}
             )
+            if deduct_result.rowcount == 0:
+                await db.refresh(from_user)
+                available = from_user.offchain_balance - from_user.locked_balance
+                raise InsufficientBalanceError(
+                    f"Insufficient available balance for transfer. Required: {amount}, Available: {available}"
+                )
 
             # Add to recipient
-            await db.execute(
+            credit_result = await db.execute(
                 text("UPDATE user_ledger SET offchain_balance = offchain_balance + :amount WHERE wallet_address = :wallet"),
                 {"amount": str(amount), "wallet": to_wallet}
             )
+            if credit_result.rowcount == 0:
+                raise UserNotFoundError(f"User not found: {to_wallet}")
 
+            await db.refresh(from_user)
             await db.refresh(to_user)
 
             # Log transactions (before commit to ensure atomicity)
@@ -395,12 +409,15 @@ async def transfer_balance(
                 'success': True,
                 'from_wallet': from_wallet,
                 'to_wallet': to_wallet,
-                'amount': float(amount),
-                'from_balance_after': float(from_user.offchain_balance),
-                'to_balance_after': float(to_user.offchain_balance),
+                'amount': str(amount),
+                'from_balance_after': str(from_user.offchain_balance),
+                'to_balance_after': str(to_user.offchain_balance),
                 'description': description
             }
 
+        except (InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError, InvalidAmountError):
+            await db.rollback()
+            raise
         except Exception as e:
             await db.rollback()
             raise AccountError(f"Transfer failed: {str(e)}") from e
@@ -483,7 +500,7 @@ async def get_leaderboard(limit: int = LEADERBOARD_LIMIT) -> List[Dict[str, Any]
                         "rank": idx,
                         "player_id": row.get("player_id", ""),
                         "player_name": row.get("player_name", "Player"),
-                        "balance": float(balance),
+                        "balance": str(balance),
                     })
                 return entries
         except Exception:
@@ -510,7 +527,7 @@ async def get_leaderboard(limit: int = LEADERBOARD_LIMIT) -> List[Dict[str, Any]
             "rank": idx,
             "player_id": player_id or "",
             "player_name": player_name or "Player",
-            "balance": float(balance),
+            "balance": str(balance),
         })
         cache_payload.append({
             "player_id": player_id or "",
@@ -783,11 +800,8 @@ async def handle_login(login_key: str) -> Dict:
         ValueError: If user not found
     """
     async with get_async_db_session() as db:
-        try:
-            player_id = await resolve_player_id(login_key, db)
-            user = await get_user_with_validation(player_id, db)
-        except (UserNotFoundError, InvalidWalletAddressError, AmbiguousLoginIdentifierError) as e:
-            raise ValueError(str(e)) from e
+        player_id = await resolve_player_id(login_key, db)
+        user = await get_user_with_validation(player_id, db)
 
         now_utc = datetime.utcnow()
         today_utc = now_utc.date()
@@ -809,7 +823,7 @@ async def handle_login(login_key: str) -> Dict:
             return {
                 'status': 'success',
                 'reward_granted': True,
-                'reward_amount': float(get_debug_balance()),
+                'reward_amount': str(get_debug_balance()),
                 'local_debug_mode': True,
                 'user': _serialize_user(user)
             }
@@ -884,7 +898,7 @@ async def handle_login(login_key: str) -> Dict:
         return {
             'status': 'success',
             'reward_granted': reward_granted,
-            'reward_amount': float(DAILY_LOGIN_REWARD) if reward_granted else 0,
+            'reward_amount': str(DAILY_LOGIN_REWARD) if reward_granted else "0",
             'user': _serialize_user(user)
         }
 
@@ -948,9 +962,9 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
             # Don't actually deduct, keep unlimited funds
             return {
                 'status': 'success',
-                'deducted': float(amount),
-                'new_balance': float(user.offchain_balance),
-                'locked_balance': float(user.locked_balance),
+                'deducted': str(amount),
+                'new_balance': str(user.offchain_balance),
+                'locked_balance': str(user.locked_balance),
                 'local_debug_mode': True
             }
 
@@ -1002,9 +1016,9 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
 
         return {
             'status': 'success',
-            'deducted': float(amount),
-            'new_balance': float(user.offchain_balance),
-            'locked_balance': float(user.locked_balance)
+            'deducted': str(amount),
+            'new_balance': str(user.offchain_balance),
+            'locked_balance': str(user.locked_balance)
         }
 
 
@@ -1089,9 +1103,9 @@ async def add_balance(wallet_address: str, amount: Decimal, tx_type: Transaction
 
         return {
             'status': 'success',
-            'added': float(amount),
-            'new_balance': float(user.offchain_balance),
-            'locked_balance': float(user.locked_balance)
+            'added': str(amount),
+            'new_balance': str(user.offchain_balance),
+            'locked_balance': str(user.locked_balance)
         }
 
 
@@ -1154,7 +1168,28 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    async with get_async_db_session() as db:
+    # Use provided session or create a new one
+    db = db_session if db_session else get_async_db_session()
+
+    class SessionContext:
+        def __init__(self, session, is_owned):
+            self.session = session
+            self.is_owned = is_owned
+            self.ctx = None
+
+        async def __aenter__(self):
+            if self.is_owned:
+                self.ctx = self.session
+                return await self.ctx.__aenter__()
+            return self.session
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            if self.is_owned:
+                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+
+    session_ctx = SessionContext(db, db_session is None)
+
+    async with session_ctx as db:
         try:
             user = await get_user_with_validation(wallet_address, db)
         except (UserNotFoundError, InvalidWalletAddressError) as e:
@@ -1164,16 +1199,14 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
         if is_local_debug_mode():
             return {
                 'status': 'success',
-                'locked': float(amount),
-                'new_balance': float(user.offchain_balance),
-                'new_locked_balance': float(user.locked_balance),
+                'locked': str(amount),
+                'new_balance': str(user.offchain_balance),
+                'new_locked_balance': str(user.locked_balance),
                 'local_debug_mode': True
             }
         
         # Record balances before lock operation
         balance_before = user.offchain_balance
-        locked_before = user.locked_balance
-
         # Atomic lock operation: increase locked_balance only.
         result = await db.execute(
             text("""
@@ -1185,9 +1218,6 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
             {"amount": str(amount), "wallet": wallet_address}
         )
         if result.rowcount == 0:
-            # We don't commit here because we want to rollback if needed, but since we are just reading
-            # failure state, we can just raise. If caller handles it, they can rollback.
-            # But wait, if we are in a transaction (db_session is None or not), we haven't committed anything yet.
             await db.refresh(user)
             available = user.offchain_balance - user.locked_balance
             raise InsufficientBalanceError(
@@ -1219,9 +1249,9 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
 
         return {
             'status': 'success',
-            'locked': float(amount),
-            'new_balance': float(user.offchain_balance),
-            'new_locked_balance': float(user.locked_balance)
+            'locked': str(amount),
+            'new_balance': str(user.offchain_balance),
+            'new_locked_balance': str(user.locked_balance)
         }
 
 
@@ -1278,9 +1308,9 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
         if is_local_debug_mode():
             return {
                 'status': 'success',
-                'unlocked': float(amount),
-                'new_balance': float(user.offchain_balance),
-                'new_locked_balance': float(user.locked_balance),
+                'unlocked': str(amount),
+                'new_balance': str(user.offchain_balance),
+                'new_locked_balance': str(user.locked_balance),
                 'local_debug_mode': True
             }
         
@@ -1330,7 +1360,7 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
 
         return {
             'status': 'success',
-            'unlocked': float(amount),
-            'new_balance': float(user.offchain_balance),
-            'new_locked_balance': float(user.locked_balance)
+            'unlocked': str(amount),
+            'new_balance': str(user.offchain_balance),
+            'new_locked_balance': str(user.locked_balance)
         }

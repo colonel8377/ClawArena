@@ -98,6 +98,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Update Docs URLs
+        run: |
+          # Extract domain from API URL (remove protocol)
+          DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
+          echo "Updating docs to use domain: $DOMAIN"
+          python3 scripts/update_docs_urls.py "$DOMAIN"
+
       - name: Pull Vercel Environment (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'
         working-directory: frontend

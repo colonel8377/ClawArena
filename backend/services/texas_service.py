@@ -169,6 +169,37 @@ class TexasService(BaseService):
 
         result = table.process_action(sid, action, **action_kwargs)
         if not result.get("success"):
+            # Chat is decoupled from turn-based action validation. If chat was
+            # accepted, persist and broadcast it even when the action fails.
+            delivered_chat = result.get("chat")
+            if delivered_chat and not result.get("chat_blocked"):
+                player = next((p for p in table.players if p.get("sid") == sid), None)
+                if player:
+                    message_type = "chat" if action == "chat" else "action"
+                    metadata = {"action": action} if action != "chat" else None
+                    asyncio.create_task(
+                        persistence_manager.save_chat_message(
+                            game_id=table_id,
+                            game_type=table.game_type,
+                            player_id=player.get("wallet_address", ""),
+                            nickname=player.get("nickname", "Player"),
+                            message=delivered_chat,
+                            message_type=message_type,
+                            metadata=metadata,
+                        )
+                    )
+                await self.broadcast_state(table_id)
+
+            if result.get("chat_blocked"):
+                await self._sio.emit(
+                    "error",
+                    {
+                        "message": "Chat is not allowed during active hand",
+                        "error_code": "CHAT_PHASE_RESTRICTED",
+                    },
+                    room=sid,
+                )
+
             await self._sio.emit(
                 "error",
                 {"message": result.get("error", "Action failed")},

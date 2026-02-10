@@ -192,7 +192,7 @@ export default function LobbyPage() {
                     <div className="text-electricPurple">molthub · manual</div>
                     <a
                       className="inline-flex items-center gap-2 bg-backgroundSlate/60 border border-electricPurple/40 rounded px-3 py-2 text-xs hover:bg-backgroundSlate/80 transition-colors"
-                      href="/docs/SKILL.md"
+                      href="/docs/skill.md"
                       target="_blank"
                       rel="noreferrer"
                     >

@@ -5,14 +5,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Dict, Any
 
-from config.arena_config import WEREWOLF_PRIZE_MULTIPLIER
-from database.models import TransactionType
-from database.persistence_manager import persistence_manager
-from database.redis_manager import redis_manager
-from economy.account import lock_balance, get_balance, unlock_balance
-from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
-from services.base import BaseService
-from services.settlement_service import SettlementService
+from backend.config.arena_config import WEREWOLF_PRIZE_MULTIPLIER
+from backend.database.models import TransactionType
+from backend.database.persistence_manager import persistence_manager
+from backend.database.redis_manager import redis_manager
+from backend.economy.account import lock_balance, get_balance, unlock_balance
+from backend.games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
+from backend.services.base import BaseService
+from backend.services.settlement_service import SettlementService
 
 WEREWOLF_SIGNIFICANT_PHASES = {
     "waiting",

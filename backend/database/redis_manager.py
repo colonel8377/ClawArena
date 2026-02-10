@@ -853,6 +853,28 @@ class RedisManager:
         except Exception as e:
             logger.error(f"Error marking settlement stage {game_id}:{stage}: {e}")
             return True
+
+    async def clear_settlement_stage(self, game_id: str, stage: str) -> bool:
+        """
+        Clear settlement stage marker (to allow retry).
+        
+        Args:
+            game_id: Game identifier
+            stage: Stage identifier
+            
+        Returns:
+            True if cleared successfully
+        """
+        if not await self.ping():
+            return False
+            
+        try:
+            key = f"{REDIS_SETTLEMENT_PREFIX}{game_id}:{stage}"
+            await self._redis.delete(key)
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing settlement stage {game_id}:{stage}: {e}")
+            return False
     
     # ========================================================================
     # ANTI-COLLUSION (Stub for Future Implementation)

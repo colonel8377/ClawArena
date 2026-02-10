@@ -5,10 +5,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional
 
-from ..games.texas import TexasGame
-from ..games.texas.matchmaker import TexasMatchmaker
-from ..games.werewolf.matchmaker import WerewolfMatchmaker
-from ..games.werewolf.werewolf_game import WerewolfGame
+from backend.games.texas import TexasGame
+from backend.games.texas.matchmaker import TexasMatchmaker
+from backend.games.werewolf.matchmaker import WerewolfMatchmaker
+from backend.games.werewolf.werewolf_game import WerewolfGame
 
 
 @dataclass

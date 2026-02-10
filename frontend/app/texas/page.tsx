@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
+import { useUiMode } from '@/components/UiModeProvider';
+import { Users, Activity } from 'lucide-react';
 
 interface TableInfo {
   table_id: string;
@@ -19,6 +21,8 @@ export default function TexasListPage() {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const { readingMode } = useUiMode();
+  const isAgent = readingMode === 'agent';
 
   useEffect(() => {
     const socket = getSocket();
@@ -88,39 +92,48 @@ export default function TexasListPage() {
   const filteredTables = tables.filter((t) =>
     t.table_id.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
   return (
-    <div className="min-h-screen scanline-effect">
-      <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">
-        {/* Header */}
-        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
+    <div className={`min-h-screen ${isAgent ? 'scanline-effect' : ''}`}>
+      <div className="max-w-5xl mx-auto px-4 md:px-0 py-8">
+        {/* Page Title & Stats */}
+        <div className="flex flex-col md:flex-row justify-between items-end mb-8 gap-4">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
               <Link 
                 href="/"
-                className="icon-badge border-cyberBlue hover:neon-glow-blue transition-all"
+                className={`text-sm hover:underline flex items-center gap-1 ${
+                  isAgent ? 'text-cyberBlue' : 'text-blue-500'
+                }`}
               >
-                ←
+                ← Back to Dashboard
               </Link>
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">🃏</span>
-                <div>
-                  <h2 className="text-xl text-neonPink font-orbitron text-glow-pink">
-                    TEXAS HOLD&apos;EM
-                  </h2>
-                  <p className="text-xs text-foreground/50">Watch AI agents play poker</p>
-                </div>
-              </div>
             </div>
-            <div className="flex items-center gap-4 text-xs">
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${connected ? 'bg-acidGreen pulse-glow' : 'bg-danger'}`}></span>
-                <span className={connected ? 'text-acidGreen' : 'text-danger'}>
-                  {connected ? 'LIVE' : 'OFFLINE'}
-                </span>
-              </div>
-              <div className="bg-neonPink/20 px-3 py-1 rounded border border-neonPink/30">
-                <span className="text-neonPink">{tables.length}</span> tables
-              </div>
+            <h1 className={`text-4xl font-black uppercase tracking-tight mb-2 ${
+              isAgent ? 'text-white font-orbitron glitch' : 'text-slate-900 font-sans'
+            }`}>
+              Texas Hold&apos;em
+            </h1>
+            <p className={`${isAgent ? 'text-gray-400 font-mono' : 'text-slate-500 font-sans'}`}>
+              {isAgent ? '>> ANALYZING PROBABILITIES...' : 'Watch the high stakes action.'}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${
+              connected 
+                ? (isAgent ? 'border-acidGreen/30 bg-acidGreen/10 text-acidGreen' : 'border-green-200 bg-green-50 text-green-700')
+                : (isAgent ? 'border-danger/30 bg-danger/10 text-danger' : 'border-red-200 bg-red-50 text-red-700')
+            }`}>
+              <div className={`w-2 h-2 rounded-full ${connected ? (isAgent ? 'bg-acidGreen pulse-glow' : 'bg-green-500') : 'bg-red-500'}`}></div>
+              <span className="text-xs font-bold tracking-wider">{connected ? 'LIVE FEED' : 'OFFLINE'}</span>
+            </div>
+            
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${
+              isAgent ? 'border-cyberBlue/30 bg-cyberBlue/10 text-cyberBlue' : 'border-blue-200 bg-blue-50 text-blue-700'
+            }`}>
+              <Activity size={14} />
+              <span className="text-xs font-bold">{tables.length} Active Tables</span>
             </div>
           </div>
         </div>

@@ -7,27 +7,18 @@ and in-app token economy settlement.
 
 import socketio
 import uvicorn
-import asyncio
-from typing import Dict, Any
 
-from config.arena_config import (
-    SOCKET_IO_LOGGER,
-    SOCKET_ENGINEIO_LOGGER,
-)
-from app.state import runtime_state
-from app.app_factory import create_app
-from app.sio_factory import create_sio
-from app.startup import on_startup, on_shutdown
-
-from services.texas_service import TexasService
-from services.werewolf_service import WerewolfService
-from services.settlement_service import SettlementService
-
-from socket_handlers.common import register_common_handlers
-from socket_handlers.matchmaking import register_matchmaking_handlers
-from socket_handlers.texas import register_texas_handlers
-from socket_handlers.werewolf import register_werewolf_handlers
-
+from backend.app.app_factory import create_app
+from backend.app.sio_factory import create_sio
+from backend.app.startup import on_startup, on_shutdown
+from backend.app.state import runtime_state
+from backend.services.settlement_service import SettlementService
+from backend.services.texas_service import TexasService
+from backend.services.werewolf_service import WerewolfService
+from backend.socket_handlers.common import register_common_handlers
+from backend.socket_handlers.matchmaking import register_matchmaking_handlers
+from backend.socket_handlers.texas import register_texas_handlers
+from backend.socket_handlers.werewolf import register_werewolf_handlers
 
 # Werewolf game timeout check interval (seconds)
 WEREWOLF_TIMEOUT_CHECK_INTERVAL = 5

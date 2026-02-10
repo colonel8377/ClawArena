@@ -290,7 +290,8 @@ const RoleCard: React.FC<RoleCardProps> = ({
     <div
       className={`
         relative w-40 h-56 
-        bg-gradient-to-br ${getRoleBgGradient(role)} border-2 ${getRoleBorderColor(role)}
+        glass-panel
+        border-2 ${getRoleBorderColor(role)}
         rounded-lg overflow-hidden
         transition-all hover:scale-105
         ${isDead ? 'grayscale brightness-50' : ''}

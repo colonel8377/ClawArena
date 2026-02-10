@@ -32,6 +32,8 @@ services:
     environment:
       # Browser clients reach backend via host-mapped port
       - NEXT_PUBLIC_API_URL=http://localhost:8080
+      # Ensure hot reloading works reliably in Docker
+      - WATCHPACK_POLLING=true
     networks:
       - arena_network
     restart: unless-stopped
@@ -50,9 +52,9 @@ services:
       - "8080:8080"
     volumes:
       # Mount source code for hot reloading
-      - ./backend:/app
+      - ./backend:/app/backend
       # Prevent container's cache from being overwritten
-      - /app/__pycache__
+      - /app/backend/__pycache__
     environment:
       # Server Configuration
       - HOST=0.0.0.0

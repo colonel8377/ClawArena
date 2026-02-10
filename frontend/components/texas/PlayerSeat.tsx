@@ -62,7 +62,7 @@ export default function PlayerSeat({ player, index, totalPlayers }: PlayerSeatPr
 
       {/* Current Bet Bubble */}
       {player.current_bet && player.current_bet > 0 ? (
-        <div className="absolute -top-4 right-0 bg-yellow-500 text-black text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-lg z-30">
+        <div className="absolute -top-4 right-0 bg-warning text-background text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-lg z-30 font-orbitron">
           ${player.current_bet}
         </div>
       ) : null}

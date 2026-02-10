@@ -29,7 +29,7 @@ def rate_limit(limit: str, key_func=None):
     def decorator(func):
         from functools import wraps
         import time
-        from ..database.redis_manager import redis_manager
+        from backend.database.redis_manager import redis_manager
 
         # Parse limit string "10/minute" -> count=10, seconds=60
         count, period = limit.split('/')

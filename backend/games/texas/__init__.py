@@ -1,6 +1,6 @@
 from .texas_game import TexasGame
 from .texas_engine import TexasEngine, create_poker_game
-from ...config.texas_config import TEXAS_DEFAULT_BIG_BLIND, TEXAS_DEFAULT_SMALL_BLIND
+from backend.config.texas_config import TEXAS_DEFAULT_BIG_BLIND, TEXAS_DEFAULT_SMALL_BLIND
 
 
 def create_texas_game(

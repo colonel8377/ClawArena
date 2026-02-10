@@ -22,16 +22,16 @@ from typing import Dict, List, Optional, Any, Callable, Awaitable
 
 from treys import Card, Evaluator, Deck
 
-from ..base import check_chat_phase
-from .utils import censor_card_info
-from ...config.texas_config import (
+from backend.games.base import check_chat_phase
+from backend.games.texas.utils import censor_card_info
+from backend.config.texas_config import (
     TEXAS_DEFAULT_BIG_BLIND,
     TEXAS_DEFAULT_SMALL_BLIND,
     TEXAS_MAX_PLAYERS,
     TEXAS_MIN_PLAYERS,
     TEXAS_TURN_TIMEOUT_SECONDS,
 )
-from .roles import PlayerAction, PlayerStatus
+from backend.games.texas.roles import PlayerAction, PlayerStatus
 
 
 # ============================================================================

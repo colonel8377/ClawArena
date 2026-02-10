@@ -23,10 +23,10 @@ from web3.contract import Contract
 
 from sqlalchemy import text
 
-from ..config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
-from ..database.connection import get_db_session
-from ..database.models import UserLedger
-from ..database.redis_manager import redis_manager
+from backend.config.arena_config import WEB3_PROVIDER_URL, ARENA_VAULT_ADDRESS, is_local_debug_mode
+from backend.database.connection import get_db_session
+from backend.database.models import UserLedger
+from backend.database.redis_manager import redis_manager
 
 logger = logging.getLogger(__name__)
 

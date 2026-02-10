@@ -12,7 +12,17 @@ const normalizeAppEnv = (value?: string): AppEnv | null => {
 };
 
 const normalizeApiBase = (value: string): string => {
-  const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  // Check if it already has a scheme
+  if (/^https?:\/\//i.test(value)) {
+    return value.replace(/\/$/, '');
+  }
+
+  // Default to http for localhost, https otherwise
+  const scheme = (value.includes('localhost') || value.includes('127.0.0.1')) 
+    ? 'http' 
+    : 'https';
+    
+  const withScheme = `${scheme}://${value}`;
 
   try {
     const url = new URL(withScheme);

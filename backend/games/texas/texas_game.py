@@ -9,19 +9,19 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional, Any, Set
 
-from .texas_engine import TexasEngine
-from .utils import censor_card_info
-from ...config.texas_config import (
+from backend.games.texas.texas_engine import TexasEngine
+from backend.games.texas.utils import censor_card_info
+from backend.config.texas_config import (
     TEXAS_DEFAULT_BIG_BLIND,
     TEXAS_DEFAULT_SMALL_BLIND,
     TEXAS_MAX_PLAYERS,
     TEXAS_MIN_PLAYERS,
     TEXAS_TURN_TIMEOUT_SECONDS,
 )
-from ..base import BaseGame, GamePhase, check_chat_phase
-from ...config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
-from ...database.persistence_manager import persistence_manager
-from ...database.redis_manager import redis_manager
+from backend.games.base import BaseGame, GamePhase, check_chat_phase
+from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
+from backend.database.persistence_manager import persistence_manager
+from backend.database.redis_manager import redis_manager
 
 
 class TexasGame(BaseGame):

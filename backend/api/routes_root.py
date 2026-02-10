@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter, Request
 
-from ..app.state import runtime_state
-from ..config import LOCAL_DEBUG_MODE
+from backend.app.state import runtime_state
+from backend.config.arena_config import LOCAL_DEBUG_MODE
 
 router = APIRouter()
 

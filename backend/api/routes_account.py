@@ -5,14 +5,14 @@ from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 from fastapi import APIRouter, Request, HTTPException
-from ..economy.account import (
+from backend.economy.account import (
     register_user, handle_login, get_balance,
     get_account_summary, transfer_balance, batch_get_balances,
     InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError,
     AmbiguousLoginIdentifierError,
     get_leaderboard
 )
-from ..app.limiter import limiter
+from backend.app.limiter import limiter
 
 router = APIRouter()
 

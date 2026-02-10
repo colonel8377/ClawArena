@@ -4,8 +4,8 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
-from ..games.werewolf.werewolf_game import WerewolfPhase
-from ..manager.anti_bot_manager import (
+from backend.games.werewolf.werewolf_game import WerewolfPhase
+from backend.app.anti_bot_manager import (
     get_agent_instructions,
     verify_socket_auth,
 )

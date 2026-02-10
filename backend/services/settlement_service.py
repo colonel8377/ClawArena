@@ -3,8 +3,9 @@
 from decimal import Decimal
 from typing import Iterable
 
-from ..database.models import TransactionType
-from ..economy.account import add_balance, deduct_balance, unlock_balance
+from backend.database.models import TransactionType
+from backend.economy.account import add_balance, deduct_balance, unlock_balance
+from backend.database.redis_manager import redis_manager
 
 
 class SettlementService:
@@ -27,7 +28,14 @@ class SettlementService:
         if not wallet_address:
             return
 
-        from ..database.connection import get_async_db_session
+        should_settle = await redis_manager.mark_settlement_stage_once(
+            table_id,
+            f"texas_settle:{wallet_address}",
+        )
+        if not should_settle:
+            return
+
+        from backend.database.connection import get_async_db_session
 
         async with get_async_db_session() as db:
             try:
@@ -61,6 +69,11 @@ class SettlementService:
                 await db.commit()
             except Exception as e:
                 await db.rollback()
+                # Clear idempotency marker to allow retry
+                await redis_manager.clear_settlement_stage(
+                    table_id,
+                    f"texas_settle:{wallet_address}",
+                )
                 raise e
 
     async def process_werewolf_settlement(
@@ -79,7 +92,7 @@ class SettlementService:
         
         Uses a single transaction to ensure atomicity.
         """
-        from ..database.connection import get_async_db_session
+        from backend.database.connection import get_async_db_session
         
         async with get_async_db_session() as db:
             try:

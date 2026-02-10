@@ -7,6 +7,7 @@
 :root {
   color-scheme: dark;
   --font-base: 'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Consolas', 'Monaco', 'Courier New', monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --background: 12 16 22;
   --background-slate: 20 26 34;
   --foreground: 238 242 248;
@@ -14,18 +15,37 @@
   --cyber-blue: 0 240 255;
   --electric-purple: 112 0 255;
   --acid-green: 57 255 20;
+
+  /* Muted Colors for Secondary Info */
+  --muted-pink: 180 50 80;
+  --muted-blue: 30 100 130;
+  --muted-purple: 80 40 120;
+  --muted-green: 40 100 40;
+
   --primary: 0 240 255;
   --secondary: 112 0 255;
   --danger: 255 0 85;
   --warning: 255 170 0;
   --border: 88 102 120;
+  --card-bg: 20 26 34;
+
+  /* Glassmorphism System */
+  --glass-bg: 20 26 34;
+  --glass-bg-opacity: 0.7;
+  --glass-border: 255 255 255;
+  --glass-border-opacity: 0.1;
+  --glass-blur: 12px;
+  --island-sea: 0 168 232;
+  --island-sand: 250 243 221;
+  --island-green: 74 222 128;
+  --island-sun: 251 191 36;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
-    --background: 246 247 249;
-    --background-slate: 233 236 241;
+    --background: 250 250 252;
+    --background-slate: 240 244 248;
     --foreground: 20 24 31;
     --neon-pink: 196 38 82;
     --cyber-blue: 0 116 150;
@@ -35,7 +55,8 @@
     --secondary: 96 36 170;
     --danger: 196 38 82;
     --warning: 180 120 20;
-    --border: 200 205 214;
+    --border: 226 232 240;
+    --card-bg: 255 255 255;
   }
 }
 
@@ -53,12 +74,13 @@ html[data-theme="dark"] {
   --danger: 255 0 85;
   --warning: 255 170 0;
   --border: 88 102 120;
+  --card-bg: 20 26 34;
 }
 
 html[data-theme="light"] {
   color-scheme: light;
-  --background: 246 247 249;
-  --background-slate: 233 236 241;
+  --background: 250 250 252;
+  --background-slate: 240 244 248;
   --foreground: 20 24 31;
   --neon-pink: 196 38 82;
   --cyber-blue: 0 116 150;
@@ -68,15 +90,44 @@ html[data-theme="light"] {
   --secondary: 96 36 170;
   --danger: 196 38 82;
   --warning: 180 120 20;
-  --border: 200 205 214;
+  --border: 226 232 240;
+  --card-bg: 255 255 255;
 }
 
+/* HUMAN MODE: Island Style (Apple-like, clean, tropical) */
 html[data-reading="human"] {
-  --neon-pink: 187 70 100;
-  --cyber-blue: 60 120 170;
-  --electric-purple: 98 78 170;
-  --acid-green: 60 140 90;
-  --warning: 170 120 40;
+  --background: 240 248 255; /* Alice Blue */
+  --background-slate: 255 255 255;
+  --foreground: 23 37 84; /* Dark Blue */
+  --primary: 14 165 233; /* Sky Blue */
+  --secondary: 245 158 11; /* Amber */
+  --border: 191 219 254; /* Blue 200 */
+  --font-base: 'Inter', system-ui, -apple-system, sans-serif;
+  --card-bg: 255 255 255;
+  
+  /* Override specific cyber colors to be more tropical */
+  --neon-pink: 244 63 94; /* Rose */
+  --cyber-blue: 14 165 233; /* Sky */
+  --electric-purple: 139 92 246; /* Violet */
+  --acid-green: 34 197 94; /* Green */
+}
+
+/* AGENT MODE: Cyberpunk Style */
+html[data-reading="agent"] {
+  --background: 5 5 10;
+  --background-slate: 15 20 28;
+  --foreground: 230 240 255;
+  --primary: 0 240 255;
+  --secondary: 112 0 255;
+  --border: 45 55 75;
+  --font-base: 'JetBrains Mono', monospace;
+  --card-bg: 10 14 20;
+  
+  /* Force cyber colors */
+  --neon-pink: 255 0 85;
+  --cyber-blue: 0 240 255;
+  --electric-purple: 112 0 255;
+  --acid-green: 57 255 20;
 }
 
 * {
@@ -104,7 +155,21 @@ a {
   text-decoration: none;
 }
 
-/* Terminal-style scrollbar */
+/* Unified Glassmorphism Utility */
+.glass-panel {
+  background: rgba(var(--glass-bg), var(--glass-bg-opacity));
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid rgba(var(--glass-border), var(--glass-border-opacity));
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.glass-panel:hover {
+  background: rgba(var(--glass-bg), calc(var(--glass-bg-opacity) + 0.1));
+  border-color: rgba(var(--glass-border), calc(var(--glass-border-opacity) + 0.2));
+}
+
+/* Enhanced Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -1245,4 +1310,58 @@ html[data-reading="agent"] .bg-gray-900 {
 }
 html[data-reading="agent"] .bg-clip-text {
   background-image: linear-gradient(to right, #ffffff, #e5e7eb, #9ca3af);
+}
+
+/* Human Mode Component Overrides */
+html[data-reading="human"] .cyber-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(240, 248, 255, 0.95) 100%);
+  border-color: rgba(14, 165, 233, 0.2);
+  color: #1e293b;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+}
+
+html[data-reading="human"] .cyber-card::before {
+  background: linear-gradient(90deg, transparent, rgba(14, 165, 233, 0.1), transparent);
+}
+
+html[data-reading="human"] .icon-badge,
+html[data-reading="human"] .icon-badge-lg,
+html[data-reading="human"] .icon-badge-sm {
+  background: white;
+  border-color: rgba(14, 165, 233, 0.2);
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.1);
+}
+
+html[data-reading="human"] .icon-badge svg,
+html[data-reading="human"] .icon-badge-lg svg,
+html[data-reading="human"] .icon-badge-sm svg {
+  filter: none;
+}
+
+html[data-reading="human"] .game-card {
+  background: white;
+  border-color: rgba(148, 163, 184, 0.2);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);
+}
+
+html[data-reading="human"] .game-card:hover {
+  border-color: rgba(14, 165, 233, 0.5);
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.1);
+  transform: translateY(-4px);
+}
+
+html[data-reading="human"] .terminal-border {
+  background: white;
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+html[data-reading="human"] .corner-brackets::before,
+html[data-reading="human"] .corner-brackets::after {
+  border-color: rgba(14, 165, 233, 0.5);
+}
+
+html[data-reading="human"] .hex-pattern {
+  opacity: 0.05;
+  filter: invert(1);
 }

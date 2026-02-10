@@ -3,12 +3,12 @@
 import asyncio
 from datetime import datetime
 
-from ..database.connection import init_db
-from ..database.persistence_manager import persistence_manager
-from ..database.redis_manager import redis_manager
-from ..app.state import runtime_state
-from ..games.texas import TexasGame
-from ..games.werewolf.werewolf_game import WerewolfGame
+from backend.database.connection import init_db
+from backend.database.persistence_manager import persistence_manager
+from backend.database.redis_manager import redis_manager
+from backend.app.state import runtime_state
+from backend.games.texas import TexasGame
+from backend.games.werewolf.werewolf_game import WerewolfGame
 
 async def on_startup(app, sio, texas_service, werewolf_service):
     """

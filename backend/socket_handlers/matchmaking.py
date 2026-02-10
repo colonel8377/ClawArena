@@ -3,14 +3,14 @@
 import asyncio
 from decimal import Decimal
 
-from ..config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
-from ..database.persistence_manager import persistence_manager
-from ..economy.account import get_balance, lock_balance, unlock_balance
-from ..games.texas import create_texas_game
-from ..games.texas.matchmaker import TexasMatchmaker
-from ..games.werewolf.matchmaker import WerewolfMatchmaker
-from ..games.werewolf.werewolf_game import WerewolfGame
-from ..socket_handlers.common import _reject_if_read_only
+from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
+from backend.database.persistence_manager import persistence_manager
+from backend.economy.account import get_balance, lock_balance, unlock_balance
+from backend.games.texas import create_texas_game
+from backend.games.texas.matchmaker import TexasMatchmaker
+from backend.games.werewolf.matchmaker import WerewolfMatchmaker
+from backend.games.werewolf.werewolf_game import WerewolfGame
+from backend.socket_handlers.common import _reject_if_read_only
 
 
 async def on_texas_matchmaking_fallback(sio, players, target_size: int) -> None:
@@ -155,6 +155,15 @@ async def on_texas_game_matched(sio, state, players, game_size: int, texas_servi
         )
 
     await texas_service.broadcast_state(table_id)
+
+
+async def broadcast_werewolf_state(sio, state, game_id: str) -> None:
+    """Broadcast the current game state to all players in the game."""
+    game = state.werewolf_games.get(game_id)
+    if not game:
+        return
+
+    await sio.emit("game_state", game.to_dict(), room=game_id)
 
 
 async def on_matchmaking_fallback(sio, players, target_size: int) -> None:
@@ -353,7 +362,7 @@ def register_matchmaking_handlers(sio, state) -> None:
                     await on_texas_matchmaking_fallback(sio, players, target_size)
 
                 async def _on_matched(players, game_size):
-                    await on_texas_game_matched(sio, state, players, game_size)
+                    await on_texas_game_matched(sio, state, players, game_size, texas_service)
 
                 state.texas_matchmaker = TexasMatchmaker(
                     game_start_callback=_on_matched,

@@ -3,15 +3,15 @@
 import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Optional, Dict, Any
+from typing import Optional, Any
 
-from ..config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
-from ..database.models import TransactionType
-from ..database.persistence_manager import persistence_manager
-from ..economy.account import add_balance, deduct_balance, unlock_balance
-from ..games.texas.texas_engine import PokerPhase
-from ..services.base import BaseService
-from ..services.settlement_service import SettlementService
+from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
+from backend.database.persistence_manager import persistence_manager
+from backend.database.models import TransactionType
+from backend.games.texas.texas_engine import PokerPhase
+from backend.services.base import BaseService
+from backend.services.settlement_service import SettlementService
+from backend.economy.account import add_balance, deduct_balance, unlock_balance
 
 POKER_ACTIVE_PHASES = {
     PokerPhase.PRE_FLOP,
@@ -155,7 +155,7 @@ class TexasService(BaseService):
                         room=player_sid,
                     )
 
-        asyncio.create_task(table.save_state_to_redis())
+        await asyncio.create_task(table.save_state_to_redis())
 
     async def start_hand(self, table_id: str, sid: str) -> None:
         if not table_id or table_id not in self._state.poker_tables:
@@ -167,7 +167,7 @@ class TexasService(BaseService):
             await self._sio.emit("error", {"message": "Not enough players to start"}, room=sid)
             return
 
-        asyncio.create_task(table.save_checkpoint("hand_start"))
+        await asyncio.create_task(table.save_checkpoint("hand_start"))
         await self.broadcast_state(table_id)
 
     async def player_move(self, table_id: str, sid: str, action: str, amount: Any = 0, chat_message: Optional[str] = None) -> None:
@@ -199,7 +199,7 @@ class TexasService(BaseService):
                 if player:
                     message_type = "chat" if action == "chat" else "action"
                     metadata = {"action": action} if action != "chat" else None
-                    asyncio.create_task(
+                    await asyncio.create_task(
                         persistence_manager.save_chat_message(
                             game_id=table_id,
                             game_type=table.game_type,
@@ -244,7 +244,7 @@ class TexasService(BaseService):
             if player:
                 message_type = "chat" if action == "chat" else "action"
                 metadata = {"action": action} if action != "chat" else None
-                asyncio.create_task(
+                await asyncio.create_task(
                     persistence_manager.save_chat_message(
                         game_id=table_id,
                         game_type=table.game_type,
@@ -268,13 +268,13 @@ class TexasService(BaseService):
             await self._sio.emit("hand_winner", payload, room=table_id)
             await self._sio.emit("hand_winner", payload, room=self._poker_spectator_room(table_id))
             
-            asyncio.create_task(table.save_checkpoint("hand_end"))
+            await asyncio.create_task(table.save_checkpoint("hand_end"))
             return
 
         if result.get("advance_phase"):
             phase_result = table.engine.advance_phase()
             await self.broadcast_state(table_id)
-            asyncio.create_task(table.save_checkpoint("phase_change"))
+            await asyncio.create_task(table.save_checkpoint("phase_change"))
 
             if table.engine.phase.value == "showdown":
                 showdown_result = phase_result if isinstance(phase_result, dict) else {}
@@ -289,9 +289,9 @@ class TexasService(BaseService):
                 }
                 await self._sio.emit("showdown_reveal", payload, room=table_id)
                 await self._sio.emit("showdown_reveal", payload, room=self._poker_spectator_room(table_id))
-                asyncio.create_task(table.save_checkpoint("showdown"))
+                await asyncio.create_task(table.save_checkpoint("showdown"))
 
-        asyncio.create_task(table.save_checkpoint("action"))
+        await asyncio.create_task(table.save_checkpoint("action"))
 
     async def leave_game(self, table_id: str, sid: str) -> None:
         if not table_id or table_id not in self._state.poker_tables:
@@ -467,7 +467,7 @@ class TexasService(BaseService):
                         room=table_id,
                     )
 
-                    asyncio.create_task(table.save_checkpoint("timeout_action"))
+                    await asyncio.create_task(table.save_checkpoint("timeout_action"))
                     await self.broadcast_state(table_id)
 
                     if result.get("hand_over"):
@@ -480,13 +480,13 @@ class TexasService(BaseService):
                         await self._sio.emit("hand_winner", payload, room=table_id)
                         await self._sio.emit("hand_winner", payload, room=self._poker_spectator_room(table_id))
                         
-                        asyncio.create_task(table.save_checkpoint("hand_end"))
+                        await asyncio.create_task(table.save_checkpoint("hand_end"))
                         continue
 
                     if result.get("advance_phase"):
                         phase_result = engine.advance_phase()
                         await self.broadcast_state(table_id)
-                        asyncio.create_task(table.save_checkpoint("phase_change"))
+                        await asyncio.create_task(table.save_checkpoint("phase_change"))
 
                         if engine.phase == PokerPhase.SHOWDOWN:
                             showdown_result = (
@@ -503,7 +503,7 @@ class TexasService(BaseService):
                             }
                             await self._sio.emit("showdown_reveal", payload, room=table_id)
                             await self._sio.emit("showdown_reveal", payload, room=self._poker_spectator_room(table_id))
-                            asyncio.create_task(table.save_checkpoint("showdown"))
+                            await asyncio.create_task(table.save_checkpoint("showdown"))
 
             except asyncio.CancelledError:
                 print("Poker timeout checker stopped")

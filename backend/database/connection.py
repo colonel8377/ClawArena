@@ -22,7 +22,7 @@ from sqlalchemy.exc import OperationalError
 from contextlib import contextmanager, asynccontextmanager
 
 from .models import Base
-from ..config.db_config import SYNC_DATABASE_URL, ASYNC_DATABASE_URL, DB_CONNECT_RETRIES, DB_CONNECT_RETRY_DELAY
+from backend.config.db_config import SYNC_DATABASE_URL, ASYNC_DATABASE_URL, DB_CONNECT_RETRIES, DB_CONNECT_RETRY_DELAY
 
 # Create sync engine with connection pooling (for backwards compatibility)
 engine = create_engine(

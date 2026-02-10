@@ -16,16 +16,16 @@ from decimal import Decimal
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Set
 
-from ...config.werewolf_config import (
-    allow_witch_double_action_same_night,
-    get_max_chat_message_length,
+from backend.config.werewolf_config import (
+    ALLOW_WITCH_DOUBLE_ACTION_SAME_NIGHT,
+    MAX_CHAT_MESSAGE_LENGTH,
     get_setup,
 )
-from .roles import (
+from backend.games.werewolf.roles import (
     RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
 )
-from ..base import BaseGame, chat_restricted_error, check_chat_phase
+from backend.games.base import BaseGame, chat_restricted_error, check_chat_phase
 
 # ============================================================================
 # CONSTANTS
@@ -131,15 +131,17 @@ class DeathEvent:
     nickname: str
     cause: str  # 'wolf_kill', 'poison', 'vote', 'hunter_shot'
     role_revealed: Optional[str] = None  # Role revealed on death (for vote deaths)
-    
-    def to_dict(self) -> Dict:
-        return {
+
+    def to_dict(self, include_wallet: bool = False) -> Dict:
+        payload = {
             'sid': self.sid,
-            'wallet_address': self.wallet_address,
             'nickname': self.nickname,
             'cause': self.cause,
             'role_revealed': self.role_revealed
         }
+        if include_wallet:
+            payload['wallet_address'] = self.wallet_address
+        return payload
 
 
 # ============================================================================

@@ -8,13 +8,13 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from ..config.server_config import ALLOWED_ORIGINS, ALLOWED_HOSTS
-from ..app.anti_bot_manager import verify_request, is_public_endpoint, get_agent_instructions
-from ..api.routes_root import router as root_router
-from ..api.routes_agent import router as agent_router
-from ..api.routes_account import router as account_router
-from ..api.routes_spectate import router as spectate_router
-from .limiter import limiter
+from backend.config.server_config import ALLOWED_ORIGINS, ALLOWED_HOSTS
+from backend.app.anti_bot_manager import verify_request, is_public_endpoint, get_agent_instructions
+from backend.api.routes_root import router as root_router
+from backend.api.routes_agent import router as agent_router
+from backend.api.routes_account import router as account_router
+from backend.api.routes_spectate import router as spectate_router
+from backend.app.limiter import limiter
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""

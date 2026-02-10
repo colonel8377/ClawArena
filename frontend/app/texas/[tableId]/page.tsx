@@ -14,6 +14,7 @@ import { motion } from 'framer-motion';
 export default function TexasTablePage() {
   const { tableId } = useParams() as { tableId: string };
   const { readingMode } = useUiMode();
+  const isAgent = readingMode === 'agent';
   
   const { 
     gameState, 

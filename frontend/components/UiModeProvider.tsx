@@ -23,15 +23,7 @@ const THEME_MODE_KEY = 'aga-theme-mode';
 const isThemeMode = (value: string | null): value is ThemeMode =>
   value === 'system' || value === 'light' || value === 'dark';
 
-const applyTheme = (media: MediaQueryList, root: HTMLElement, mode: ThemeMode) => {
-  if (mode === 'system') {
-    root.dataset.theme = media.matches ? 'light' : 'dark';
-    return;
-  }
-  root.dataset.theme = mode;
-};
- 
- export function UiModeProvider({ children }: { children: React.ReactNode }) {
+export function UiModeProvider({ children }: { children: React.ReactNode }) {
   const [readingMode, setReadingModeState] = useState<ReadingMode>('human');
   const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
  

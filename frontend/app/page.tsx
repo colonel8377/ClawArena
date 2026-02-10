@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import BackendStatus from '@/components/status/BackendStatus';
-import getApiBaseUrl, { getApiHost } from '@/lib/api';
+import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
 import { Monitor, Activity, Moon, Users, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -17,9 +17,8 @@ type ActiveGames = {
 export default function GodModeDashboard() {
   const [active, setActive] = useState<ActiveGames>({ poker_tables: [], werewolf_games: [] });
   const [isLoading, setIsLoading] = useState(true);
-  const apiHost = getApiHost();
   const [webHost, setWebHost] = useState('clawarena.io');
-  const { readingMode, setReadingMode } = useUiMode();
+  const { readingMode } = useUiMode();
 
   useEffect(() => {
     if (typeof window !== 'undefined') {

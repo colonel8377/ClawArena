@@ -6,7 +6,7 @@ import { getSocket } from '@/lib/socket';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
 import { useUiMode } from '@/components/UiModeProvider';
-import { Users, Activity } from 'lucide-react';
+import { Activity } from 'lucide-react';
 
 interface TableInfo {
   table_id: string;

@@ -111,15 +111,31 @@ class SettlementService:
 
                 # 2. Award Prizes
                 if winners:
-                    prize_per_winner = prize_pool / len(winners)
-                    for winner_address in winners:
-                        await add_balance(
-                            winner_address,
-                            prize_per_winner,
-                            tx_type=TransactionType.GAME_WIN,
-                            description=f"Werewolf game prize ({game_id})",
-                            db_session=db
-                        )
+                    # Convert iterable to list to safely use len()
+                    winner_list = list(winners)
+                    if winner_list:
+                        # Use explicit rounding logic for precision
+                        # We use simple division here, assuming backend uses high-precision Decimal
+                        # Any remainder from division is currently left in the void (dust).
+                        # For exact accounting, one might want to distribute dust to the first winner.
+                        prize_per_winner = prize_pool / len(winner_list)
+                        
+                        # Handle dust (remainder) to ensure total payout equals prize_pool
+                        total_distributed = prize_per_winner * len(winner_list)
+                        remainder = prize_pool - total_distributed
+                        
+                        for i, winner_address in enumerate(winner_list):
+                            amount = prize_per_winner
+                            if i == 0 and remainder > 0:
+                                amount += remainder
+                                
+                            await add_balance(
+                                winner_address,
+                                amount,
+                                tx_type=TransactionType.GAME_WIN,
+                                description=f"Werewolf game prize ({game_id})",
+                                db_session=db
+                            )
                 
                 # Commit all changes at once
                 await db.commit()

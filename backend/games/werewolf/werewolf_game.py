@@ -1298,6 +1298,8 @@ class WerewolfGame(BaseGame):
                 if non_wolves:
                     target = random.choice(non_wolves)
                     self.wolf_vote[sid] = target['sid']
+                    # Log random decision for audit
+                    print(f"[AUDIT] Random wolf vote for {player['nickname']} (sid={sid}) -> {target['nickname']}")
         
         elif self.phase == WerewolfPhase.NIGHT_SEER:
             if isinstance(player.get('role'), Seer):
@@ -1306,6 +1308,8 @@ class WerewolfGame(BaseGame):
                 if others:
                     target = random.choice(others)
                     self.seer_check = target['sid']
+                    # Log random decision for audit
+                    print(f"[AUDIT] Random seer check for {player['nickname']} (sid={sid}) -> {target['nickname']}")
         
         elif self.phase == WerewolfPhase.NIGHT_WITCH:
             # Witch skips by default
@@ -1327,6 +1331,8 @@ class WerewolfGame(BaseGame):
             if others:
                 target = random.choice(others)
                 self.votes[sid] = target['sid']
+                # Log random decision for audit
+                print(f"[AUDIT] Random day vote for {player['nickname']} (sid={sid}) -> {target['nickname']}")
     
     async def abort_game(self, reason: str = "Game aborted") -> Dict:
         """Abort the game."""

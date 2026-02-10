@@ -190,6 +190,8 @@ class BaseGame(ABC):
 
     async def _process_chat_queue(self):
         """Background task to process chat messages."""
+        from ..database.persistence_manager import persistence_manager
+        
         while True:
             try:
                 if self._chat_queue is None:
@@ -200,6 +202,26 @@ class BaseGame(ABC):
                 
                 # Perform the actual IO/Broadcasting
                 self.channel.send_message(player_id, message, message_type, **metadata)
+                
+                # Async persistence (fire and forget logic, but awaited to ensure task order)
+                # We use create_task to avoid blocking the queue processing if DB is slow
+                # but since this is already a background task, we can just await it or parallelize.
+                # To prevent lag in broadcasting, we should ideally broadcast first (done above).
+                # The user asked for "Unified chat write strategy".
+                
+                # Extract nickname if available in metadata, else placeholder
+                nickname = metadata.get('nickname', 'Player') if metadata else 'Player'
+                
+                # Persist to MySQL
+                await persistence_manager.save_chat_message(
+                    game_id=self.game_id,
+                    game_type=self.game_type,
+                    player_id=player_id,
+                    nickname=nickname,
+                    message=message,
+                    message_type=message_type,
+                    metadata=metadata
+                )
                 
                 self._chat_queue.task_done()
             except asyncio.CancelledError:

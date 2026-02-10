@@ -359,18 +359,9 @@ async def transfer_balance(
                 {"amount": str(amount), "wallet": to_wallet}
             )
 
-            await db.commit()
-
-            # Refresh users
-            await db.refresh(from_user)
             await db.refresh(to_user)
 
-            # Update caches
-            await set_cached_balance(from_wallet, from_user.offchain_balance, from_user.locked_balance)
-            await set_cached_balance(to_wallet, to_user.offchain_balance, to_user.locked_balance)
-            await invalidate_leaderboard_cache()
-
-            # Log transactions
+            # Log transactions (before commit to ensure atomicity)
             await log_transaction(
                 wallet_address=from_wallet,
                 tx_type=TransactionType.WITHDRAW,
@@ -392,6 +383,13 @@ async def transfer_balance(
                 description=f"{description} (from {from_wallet})",
                 db_session=db
             )
+
+            await db.commit()
+
+            # Update caches
+            await set_cached_balance(from_wallet, from_user.offchain_balance, from_user.locked_balance)
+            await set_cached_balance(to_wallet, to_user.offchain_balance, to_user.locked_balance)
+            await invalidate_leaderboard_cache()
 
             return {
                 'success': True,
@@ -687,73 +685,82 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
     # Use debug balance in local debug mode
     initial_balance = get_debug_balance() if is_local_debug_mode() else DAILY_LOGIN_REWARD
     
-    async with get_async_db_session() as db:
-        # Address can be used as re-login identifier, so keep it unique when provided.
-        if address:
-            existing_stmt = select(UserLedger).where(
-                UserLedger.address.isnot(None),
-                UserLedger.address == address,
-            )
-            existing_result = await db.execute(existing_stmt)
-            existing_user = existing_result.scalar_one_or_none()
-            if existing_user:
-                return {
-                    'status': 'exists',
-                    'user': _serialize_user(existing_user),
-                    'local_debug_mode': is_local_debug_mode()
-                }
+    # Helper to encapsulate registration logic
+    async def _perform_registration():
+        async with get_async_db_session() as db:
+            # Address can be used as re-login identifier, so keep it unique when provided.
+            if address:
+                existing_stmt = select(UserLedger).where(
+                    UserLedger.address.isnot(None),
+                    UserLedger.address == address,
+                )
+                existing_result = await db.execute(existing_stmt)
+                existing_user = existing_result.scalar_one_or_none()
+                if existing_user:
+                    return {
+                        'status': 'exists',
+                        'user': _serialize_user(existing_user),
+                        'local_debug_mode': is_local_debug_mode()
+                    }
 
-        # Generate collision-safe system player id
-        player_id = _generate_player_id()
-        while True:
-            stmt = select(UserLedger).filter_by(wallet_address=player_id)
-            result = await db.execute(stmt)
-            if not result.scalar_one_or_none():
-                break
+            # Generate collision-safe system player id
             player_id = _generate_player_id()
-        
-        # Create new user with initial balance
-        new_user = UserLedger(
-            wallet_address=player_id,
-            player_name=player_name,
-            address=address,
-            offchain_balance=initial_balance,
-            locked_balance=Decimal("0"),
-            last_login_date=datetime.utcnow(),
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
-        
-        db.add(new_user)
-        await db.flush()  # Generate ID for transaction logging
-        await db.refresh(new_user)
-
-        # Update cache
-        await set_cached_balance(new_user.wallet_address, new_user.offchain_balance, new_user.locked_balance)
-        await invalidate_leaderboard_cache()
-
-        # Log initial balance transaction
-        if not is_local_debug_mode():
-            await log_transaction(
-                wallet_address=new_user.wallet_address,
-                tx_type=TransactionType.DAILY_REWARD,
-                amount=initial_balance,
-                balance_before=Decimal("0"),
-                balance_after=initial_balance,
-                user_id=new_user.id,
-                description="Initial account balance on registration",
-                db_session=db
+            while True:
+                stmt = select(UserLedger).filter_by(wallet_address=player_id)
+                result = await db.execute(stmt)
+                if not result.scalar_one_or_none():
+                    break
+                player_id = _generate_player_id()
+            
+            # Create new user with initial balance
+            new_user = UserLedger(
+                wallet_address=player_id,
+                player_name=player_name,
+                address=address,
+                offchain_balance=initial_balance,
+                locked_balance=Decimal("0"),
+                last_login_date=datetime.utcnow(),
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
             )
-        
-        # Commit all changes (user creation + transaction log) atomically
-        await db.commit()
-        await db.refresh(new_user)
+            
+            db.add(new_user)
+            await db.flush()  # Generate ID for transaction logging
+            await db.refresh(new_user)
 
-        return {
-            'status': 'registered',
-            'user': _serialize_user(new_user),
-            'local_debug_mode': is_local_debug_mode()
-        }
+            # Update cache
+            await set_cached_balance(new_user.wallet_address, new_user.offchain_balance, new_user.locked_balance)
+            await invalidate_leaderboard_cache()
+
+            # Log initial balance transaction
+            if not is_local_debug_mode():
+                await log_transaction(
+                    wallet_address=new_user.wallet_address,
+                    tx_type=TransactionType.DAILY_REWARD,
+                    amount=initial_balance,
+                    balance_before=Decimal("0"),
+                    balance_after=initial_balance,
+                    user_id=new_user.id,
+                    description="Initial account balance on registration",
+                    db_session=db
+                )
+            
+            # Commit all changes (user creation + transaction log) atomically
+            await db.commit()
+            await db.refresh(new_user)
+
+            return {
+                'status': 'registered',
+                'user': _serialize_user(new_user),
+                'local_debug_mode': is_local_debug_mode()
+            }
+
+    # Apply distributed lock if address is provided to prevent race conditions
+    if address:
+        async with redis_manager.lock(f"register:{address}", timeout=5):
+            return await _perform_registration()
+    else:
+        return await _perform_registration()
 
 
 @redis_manager.distributed_lock("lock:account:{login_key}", timeout=5)
@@ -813,6 +820,9 @@ async def handle_login(login_key: str) -> Dict:
         reward_granted = False
         today_start_utc = datetime(now_utc.year, now_utc.month, now_utc.day)
         eligible_for_reward = user.created_at is None or user.created_at.date() < today_utc
+        
+        # Use single SQL to determine if we should update and what the result is
+        # We perform the update conditionally and return the rowcount
         reward_update_result = await db.execute(
             text("""
                 UPDATE user_ledger
@@ -833,8 +843,34 @@ async def handle_login(login_key: str) -> Dict:
             }
         )
 
-        if reward_update_result.rowcount > 0 and eligible_for_reward:
-            reward_granted = True
+        if reward_update_result.rowcount > 0:
+            # Re-fetch user to check if balance actually increased (it might not if created_at >= today_start)
+            # But wait, we can just infer from eligible_for_reward.
+            # If rowcount > 0, it means we updated last_login_date.
+            # If eligible_for_reward is true, we also added balance.
+            if eligible_for_reward:
+                reward_granted = True
+                
+                # Log transaction BEFORE commit to ensure atomicity
+                # Balance before reward is user.offchain_balance (which is stale now, but we know the delta)
+                # But to be safe and accurate for the log, let's refresh.
+                # However, refreshing before commit might not show changes in some isolation levels, 
+                # but in default Read Committed it usually does if we did the update in same tx.
+                # Let's trust the logic: balance_before = stale_balance, balance_after = stale + reward
+                
+                balance_before = user.offchain_balance
+                balance_after = user.offchain_balance + DAILY_LOGIN_REWARD
+                
+                await log_transaction(
+                    wallet_address=user.wallet_address,
+                    tx_type=TransactionType.DAILY_REWARD,
+                    amount=DAILY_LOGIN_REWARD,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                    user_id=user.id,
+                    description="Daily login reward",
+                    db_session=db
+                )
 
         await db.commit()
         await db.refresh(user)
@@ -844,19 +880,6 @@ async def handle_login(login_key: str) -> Dict:
 
         if reward_granted:
             await invalidate_leaderboard_cache()
-
-            # Balance before reward is deterministic from refreshed post-state.
-            balance_before = user.offchain_balance - DAILY_LOGIN_REWARD
-            await log_transaction(
-                wallet_address=user.wallet_address,
-                tx_type=TransactionType.DAILY_REWARD,
-                amount=DAILY_LOGIN_REWARD,
-                balance_before=balance_before,
-                balance_after=user.offchain_balance,
-                user_id=user.id,
-                description="Daily login reward",
-                db_session=db
-            )
         
         return {
             'status': 'success',
@@ -1161,20 +1184,15 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
             """),
             {"amount": str(amount), "wallet": wallet_address}
         )
-        await db.commit()
-
         if result.rowcount == 0:
+            # We don't commit here because we want to rollback if needed, but since we are just reading
+            # failure state, we can just raise. If caller handles it, they can rollback.
+            # But wait, if we are in a transaction (db_session is None or not), we haven't committed anything yet.
             await db.refresh(user)
             available = user.offchain_balance - user.locked_balance
             raise InsufficientBalanceError(
                 f"Insufficient available balance to lock. Required: {amount}, Available: {available}"
             )
-
-        await db.refresh(user)
-
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
 
         # Log lock transaction (funds moved to locked state; total balance unchanged)
         await log_transaction(
@@ -1188,6 +1206,16 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
             description="Balance locked for game entry",
             db_session=db
         )
+        
+        # Only commit if we own the session
+        if db_session is None:
+            await db.commit()
+
+        await db.refresh(user)
+
+        # Update cache
+        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         return {
             'status': 'success',

@@ -115,6 +115,8 @@ async def api_batch_get_balances(request: Request, player_ids: List[str]):
         return {
             "balances": {addr: float(bal) for addr, bal in balances.items()}
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch balance query failed: {str(e)}")
 

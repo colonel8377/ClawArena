@@ -45,6 +45,13 @@ DEFAULT_BIG_BLIND = TEXAS_DEFAULT_BIG_BLIND
 MIN_PLAYERS = TEXAS_MIN_PLAYERS
 MAX_PLAYERS = TEXAS_MAX_PLAYERS
 
+# Game Rules Configuration
+# Strategy for handling dead pots (excess bets from folded players with no eligible callers).
+# 'MAIN_POT': Merge dead money into the Main Pot (standard rule, benefits the hand winner).
+# 'BURN': Remove dead money from the game (deflationary).
+# 'REFUND': Refund to the bettor (non-standard).
+DEAD_POT_MERGE_STRATEGY = 'MAIN_POT'
+
 
 # ============================================================================
 # ENUMS
@@ -566,6 +573,10 @@ class TexasEngine:
         
         chat_blocked = False
 
+        # Enforce chat limits (length and spam control could be added here)
+        if chat_message and len(chat_message) > 200:
+            chat_message = chat_message[:200]  # Truncate overly long messages
+
         # Block chat during restricted phases to prevent info leakage.
         if chat_message and check_chat_phase(self.phase, self.CHAT_ALLOWED_PHASES):
             chat_blocked = True
@@ -1077,32 +1088,17 @@ class TexasEngine:
             pot_amount = contribution_per_player * len(contributors)
             
             if not eligible_winners:
-                # Edge case: Only folded players contributed to this specific slice 
-                # (e.g. Folded player bet 1000, Active player bet 500).
-                # The extra 500 from Folded is "dead money".
-                # It typically merges into the previous pot (if any) or stays as a pot 
-                # that falls back to the last eligible group.
-                # In this engine, we'll merge it into the highest existing pot 
-                # or the first pot if none exist yet.
-                if self.pots:
-                    self.pots[-1].amount += pot_amount
-                else:
-                    # Should be rare/impossible in standard play if main pot exists
-                    # Create a dummy pot or hold it? 
-                    # Let's create a pot with no eligible winners (will be caught by cleanup or refund?)
-                    # Better: Refund or add to next pot? 
-                    # Standard rule: Unmatched bets are returned. 
-                    # But if it's folded money, it's not "unmatched" in the sense of live betting, it's just lost.
-                    # We'll add it to the main pot (index 0) if it exists later, or create a dead pot.
-                    self.pots.append(Pot(amount=pot_amount, eligible_players=[]))
+                # Dead money slice (only folded players contributed to this excess)
+                # Create a temporary dead pot; will be merged into Main Pot during cleanup.
+                self.pots.append(Pot(amount=pot_amount, eligible_players=[]))
             else:
                 # Check if we can merge with previous pot
                 # We can merge if the eligible winners are IDENTICAL
                 can_merge = False
                 if self.pots:
                     prev_pot = self.pots[-1]
-                    # Compare sets of eligible players
-                    if set(prev_pot.eligible_players) == set(eligible_winners):
+                    # Compare sets of eligible players AND ensure prev_pot is not a dead pot
+                    if prev_pot.eligible_players and set(prev_pot.eligible_players) == set(eligible_winners):
                         prev_pot.amount += pot_amount
                         can_merge = True
                 
@@ -1114,7 +1110,21 @@ class TexasEngine:
             
             prev_level = level
 
-        # Cleanup: Merge any "dead" pots (no eligible winners) into the highest pot with winners
+        # Cleanup: Merge any "dead" pots (no eligible winners) into the Main Pot.
+        # Dead money (from folds) belongs to the Main Pot winners.
+        valid_pots = [p for p in self.pots if p.eligible_players]
+        dead_money = sum(p.amount for p in self.pots if not p.eligible_players)
+        
+        if valid_pots:
+            # Add all dead money to the Main Pot (the first valid pot, which covers the base stakes)
+            valid_pots[0].amount += dead_money
+            self.pots = valid_pots
+        elif dead_money > 0:
+            # Edge case: All pots are dead (should be impossible at Showdown with active players).
+            # If it happens, we leave the dead pots (or could refund, but that violates poker rules).
+            # We'll just leave self.pots as is, which might result in no winners found,
+            # effectively burning the tokens (deflationary).
+            pass
         # This handles the case where a folded player bet more than anyone else.
         # That extra money should belong to the winner of the highest pot.
         valid_pots = [p for p in self.pots if p.eligible_players]

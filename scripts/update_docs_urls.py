@@ -41,27 +41,52 @@ def main():
             with open(file_path, 'r') as f:
                 content = f.read()
             
-            # Check if replacement is needed
-            if "clawarena.io" in content:
-                # Perform replacement
-                # IMPORTANT: Simple replacement might be risky if target_domain contains source string.
-                # e.g. replacing "clawarena.io" with "api-dev.clawarena.io"
-                # "wss://clawarena.io" -> "wss://api-dev.clawarena.io" (Correct)
-                # But if run twice: "wss://api-dev.clawarena.io" -> "wss://api-dev.api-dev.clawarena.io" (Wrong)
-                # However, in CI, this runs once on fresh checkout, so it is safe.
-                
-                new_content = content.replace("clawarena.io", target_domain)
-                
-                # Check if wss was updated
-                if "wss://clawarena.io" in content and f"wss://{target_domain}" in new_content:
-                    print(f"  Verified: wss://clawarena.io -> wss://{target_domain}")
-                
+            # Use 'clawarena.io' as the placeholder base domain
+            # If target_domain is 'api-dev.clawarena.io', we replace 'clawarena.io' with it.
+            # But wait! If the text is 'api.clawarena.io', replacing 'clawarena.io' -> 'api-dev.clawarena.io'
+            # results in 'api.api-dev.clawarena.io'. This is BAD.
+            
+            # Correct logic:
+            # We want to replace SPECIFIC occurrences.
+            # 1. "wss://clawarena.io" -> "wss://<target>"
+            # 2. "https://clawarena.io" -> "https://<target>"
+            # 3. "api.clawarena.io" -> "<target>" (Maybe?)
+            
+            # To be safe, we should replace specific URL patterns.
+            
+            new_content = content
+            
+            # Replace wss://clawarena.io
+            if "wss://clawarena.io" in new_content:
+                new_content = new_content.replace("wss://clawarena.io", f"wss://{target_domain}")
+                print(f"  Replaced wss://clawarena.io -> wss://{target_domain}")
+
+            # Replace https://clawarena.io
+            if "https://clawarena.io" in new_content:
+                new_content = new_content.replace("https://clawarena.io", f"https://{target_domain}")
+                print(f"  Replaced https://clawarena.io -> https://{target_domain}")
+
+            # Also handle api.clawarena.io if it exists (for Prod mentions)
+            # If the file mentions 'api.clawarena.io' and we are deploying to dev, we might want to change it too?
+            # Or maybe the source file ONLY contains 'clawarena.io' as per my rewrite.
+            # Let's check skill.json content I wrote earlier.
+            # "api_base": "wss://clawarena.io",
+            # "http_base": "https://clawarena.io"
+            # So the specific replacements above should cover it.
+            
+            if new_content != content:
                 with open(file_path, 'w') as f:
                     f.write(new_content)
                 print(f"  Updated successfully.")
+                
+                # Verify content
+                with open(file_path, 'r') as f:
+                    saved_content = f.read()
+                    print(f"  First 500 chars after update:\n{saved_content[:500]}")
+                    
                 success_count += 1
             else:
-                print(f"  No 'clawarena.io' found to replace.")
+                print(f"  No changes needed (or patterns not found).")
                 
         except Exception as e:
             print(f"ERROR updating {file_path}: {e}")

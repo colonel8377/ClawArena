@@ -100,9 +100,20 @@ jobs:
 
       - name: Update Docs URLs
         run: |
+          # Debug: List files to ensure paths are correct
+          echo "Listing frontend/public/docs:"
+          ls -R frontend/public/docs || echo "Directory not found"
+          
           # Extract domain from API URL (remove protocol)
+          # Ensure NEXT_PUBLIC_API_URL is available
+          if [ -z "$NEXT_PUBLIC_API_URL" ]; then
+            echo "ERROR: NEXT_PUBLIC_API_URL is empty"
+            exit 1
+          fi
+          
           DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
           echo "Updating docs to use domain: $DOMAIN"
+          
           python3 scripts/update_docs_urls.py "$DOMAIN"
 
       - name: Pull Vercel Environment (prod)

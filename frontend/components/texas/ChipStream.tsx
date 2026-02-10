@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SpectatorPlayer } from '@/store/types';
-import { getSeatPosition } from './seatPositions';
+import { getSeatPosition } from '@/components/texas/seatPositions';
 
 interface ChipStreamProps {
   players: SpectatorPlayer[];

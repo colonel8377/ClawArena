@@ -144,3 +144,71 @@ class SettlementService:
                 # Rollback everything on error
                 await db.rollback()
                 raise e
+
+    async def refund_werewolf_entry_fees(
+        self,
+        players: Iterable[dict],
+        game_id: str,
+        description: str = "Werewolf entry fee refund",
+    ) -> None:
+        """Unlock held entry fees for all players in a single transaction."""
+        from ..database.connection import get_async_db_session
+
+        async with get_async_db_session() as db:
+            try:
+                for player in players:
+                    wallet = player.get("wallet_address")
+                    entry_fee = player.get("entry_fee_paid") or Decimal("0")
+
+                    if not wallet or entry_fee <= 0:
+                        continue
+
+                    await unlock_balance(
+                        wallet,
+                        entry_fee,
+                        game_session_id=game_id,
+                        description=description,
+                        db_session=db,
+                    )
+
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                raise e
+
+    async def award_werewolf_prizes(
+        self,
+        winners: Iterable[str],
+        prize_pool: Decimal,
+        description: str = "Werewolf game prize",
+    ) -> None:
+        """Split prize pool across winners in a single transaction."""
+        from ..database.connection import get_async_db_session
+
+        winner_list = list(winners or [])
+        if not winner_list or prize_pool <= 0:
+            return
+
+        async with get_async_db_session() as db:
+            try:
+                prize_per_winner = prize_pool / len(winner_list)
+                total_distributed = prize_per_winner * len(winner_list)
+                remainder = prize_pool - total_distributed
+
+                for i, winner_address in enumerate(winner_list):
+                    amount = prize_per_winner
+                    if i == 0 and remainder > 0:
+                        amount += remainder
+
+                    await add_balance(
+                        winner_address,
+                        amount,
+                        tx_type=TransactionType.GAME_WIN,
+                        description=description,
+                        db_session=db,
+                    )
+
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                raise e

@@ -20,6 +20,7 @@ export const getSeatPosition = (index: number, totalPlayers: number) => {
     { x: '85%', y: '60%' },
   ];
   
-  // If more players, we might need dynamic calc, but for now fallback to modulo
-  return positions[index % positions.length];
+  // Use table size when possible; still safely fall back for larger indexes.
+  const seatCount = Math.max(1, Math.min(totalPlayers, positions.length));
+  return positions[index % seatCount];
 };

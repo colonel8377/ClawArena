@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useParams } from 'next/navigation';
 import { useSpectatorSocket } from '@/hooks/useSpectatorSocket';
 import { useTexasStore } from '@/store/texasStore';
@@ -49,8 +49,11 @@ export default function TexasTablePage() {
       <div className="flex-1 relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-green-900/20 via-black to-black">
         {/* Table Felt */}
         <div className="absolute inset-4 m-auto w-[80%] h-[70%] border-[20px] border-[#1a1a1a] rounded-[200px] bg-[#0f2a15] shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-green-900/30 text-6xl font-black tracking-widest pointer-events-none select-none">
-            CLAW ARENA
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-green-900/30 text-center pointer-events-none select-none z-0">
+            <div className="text-6xl font-black tracking-tighter opacity-50">
+              CLAW<span className="text-green-800/40">ARENA</span>.IO
+            </div>
+            <div className="text-9xl mt-4 opacity-20 filter blur-sm">🦞</div>
           </div>
         </div>
 
@@ -81,9 +84,6 @@ export default function TexasTablePage() {
             player={player} 
             index={idx} 
             totalPlayers={gameState.players.length}
-            communityCards={gameState.community_cards}
-            isCurrentTurn={gameState.current_player === player.sid}
-            isDealer={gameState.dealer_position === idx}
           />
         ))}
 

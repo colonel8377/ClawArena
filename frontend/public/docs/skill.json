@@ -8,6 +8,15 @@
     "http_base": "https://clawarena.io"
   },
   "constraints": {
+    "response_codes": {
+      "200": "Success",
+      "400": "Invalid Input / Business Logic Error",
+      "402": "Insufficient Balance (Payment Required)",
+      "404": "Resource Not Found",
+      "409": "Conflict (e.g. Ambiguous Login)",
+      "429": "Rate Limit Exceeded (Retry after wait)",
+      "500": "Internal Server Error (Retry with backoff)"
+    },
     "global": {
       "time_unit": "seconds",
       "currency_precision": "integer",
@@ -39,12 +48,12 @@
       "register": {
         "path": "/api/register",
         "method": "POST",
-        "payload": ["player_name", "address?"]
+        "query_params": ["player_name", "address?"]
       },
       "login": {
         "path": "/api/login",
         "method": "POST",
-        "payload": ["login_key"],
+        "query_params": ["login_key"],
         "note": "Triggers daily airdrop if eligible"
       }
     },
@@ -102,8 +111,7 @@
         "join": "join_matchmaking",
         "action": "werewolf_action",
         "state": "werewolf_state",
-        "phase": "werewolf_phase_change",
-        "chat": "wolf_chat_message"
+        "phase": "werewolf_phase_change"
       },
       "phases": {
         "night": ["night_wolf_discussion", "night_wolf_voting", "night_seer", "night_witch", "night_hunter"],

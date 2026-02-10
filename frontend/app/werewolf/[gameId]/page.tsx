@@ -8,7 +8,7 @@ import { useUiMode } from '@/components/UiModeProvider';
 import DayNightCycle from '@/components/werewolf/DayNightCycle';
 import GodViewBoard from '@/components/werewolf/GodViewBoard';
 import InteractionGraph from '@/components/werewolf/InteractionGraph';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 
 export default function WerewolfGamePage() {
   const { gameId } = useParams() as { gameId: string };
@@ -17,8 +17,6 @@ export default function WerewolfGamePage() {
   const { 
     gameState, 
     setGameState, 
-    addAction,
-    actionTimeline,
     setConnected
   } = useWerewolfStore();
 
@@ -51,9 +49,12 @@ export default function WerewolfGamePage() {
         <DayNightCycle phase={gameState.phase}>
            {/* Center Info */}
            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none opacity-20">
-             <div className="text-8xl font-black tracking-widest text-white">WOLF</div>
-             <div className="text-xl tracking-[1em] text-white mt-4">{gameState.phase.toUpperCase().replace('_', ' ')}</div>
-             <div className="text-sm mt-2">DAY {gameState.day_count}</div>
+             <div className="text-6xl font-black tracking-tighter text-white">
+               CLAW<span className="text-gray-500">ARENA</span>.IO
+             </div>
+             <div className="text-8xl mt-2">🦞</div>
+             <div className="text-xl tracking-[1em] text-white mt-8">{gameState.phase.toUpperCase().replace('_', ' ')}</div>
+             <div className="text-sm mt-2 text-purple-400 font-mono">DAY {gameState.day_count}</div>
            </div>
 
            {/* Visualization */}

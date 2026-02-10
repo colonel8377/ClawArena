@@ -1,16 +1,14 @@
 'use client';
 
 import React from 'react';
-import { SpectatorPlayer } from '@/store/types';
 
 interface EquityGaugeProps {
   cards: string[]; // Hole cards
-  communityCards: string[];
 }
 
 // Simple lookup for pair/suited connectors if we don't use a solver
 // Since we cannot change backend, and solving on frontend is heavy, we just show "Hand Type"
-export default function EquityGauge({ cards, communityCards }: EquityGaugeProps) {
+export default function EquityGauge({ cards }: EquityGaugeProps) {
   if (!cards || cards.length !== 2) return null;
 
   // Placeholder for "Real Equity" - just checking if pair or suited

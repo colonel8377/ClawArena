@@ -9,24 +9,18 @@ import {
   isGateActive,
   markBotReady,
   onGateChange,
-  requestChallenge,
+  requestToken,
   setBotToken,
-  submitChallenge,
 } from '@/lib/antiBot';
 import { getStoredFingerprint } from '@/lib/antiBot';
 import { refreshSocketAuth } from '@/lib/socket';
 
-type GateState = 'idle' | 'checking' | 'challenge' | 'verifying' | 'ready' | 'error';
+type GateState = 'idle' | 'checking' | 'ready' | 'error';
 
 export default function AntiBotGate() {
   const [active, setActive] = useState<boolean>(isGateActive());
   const [state, setState] = useState<GateState>('idle');
-  const [question, setQuestion] = useState<string>('');
-  const [answer, setAnswer] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const [challengeId, setChallengeId] = useState<string>('');
-  const [powDifficulty, setPowDifficulty] = useState<number>(0);
-  const [powSalt, setPowSalt] = useState<string>('');
   const [retryTick, setRetryTick] = useState<number>(0);
 
   useEffect(() => {
@@ -52,47 +46,19 @@ export default function AntiBotGate() {
       }
       try {
         const apiBase = getApiBaseUrl();
-        const challenge = await requestChallenge(apiBase);
-        setQuestion(challenge.question);
-        setChallengeId(challenge.challenge_id);
-        setPowSalt(challenge.pow_salt);
-        setPowDifficulty(challenge.pow_difficulty);
-        setState('challenge');
+        const response = await requestToken(apiBase);
+        setBotToken(response.token);
+        markBotReady();
+        refreshSocketAuth(response.token);
+        clearBotGate();
+        setState('ready');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Challenge failed');
+        setError(err instanceof Error ? err.message : 'Token request failed');
         setState('error');
       }
     };
     run();
   }, [active, retryTick]);
-
-  const handleVerify = async () => {
-    setError('');
-    setState('verifying');
-    try {
-      const apiBase = getApiBaseUrl();
-      const response = await submitChallenge(
-        apiBase,
-        {
-          challenge_id: challengeId,
-          question,
-          pow_salt: powSalt,
-          pow_difficulty: powDifficulty,
-          expires_in: 0,
-          risk: 0,
-        },
-        answer
-      );
-      setBotToken(response.bot_token);
-      markBotReady();
-      refreshSocketAuth(response.bot_token);
-      clearBotGate();
-      setState('ready');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Verify failed');
-      setState('error');
-    }
-  };
 
   if (!active || state === 'ready' || state === 'idle') {
     return null;
@@ -103,29 +69,6 @@ export default function AntiBotGate() {
       <div className="terminal-border neon-glow-purple bg-backgroundSlate/90 p-4 space-y-3">
         <div className="text-electricPurple font-orbitron text-lg">&gt; Bot Protection</div>
         {state === 'checking' && <div className="text-sm text-foreground/70">Initializing...</div>}
-        {state === 'challenge' && (
-          <>
-            <div className="text-sm text-foreground/80">
-              Please solve the challenge to continue.
-            </div>
-            <div className="text-acidGreen font-mono text-base">{question}</div>
-            <input
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              placeholder="Answer"
-              className="w-full px-3 py-2 bg-background border border-electricPurple/40 rounded text-sm text-foreground focus:border-electricPurple focus:outline-none"
-            />
-            <button
-              onClick={handleVerify}
-              className="w-full px-3 py-2 bg-electricPurple/20 border border-electricPurple/60 rounded text-sm text-electricPurple hover:bg-electricPurple/30 transition-colors"
-            >
-              Verify
-            </button>
-          </>
-        )}
-        {state === 'verifying' && (
-          <div className="text-sm text-foreground/70">Verifying proof of work...</div>
-        )}
         {state === 'error' && (
           <>
             <div className="text-sm text-danger">Failed: {error}</div>

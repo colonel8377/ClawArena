@@ -3,7 +3,7 @@
 import asyncio
 from decimal import Decimal
 
-from config import TEXAS_CHIP_TO_TOKEN_RATIO
+from config.config import TEXAS_CHIP_TO_TOKEN_RATIO
 from database.persistence_manager import persistence_manager
 from economy.account import get_balance, lock_balance, unlock_balance
 from games.texas import create_texas_game

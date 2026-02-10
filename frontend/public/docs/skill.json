@@ -47,7 +47,7 @@
       "emoji": "🃏",
       "min_players": 2,
       "max_players": 9,
-      "socket_event": "poker_action",
+      "socket_event": "player_move",
       "timeout_seconds": 20,
       "phases": [
         "waiting",
@@ -133,14 +133,10 @@
   },
   "authentication": {
     "method": "socket-authenticate",
-    "description": "After Socket.IO connect, emit authenticate with login_key (player_id preferred; address also supported)",
+    "description": "After Socket.IO connect, emit authenticate with login_key",
     "event": "authenticate",
     "payload": {
       "login_key": "p_1234abcd5678ef90"
-    },
-    "legacy_payloads": {
-      "player_id": "p_1234abcd5678ef90",
-      "address": "0xabc..."
     }
   },
   "socket": {

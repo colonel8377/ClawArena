@@ -3,19 +3,11 @@ interface WebGLDebugRendererInfo {
   readonly UNMASKED_RENDERER_WEBGL: number;
 }
 
-type BotChallenge = {
-  challenge_id: string;
-  question: string;
-  pow_salt: string;
-  pow_difficulty: number;
+type BotTokenResponse = {
+  token: string;
   expires_in: number;
-  risk: number;
-};
-
-type BotVerifyResponse = {
-  bot_token: string;
-  expires_in: number;
-  risk: number;
+  message?: string;
+  error?: string;
 };
 
 const BOT_TOKEN_KEY = 'aga-bot-token';
@@ -76,27 +68,6 @@ const sha256Hex = async (value: string): Promise<string> => {
     .join('');
 };
 
-const sha256Bytes = async (value: string): Promise<Uint8Array> => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(value);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return new Uint8Array(digest);
-};
-
-const hasLeadingZeroBits = (hash: Uint8Array, difficulty: number): boolean => {
-  let bits = difficulty;
-  for (const byte of hash) {
-    if (bits <= 0) return true;
-    if (bits >= 8) {
-      if (byte !== 0) return false;
-      bits -= 8;
-      continue;
-    }
-    const mask = (0xff << (8 - bits)) & 0xff;
-    return (byte & mask) === 0;
-  }
-  return bits <= 0;
-};
 
 export const getFingerprint = async (): Promise<string> => {
   if (typeof window === 'undefined') return 'server';
@@ -176,20 +147,6 @@ export const hasValidToken = (): boolean => {
   return getTokenExpiry(token) > Math.floor(Date.now() / 1000) + 30;
 };
 
-export const computePowNonce = async (salt: string, difficulty: number): Promise<string> => {
-  let nonce = 0;
-  while (true) {
-    const hash = await sha256Bytes(`${salt}:${nonce}`);
-    if (hasLeadingZeroBits(hash, difficulty)) {
-      return String(nonce);
-    }
-    nonce += 1;
-    if (nonce % 400 === 0) {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
-  }
-};
-
 export const getBotHeaders = async (): Promise<Record<string, string>> => {
   const fingerprint = await getFingerprint();
   const token = getBotToken();
@@ -213,9 +170,9 @@ export const botFetch = async (url: string, init?: RequestInit): Promise<Respons
     const data = (await res.clone().json()) as {
       error?: string;
       code?: string;
-      challenge_required?: boolean;
+      message?: string;
     };
-    if (data?.error === 'bot_protection' && data.challenge_required) {
+    if (data?.error === 'bot_protection' || data?.error === 'token_required' || data?.error === 'invalid_token') {
       requestBotGate();
       await waitForBotReady();
       const retryHeaders = await getBotHeaders();
@@ -227,9 +184,9 @@ export const botFetch = async (url: string, init?: RequestInit): Promise<Respons
   return res;
 };
 
-export const requestChallenge = async (apiBase: string): Promise<BotChallenge> => {
+export const requestToken = async (apiBase: string): Promise<BotTokenResponse> => {
   const fingerprint = await getFingerprint();
-  const res = await fetch(`${apiBase}/bot/challenge`, {
+  const res = await fetch(`${apiBase}/bot/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -238,33 +195,11 @@ export const requestChallenge = async (apiBase: string): Promise<BotChallenge> =
     body: JSON.stringify({ fingerprint }),
   });
   if (!res.ok) {
-    throw new Error(`Challenge failed (${res.status})`);
+    throw new Error(`Token request failed (${res.status})`);
   }
-  return (await res.json()) as BotChallenge;
-};
-
-export const submitChallenge = async (
-  apiBase: string,
-  challenge: BotChallenge,
-  answer: string
-): Promise<BotVerifyResponse> => {
-  const fingerprint = await getFingerprint();
-  const powNonce = await computePowNonce(challenge.pow_salt, challenge.pow_difficulty);
-  const res = await fetch(`${apiBase}/bot/verify`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Fingerprint': fingerprint,
-    },
-    body: JSON.stringify({
-      challenge_id: challenge.challenge_id,
-      answer,
-      pow_nonce: powNonce,
-      fingerprint,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Verify failed (${res.status})`);
+  const data = (await res.json()) as BotTokenResponse;
+  if (!data.token) {
+    throw new Error(data.error || 'Token response missing token');
   }
-  return (await res.json()) as BotVerifyResponse;
+  return data;
 };

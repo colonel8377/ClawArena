@@ -1705,7 +1705,3 @@ class WerewolfGame(BaseGame):
         state.pop('public_chat', None)
         state.pop('wolf_chat', None)
         return state
-
-
-# Export for backwards compatibility
-PHASE_TIMEOUT_SECONDS = DEFAULT_TIMEOUT

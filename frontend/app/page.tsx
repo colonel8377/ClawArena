@@ -17,9 +17,14 @@ export default function GodModeDashboard() {
   const [active, setActive] = useState<ActiveGames>({ poker_tables: [], werewolf_games: [] });
   const [isLoading, setIsLoading] = useState(true);
   const apiHost = getApiHost();
-  const webHost = typeof window !== 'undefined' ? window.location.host : 'clawarena.io';
+  const [webHost, setWebHost] = useState('clawarena.io');
 
   useEffect(() => {
+    // Set dynamic hosts
+    if (typeof window !== 'undefined') {
+      setWebHost(window.location.host);
+    }
+
     const fetchActive = async () => {
       try {
         const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);

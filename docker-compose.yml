@@ -19,7 +19,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: arena_frontend
     ports:
       - "3000:3000"

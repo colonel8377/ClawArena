@@ -375,7 +375,7 @@ def register_common_handlers(sio, state) -> None:
 
             from economy.account import handle_login
 
-            login_result = await handle_login(login_key)
+            login_result = await handle_login(login_key, grant_reward=False)
             user = login_result.get("user", {})
             player_id = user.get("player_id", "")
             player_name = user.get("player_name", "Player")

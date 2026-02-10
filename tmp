@@ -1,0 +1,26 @@
+现在我们没有用address，也没有支持web3. 你需要再次读取代码再修复以下几点。
+
+强制约束：
+修复前一定要确认不影响主题逻辑。
+uman在前端能通过公开接口观摩所有游戏+对话。
+前端不能展示wallet（强制检查）。
+不要新增新的接口/session通道。
+现在我们没有通过schema.sql:去创建表，仍然通过model来创建，一并修复。
+你需要找到最优的修复策略。
+
+- [资产发放/注册幂等] `backend/economy/account.py:749` [风险点] 注册流程在事务提交前写入 Redis 缓存与排行榜缓存，若后续 `commit` 失败会造成缓存与数据库不一致，可能出现“余额可见但实际未入账”的短暂错账。 [修复方案] 将 `set_cached_balance` 与 `invalidate_leaderboard_cache` 移至 `commit` 成功后；或者在失败回滚时主动清缓存并记录补偿任务。
+
+- [资产发放/注册并发] `backend/economy/account.py:777` [风险点] 仅在 `address` 存在时加分布式锁；`address` 为空路径缺乏锁，存在并发多开账户/重复领取初始奖励风险。 [修复方案] 对无 `address` 注册使用全局或基于 `player_id`/IP/验证 的短期幂等锁；或在 DB 层引入防重复注册标识并启用唯一约束策略。
+
+- [资产发放/地址唯一性] `backend/database/schema.sql:28` [风险点] `address` 仅建普通索引未设唯一约束，结合注册路径可导致同一外部地址关联多个账号，触发登录歧义或被滥用领取奖励。 [修复方案] 为 `address` 增加唯一约束（允许 NULL），并在注册时以唯一冲突做幂等返回。
+
+- [登录奖励触发面] `backend/socket_handlers/common.py:355` [风险点] Socket `authenticate` 直接调用 `handle_login`，任意建立 socket 连接即可触发每日奖励逻辑，扩大攻击面（脚本化连接触发奖励/压测）。 [修复方案] 将奖励触发与连接认证解耦（例如引入签名校验、单独的“领取奖励”接口或风控限流），并对 socket 认证路径单独加限流/风控。
+
+- [资产结算幂等性] `backend/services/settlement_service.py:17` [风险点] 结算流程仅依赖事务 `commit/rollback`，缺乏幂等键/结算阶段标记，断线重试或重复调用可能导致重复 unlock/加减余额。 [修复方案] 引入结算记录表与幂等键（game_session_id + player_id + settlement_type），或在 `game_sessions` 增加结算状态字段与乐观锁，保证“至多一次”执行。
+
+- [德州动作金额类型] `backend/services/texas_service.py:155` [风险点] `player_move` 使用 `amount: float`，与引擎筹码整数体系不一致，可能引发浮点舍入/截断导致最小加注校验与筹码扣减不一致。 [修复方案] 全链路使用整数或 Decimal（入参校验并强制转换/拒绝小数），保证筹码计算精确。
+
+- [聊天持久化可靠性] `backend/games/base.py:203` [风险点] 广播先行、数据库持久化后行；若持久化失败会产生“已广播但不可追溯”的聊天记录缺失，且异常仅 sleep 继续，缺少重试/死信队列。 [修复方案] 引入持久化队列与失败重试/死信机制；必要时先持久化再广播或写入本地 WAL。
+
+- [狼人信息暴露] `backend/games/werewolf/werewolf_game.py:127` [风险点] `DeathEvent.to_dict()` 对外返回 `wallet_address`，且状态输出中包含钱包地址字段，可能导致对外观战/非同局玩家识别真实身份。 [修复方案] 对外接口输出进行脱敏（仅内部服务使用 wallet_address），对 spectator/公开接口移除或映射为匿名标识。
+

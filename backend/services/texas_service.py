@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional, Dict, Any
 
 from ..config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
@@ -47,6 +47,25 @@ class TexasService(BaseService):
     def _poker_spectator_room(self, table_id: str) -> str:
         return f"{self.POKER_SPECTATOR_ROOM_PREFIX}{table_id}"
 
+    @staticmethod
+    def _coerce_raise_amount(amount: Any) -> int:
+        """Validate and coerce raise amount to integer chips."""
+        if isinstance(amount, bool):
+            raise ValueError("Raise amount must be a positive integer")
+
+        try:
+            decimal_amount = Decimal(str(amount))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError("Invalid raise amount")
+
+        if decimal_amount <= 0:
+            raise ValueError("Raise amount must be greater than zero")
+
+        if decimal_amount != decimal_amount.to_integral_value():
+            raise ValueError("Raise amount must be an integer number of chips")
+
+        return int(decimal_amount)
+
     async def broadcast_state(self, table_id: str) -> None:
         """Broadcast poker state with masked + private payloads."""
         table = self._state.poker_tables.get(table_id)
@@ -64,7 +83,6 @@ class TexasService(BaseService):
             public_players.append(
                 {
                     "sid": player_sid,
-                    "wallet_address": player.wallet_address,
                     "nickname": player.nickname,
                     "chips": player.chips,
                     "current_bet": player.current_bet,
@@ -152,7 +170,7 @@ class TexasService(BaseService):
         asyncio.create_task(table.save_checkpoint("hand_start"))
         await self.broadcast_state(table_id)
 
-    async def player_move(self, table_id: str, sid: str, action: str, amount: float = 0, chat_message: Optional[str] = None) -> None:
+    async def player_move(self, table_id: str, sid: str, action: str, amount: Any = 0, chat_message: Optional[str] = None) -> None:
         if not table_id or table_id not in self._state.poker_tables:
             await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
             return
@@ -163,7 +181,11 @@ class TexasService(BaseService):
         table = self._state.poker_tables[table_id]
         action_kwargs = {}
         if action == "raise":
-            action_kwargs["amount"] = amount
+            try:
+                action_kwargs["amount"] = self._coerce_raise_amount(amount)
+            except ValueError as exc:
+                await self._sio.emit("error", {"message": str(exc)}, room=sid)
+                return
         if chat_message:
             action_kwargs["message"] = chat_message
 

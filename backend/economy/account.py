@@ -587,21 +587,9 @@ async def resolve_player_id(login_key: str, db_session: AsyncSession) -> str:
         if player_id:
             return player_id
 
-    # Fallback: treat key as user-defined external address.
-    by_address_stmt = select(UserLedger.wallet_address).where(
-        UserLedger.address.isnot(None),
-        UserLedger.address == normalized_key,
-    )
-    by_address_result = await db_session.execute(by_address_stmt)
-    matches = by_address_result.scalars().all()
-
-    if not matches:
-        raise UserNotFoundError(f"User not found: {normalized_key}")
-    if len(matches) > 1:
-        raise AmbiguousLoginIdentifierError(
-            "Address matches multiple users, please login with player_id"
-        )
-    return matches[0]
+    # Address-based login is intentionally de-emphasized in current non-web3 mode.
+    # Keep the field as metadata only and require canonical player_id login.
+    raise UserNotFoundError(f"User not found: {normalized_key}. Please login with player_id")
 
 
 async def log_transaction(
@@ -705,21 +693,6 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
     # Helper to encapsulate registration logic
     async def _perform_registration():
         async with get_async_db_session() as db:
-            # Address can be used as re-login identifier, so keep it unique when provided.
-            if address:
-                existing_stmt = select(UserLedger).where(
-                    UserLedger.address.isnot(None),
-                    UserLedger.address == address,
-                )
-                existing_result = await db.execute(existing_stmt)
-                existing_user = existing_result.scalar_one_or_none()
-                if existing_user:
-                    return {
-                        'status': 'exists',
-                        'user': _serialize_user(existing_user),
-                        'local_debug_mode': is_local_debug_mode()
-                    }
-
             # Generate collision-safe system player id
             player_id = _generate_player_id()
             while True:
@@ -745,10 +718,6 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
             await db.flush()  # Generate ID for transaction logging
             await db.refresh(new_user)
 
-            # Update cache
-            await set_cached_balance(new_user.wallet_address, new_user.offchain_balance, new_user.locked_balance)
-            await invalidate_leaderboard_cache()
-
             # Log initial balance transaction
             if not is_local_debug_mode():
                 await log_transaction(
@@ -766,22 +735,24 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
             await db.commit()
             await db.refresh(new_user)
 
+            # Update cache after commit to avoid publishing uncommitted state.
+            await set_cached_balance(new_user.wallet_address, new_user.offchain_balance, new_user.locked_balance)
+            await invalidate_leaderboard_cache()
+
             return {
                 'status': 'registered',
                 'user': _serialize_user(new_user),
                 'local_debug_mode': is_local_debug_mode()
             }
 
-    # Apply distributed lock if address is provided to prevent race conditions
-    if address:
-        async with redis_manager.lock(f"register:{address}", timeout=5):
-            return await _perform_registration()
-    else:
+    # Apply distributed lock for concurrency control (address or name).
+    lock_key = address or f"name:{player_name.lower()}"
+    async with redis_manager.lock(f"register:{lock_key}", timeout=5):
         return await _perform_registration()
 
 
 @redis_manager.distributed_lock("lock:account:{login_key}", timeout=5)
-async def handle_login(login_key: str) -> Dict:
+async def handle_login(login_key: str, grant_reward: bool = True) -> Dict:
     """
     Handle user login with daily reward check using UserLedger.
     
@@ -791,7 +762,8 @@ async def handle_login(login_key: str) -> Dict:
     to virtual balance and updates last_login_date.
     
     Args:
-        login_key: player_id or optional address specified at registration
+        login_key: canonical player_id
+        grant_reward: Whether to run daily reward mutation flow
         
     Returns:
         Dict with login status and reward information
@@ -802,6 +774,14 @@ async def handle_login(login_key: str) -> Dict:
     async with get_async_db_session() as db:
         player_id = await resolve_player_id(login_key, db)
         user = await get_user_with_validation(player_id, db)
+
+        if not grant_reward:
+            return {
+                'status': 'success',
+                'reward_granted': False,
+                'reward_amount': "0",
+                'user': _serialize_user(user)
+            }
 
         now_utc = datetime.utcnow()
         today_utc = now_utc.date()

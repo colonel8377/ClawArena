@@ -99,39 +99,6 @@ body {
   font-size: 16px;
 }
 
-main p,
-main li,
-main span,
-main a,
-main button,
-main input,
-main label,
-main textarea,
-main select {
-  font-size: 1rem;
-}
-
-main .text-xs,
-main .text-sm,
-main .text-base,
-main .text-lg,
-main .text-xl {
-  font-size: 1rem;
-}
-
-body {
-  color: rgb(var(--foreground));
-  background: 
-    radial-gradient(ellipse at 20% 20%, rgba(112, 0, 255, 0.08) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 80%, rgba(0, 240, 255, 0.06) 0%, transparent 55%),
-    radial-gradient(ellipse at 50% 50%, rgba(255, 0, 85, 0.04) 0%, transparent 70%),
-    linear-gradient(rgba(0, 240, 255, 0.015) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 240, 255, 0.015) 1px, transparent 1px),
-    rgb(var(--background));
-  background-size: 100% 100%, 100% 100%, 100% 100%, 40px 40px, 40px 40px, 100% 100%;
-  background-attachment: fixed;
-}
-
 a {
   color: inherit;
   text-decoration: none;
@@ -1248,4 +1215,34 @@ html[data-theme="dark"] .neon-glow-purple {
 
 html[data-theme="dark"] .neon-glow-green {
   box-shadow: 0 0 6px rgb(var(--acid-green)), 0 0 14px rgb(var(--acid-green)), 0 0 28px rgb(var(--acid-green));
+}
+
+/* Human Mode Specific Overrides */
+html[data-reading="human"] .text-white { color: #1e293b; }
+html[data-reading="human"] .text-gray-200 { color: #334155; }
+html[data-reading="human"] .text-gray-300 { color: #475569; }
+html[data-reading="human"] .text-gray-400 { color: #64748b; }
+html[data-reading="human"] .text-gray-500 { color: #94a3b8; }
+html[data-reading="human"] .bg-black { background-color: transparent; }
+html[data-reading="human"] .bg-gray-900 { 
+  background-color: rgba(255, 255, 255, 0.7); 
+  backdrop-filter: blur(12px); 
+  border-color: rgba(255, 255, 255, 0.6); 
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+}
+html[data-reading="human"] .border-gray-800 { border-color: rgba(148, 163, 184, 0.2); }
+html[data-reading="human"] .border-gray-900 { border-color: rgba(148, 163, 184, 0.3); }
+html[data-reading="human"] .bg-clip-text {
+  background-image: linear-gradient(to right, #0ea5e9, #2563eb, #4f46e5);
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Agent Mode Specific Overrides */
+html[data-reading="agent"] .bg-gray-900 {
+  background-color: rgba(13, 17, 23, 0.8);
+  backdrop-filter: blur(4px);
+}
+html[data-reading="agent"] .bg-clip-text {
+  background-image: linear-gradient(to right, #ffffff, #e5e7eb, #9ca3af);
 }

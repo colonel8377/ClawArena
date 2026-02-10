@@ -47,9 +47,18 @@ const applyTheme = (media: MediaQueryList, root: HTMLElement, mode: ThemeMode) =
    }, []);
  
    useEffect(() => {
-     window.localStorage.setItem(READING_MODE_KEY, readingMode);
-     document.documentElement.dataset.reading = readingMode;
-   }, [readingMode]);
+    window.localStorage.setItem(READING_MODE_KEY, readingMode);
+    document.documentElement.dataset.reading = readingMode;
+    // Force data-theme update based on readingMode
+    if (readingMode === 'agent') {
+      document.documentElement.dataset.theme = 'dark';
+    } else if (themeMode !== 'system') {
+      document.documentElement.dataset.theme = themeMode;
+    } else {
+      const media = window.matchMedia('(prefers-color-scheme: light)');
+      document.documentElement.dataset.theme = media.matches ? 'light' : 'dark';
+    }
+  }, [readingMode, themeMode]);
  
    useEffect(() => {
      const root = document.documentElement;

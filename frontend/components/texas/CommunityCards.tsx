@@ -11,7 +11,10 @@ interface CommunityCardsProps {
 
 export default function CommunityCards({ cards }: CommunityCardsProps) {
   return (
-    <div className="absolute top-[40%] left-1/2 -translate-x-1/2 flex gap-2">
+    <motion.div 
+      layout
+      className="absolute top-[40%] left-1/2 -translate-x-1/2 flex gap-2"
+    >
       {cards.map((card, i) => {
         const parsed = parseCard(card);
         if (!parsed) return null;
@@ -19,9 +22,10 @@ export default function CommunityCards({ cards }: CommunityCardsProps) {
         return (
           <motion.div
             key={`${card}-${i}`}
-            initial={{ scale: 0.8, opacity: 0, y: -20 }}
-            animate={{ scale: 1, opacity: 1, y: 0 }}
-            transition={{ type: 'spring', bounce: 0.5 }}
+            layout
+            initial={{ scale: 0, opacity: 0, rotateY: 90 }}
+            animate={{ scale: 1, opacity: 1, rotateY: 0 }}
+            transition={{ type: 'spring', bounce: 0.5, duration: 0.6 }}
           >
             <PlayingCard rank={parsed.rank} suit={parsed.suit} className="w-14 h-20 text-sm shadow-xl" />
           </motion.div>
@@ -33,6 +37,6 @@ export default function CommunityCards({ cards }: CommunityCardsProps) {
       {[...Array(5 - cards.length)].map((_, i) => (
         <div key={`empty-${i}`} className="w-14 h-20 border-2 border-dashed border-gray-700 rounded bg-black/20" />
       ))}
-    </div>
+    </motion.div>
   );
 }

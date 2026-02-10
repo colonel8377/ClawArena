@@ -32,7 +32,7 @@ from .connection import get_async_db_session, AsyncSessionLocal
 from .models import (
     GameSession, GamePlayer, GameHistory, ChatMessage,
     UserLedger, GameStatus, PlayerStatus,
-    GameSnapshot, get_chat_messages_by_session
+    get_chat_messages_by_session
 )
 
 logger = logging.getLogger(__name__)

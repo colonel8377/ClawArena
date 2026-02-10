@@ -54,6 +54,11 @@ ROLE_CONFIGURATIONS = {
 }
 
 
+# Rule toggles (kept default-compatible with current behavior)
+ALLOW_WITCH_DOUBLE_ACTION_SAME_NIGHT = False
+MAX_CHAT_MESSAGE_LENGTH = 300
+
+
 def get_setup(player_count: int) -> List[RoleType]:
     """
     Get the shuffled role list for a given player count.
@@ -105,3 +110,13 @@ def get_role_counts(player_count: int) -> dict:
         role_counts[role] = role_counts.get(role, 0) + 1
 
     return role_counts
+
+
+def allow_witch_double_action_same_night() -> bool:
+    """Whether witch can use antidote and poison in the same night."""
+    return ALLOW_WITCH_DOUBLE_ACTION_SAME_NIGHT
+
+
+def get_max_chat_message_length() -> int:
+    """Maximum accepted chat message length for werewolf text channels."""
+    return MAX_CHAT_MESSAGE_LENGTH

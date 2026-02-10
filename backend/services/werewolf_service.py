@@ -505,6 +505,29 @@ class WerewolfService(BaseService):
             self._state.werewolf_settlement_locks[game_id] = lock
         return lock
 
+    def _persist_timeout_audit(self, game_id: str, game_type: str, timeout_actions: list) -> None:
+        """Persist timeout default actions as lightweight system audit messages."""
+        for action in timeout_actions:
+            action_name = action.get("action", "unknown")
+            actor = action.get("actor_nickname", "unknown")
+            phase = action.get("phase", "unknown")
+            target = action.get("target_nickname")
+            target_part = f", target={target}" if target else ""
+
+            message = f"[timeout] phase={phase}, actor={actor}, action={action_name}{target_part}"
+
+            asyncio.create_task(
+                persistence_manager.save_chat_message(
+                    game_id=game_id,
+                    game_type=game_type,
+                    player_id="system",
+                    nickname="System",
+                    message=message,
+                    message_type="timeout_audit",
+                    metadata=action,
+                )
+            )
+
     async def _handle_game_end(self, game_id: str, winners: list) -> None:
         lock = self._get_settlement_lock(game_id)
         async with lock:
@@ -545,21 +568,35 @@ class WerewolfService(BaseService):
 
             try:
                 if game:
-                    await self._settlement_service.refund_werewolf_entry_fees(
-                        game.players,
+                    should_refund = await redis_manager.mark_settlement_stage_once(
                         game_id,
-                        description="Werewolf entry fee principal unlock",
+                        "werewolf_refund",
                     )
+                    if should_refund:
+                        await self._settlement_service.refund_werewolf_entry_fees(
+                            game.players,
+                            game_id,
+                            description="Werewolf entry fee principal unlock",
+                        )
+                    else:
+                        print(f"[WerewolfSettle] Skip duplicate refund stage for game {game_id}")
 
                 if game and winners:
-                    print(
-                        f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners"
+                    should_prize = await redis_manager.mark_settlement_stage_once(
+                        game_id,
+                        "werewolf_prize",
                     )
-                    await self._settlement_service.award_werewolf_prizes(
-                        winners,
-                        prize_pool,
-                        description="Werewolf game prize",
-                    )
+                    if should_prize:
+                        print(
+                            f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners"
+                        )
+                        await self._settlement_service.award_werewolf_prizes(
+                            winners,
+                            prize_pool,
+                            description="Werewolf game prize",
+                        )
+                    else:
+                        print(f"[WerewolfSettle] Skip duplicate prize stage for game {game_id}")
 
                 elif game and not winners:
                     print("Werewolf game ended without winners, refunding entry fees")
@@ -596,14 +633,21 @@ class WerewolfService(BaseService):
 
             try:
                 if game:
-                    await self._settlement_service.refund_werewolf_entry_fees(
-                        game.players,
+                    should_refund = await redis_manager.mark_settlement_stage_once(
                         game_id,
-                        description="Werewolf game refund - aborted",
+                        "werewolf_refund",
                     )
-                    print(
-                        f"Werewolf game aborted: refunded entry fees ({reason or 'no reason'})"
-                    )
+                    if should_refund:
+                        await self._settlement_service.refund_werewolf_entry_fees(
+                            game.players,
+                            game_id,
+                            description="Werewolf game refund - aborted",
+                        )
+                        print(
+                            f"Werewolf game aborted: refunded entry fees ({reason or 'no reason'})"
+                        )
+                    else:
+                        print(f"[WerewolfSettle] Skip duplicate abort refund stage for game {game_id}")
                 else:
                     print("No game data found for aborted refund")
             except Exception as exc:
@@ -642,6 +686,9 @@ class WerewolfService(BaseService):
                         old_phase = game.phase.value
                         result = await game.handle_phase_timeout()
                         new_phase = result.get("new_phase", game.phase.value)
+                        timeout_actions = result.get("timeout_actions", []) or []
+                        if timeout_actions:
+                            self._persist_timeout_audit(game_id, game.game_type, timeout_actions)
 
                         is_significant = (
                             new_phase in WEREWOLF_SIGNIFICANT_PHASES

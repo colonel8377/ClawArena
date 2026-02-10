@@ -16,7 +16,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Set
 
-from ...config.werewolf_config import get_setup
+from ...config.werewolf_config import (
+    allow_witch_double_action_same_night,
+    get_max_chat_message_length,
+    get_setup,
+)
 from .roles import (
     RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
@@ -195,6 +199,9 @@ class WerewolfGame(BaseGame):
         # Pending deaths (resolved at phase transitions)
         self.pending_deaths: List[DeathEvent] = []
         self.last_night_deaths: List[DeathEvent] = []  # For announcement
+
+        # Timeout audit buffer (per timeout tick)
+        self._timeout_actions: List[Dict[str, Any]] = []
         
         # Chat history (public and wolf-private)
         self.public_chat: List[ChatMessage] = []
@@ -727,7 +734,8 @@ class WerewolfGame(BaseGame):
         player = self._get_player_by_sid(sid)
         if not player:
             return {'success': False, 'error': 'Player not found'}
-        
+
+        message = self._sanitize_chat_message(message)
         if not message:
             return {'success': False, 'error': 'Message required'}
         
@@ -763,6 +771,7 @@ class WerewolfGame(BaseGame):
         if self.phase not in [WerewolfPhase.NIGHT_WOLF_DISCUSSION, WerewolfPhase.NIGHT_WOLF_VOTING]:
             return {'success': False, 'error': 'Wolf chat only available during night wolf phases'}
         
+        message = self._sanitize_chat_message(message)
         if not message:
             return {'success': False, 'error': 'Message required'}
         
@@ -851,8 +860,8 @@ class WerewolfGame(BaseGame):
         if not isinstance(player.get('role'), Witch):
             return {'success': False, 'error': 'Not a witch'}
         
-        # Can't use both potions same night
-        if self.witch_action.get('poison'):
+        # Can't use both potions same night unless explicitly allowed
+        if not allow_witch_double_action_same_night() and self.witch_action.get('poison'):
             return {'success': False, 'error': 'Cannot use both potions same night'}
         
         # Must have antidote
@@ -879,8 +888,8 @@ class WerewolfGame(BaseGame):
         if not isinstance(player.get('role'), Witch):
             return {'success': False, 'error': 'Not a witch'}
         
-        # Can't use both potions same night
-        if self.witch_action.get('save'):
+        # Can't use both potions same night unless explicitly allowed
+        if not allow_witch_double_action_same_night() and self.witch_action.get('save'):
             return {'success': False, 'error': 'Cannot use both potions same night'}
         
         target_sid = kwargs.get('target_sid')
@@ -1237,6 +1246,7 @@ class WerewolfGame(BaseGame):
     async def handle_phase_timeout(self) -> Dict:
         """Handle phase timeout - execute default actions and advance."""
         timed_out_players = []
+        self._timeout_actions = []
         
         for sid, has_acted in self._pending_actions.items():
             if not has_acted:
@@ -1251,7 +1261,9 @@ class WerewolfGame(BaseGame):
                         player['status'] = 'zombie'
                     
                     # Execute default action
-                    await self._execute_default_action(player)
+                    action_info = await self._execute_default_action(player)
+                    if action_info:
+                        self._timeout_actions.append(action_info)
                     
                     if self._on_timeout:
                         await self._on_timeout(
@@ -1263,29 +1275,38 @@ class WerewolfGame(BaseGame):
         
         # Check abort condition
         if self.get_zombie_ratio() > ABORT_ZOMBIE_THRESHOLD:
-            return await self.abort_game("More than 50% of players are inactive")
+            result = await self.abort_game("More than 50% of players are inactive")
+            if self._timeout_actions:
+                result['timeout_actions'] = self._timeout_actions
+            return result
 
         # Day speaking timeout is per speaker; continue same phase when another
         # speaker is pending rather than jumping directly to voting.
         if self.phase == WerewolfPhase.DAY_SPEAKING and self._pending_actions:
             self._phase_start_time = datetime.utcnow()
-            return {
+            result = {
                 'success': True,
                 'old_phase': self.phase.value,
                 'new_phase': self.phase.value,
                 'day_count': self.day_count,
                 'timed_out_players': [p['nickname'] for p in timed_out_players]
             }
+            if self._timeout_actions:
+                result['timeout_actions'] = self._timeout_actions
+            return result
         
         # Advance phase
         result = self.advance_phase()
         result['timed_out_players'] = [p['nickname'] for p in timed_out_players]
+        if self._timeout_actions:
+            result['timeout_actions'] = self._timeout_actions
         
         return result
     
-    async def _execute_default_action(self, player: Dict):
+    async def _execute_default_action(self, player: Dict) -> Optional[Dict[str, Any]]:
         """Execute default action for timed-out player."""
         sid = player['sid']
+        action_info: Optional[Dict[str, Any]] = None
         
         if self.phase == WerewolfPhase.NIGHT_WOLF_DISCUSSION:
             # Just mark as participated
@@ -1298,8 +1319,14 @@ class WerewolfGame(BaseGame):
                 if non_wolves:
                     target = random.choice(non_wolves)
                     self.wolf_vote[sid] = target['sid']
-                    # Log random decision for audit
-                    print(f"[AUDIT] Random wolf vote for {player['nickname']} (sid={sid}) -> {target['nickname']}")
+                    action_info = {
+                        'phase': self.phase.value,
+                        'actor_sid': sid,
+                        'actor_nickname': player['nickname'],
+                        'action': 'night_kill_random',
+                        'target_sid': target['sid'],
+                        'target_nickname': target['nickname'],
+                    }
         
         elif self.phase == WerewolfPhase.NIGHT_SEER:
             if isinstance(player.get('role'), Seer):
@@ -1308,22 +1335,52 @@ class WerewolfGame(BaseGame):
                 if others:
                     target = random.choice(others)
                     self.seer_check = target['sid']
-                    # Log random decision for audit
-                    print(f"[AUDIT] Random seer check for {player['nickname']} (sid={sid}) -> {target['nickname']}")
+                    action_info = {
+                        'phase': self.phase.value,
+                        'actor_sid': sid,
+                        'actor_nickname': player['nickname'],
+                        'action': 'seer_check_random',
+                        'target_sid': target['sid'],
+                        'target_nickname': target['nickname'],
+                    }
         
         elif self.phase == WerewolfPhase.NIGHT_WITCH:
             # Witch skips by default
             self.witch_action['skip'] = True
+            action_info = {
+                'phase': self.phase.value,
+                'actor_sid': sid,
+                'actor_nickname': player['nickname'],
+                'action': 'witch_skip_timeout',
+                'target_sid': None,
+                'target_nickname': None,
+            }
         
         elif self.phase in [WerewolfPhase.NIGHT_HUNTER, WerewolfPhase.DAY_HUNTER]:
             # Hunter doesn't shoot by default on timeout
             self.hunter_shot = None
+            action_info = {
+                'phase': self.phase.value,
+                'actor_sid': sid,
+                'actor_nickname': player['nickname'],
+                'action': 'hunter_skip_timeout',
+                'target_sid': None,
+                'target_nickname': None,
+            }
         
         elif self.phase == WerewolfPhase.DAY_SPEAKING:
             # Skip speech, move to next
             self.speakers_done.add(sid)
             self.current_speaker_index += 1
             self._advance_speaking_turn()
+            action_info = {
+                'phase': self.phase.value,
+                'actor_sid': sid,
+                'actor_nickname': player['nickname'],
+                'action': 'speak_skip_timeout',
+                'target_sid': None,
+                'target_nickname': None,
+            }
         
         elif self.phase == WerewolfPhase.DAY_VOTING:
             # Random vote
@@ -1331,8 +1388,27 @@ class WerewolfGame(BaseGame):
             if others:
                 target = random.choice(others)
                 self.votes[sid] = target['sid']
-                # Log random decision for audit
-                print(f"[AUDIT] Random day vote for {player['nickname']} (sid={sid}) -> {target['nickname']}")
+                action_info = {
+                    'phase': self.phase.value,
+                    'actor_sid': sid,
+                    'actor_nickname': player['nickname'],
+                    'action': 'vote_random',
+                    'target_sid': target['sid'],
+                    'target_nickname': target['nickname'],
+                }
+
+        return action_info
+
+    def _sanitize_chat_message(self, message: str) -> str:
+        """Normalize and bound chat message content."""
+        if message is None:
+            return ""
+        normalized = "".join(ch for ch in str(message) if ch.isprintable())
+        normalized = normalized.strip()
+        if not normalized:
+            return ""
+        max_len = get_max_chat_message_length()
+        return normalized[:max_len]
     
     async def abort_game(self, reason: str = "Game aborted") -> Dict:
         """Abort the game."""

@@ -9,6 +9,7 @@ import PlayerSeat from '@/components/texas/PlayerSeat';
 import CommunityCards from '@/components/texas/CommunityCards';
 import ChipStream from '@/components/texas/ChipStream';
 import ActionTimeline from '@/components/texas/ActionTimeline';
+import { motion } from 'framer-motion';
 
 export default function TexasTablePage() {
   const { tableId } = useParams() as { tableId: string };
@@ -57,9 +58,21 @@ export default function TexasTablePage() {
         <CommunityCards cards={gameState.community_cards || []} />
         
         {/* Pot Display */}
-        <div className="absolute top-[35%] left-1/2 -translate-x-1/2 bg-black/60 px-4 py-1 rounded-full border border-green-800 text-green-400 font-bold z-10">
-          POT: ${gameState.pot}
-        </div>
+        <motion.div 
+          key={gameState.pot}
+          initial={{ scale: 1.1, textShadow: "0 0 10px #22c55e" }}
+          animate={{ scale: 1, textShadow: "0 0 0px #22c55e" }}
+          className="absolute top-[35%] left-1/2 -translate-x-1/2 flex flex-col items-center z-10"
+        >
+          <div className="bg-black/60 px-4 py-1 rounded-full border border-green-800 text-green-400 font-bold">
+            POT: ${gameState.pot}
+          </div>
+          {(gameState.small_blind && gameState.big_blind) && (
+            <div className="mt-1 text-[10px] text-gray-400 font-mono bg-black/40 px-2 py-0.5 rounded">
+              Blinds: ${gameState.small_blind}/${gameState.big_blind}
+            </div>
+          )}
+        </motion.div>
 
         {/* Players */}
         {gameState.players.map((player, idx) => (
@@ -69,6 +82,8 @@ export default function TexasTablePage() {
             index={idx} 
             totalPlayers={gameState.players.length}
             communityCards={gameState.community_cards}
+            isCurrentTurn={gameState.current_player === player.sid}
+            isDealer={gameState.dealer_position === idx}
           />
         ))}
 

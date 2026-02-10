@@ -54,10 +54,10 @@ export default function ChipStream({ players }: ChipStreamProps) {
         {chips.map((chip) => (
           <motion.div
             key={chip.id}
-            initial={{ left: chip.from.x, top: chip.from.y, opacity: 0, scale: 0.5 }}
-            animate={{ left: chip.to.x, top: chip.to.y, opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.5 }}
-            transition={{ duration: 0.6, ease: "easeOut" }}
+            initial={{ left: chip.from.x, top: chip.from.y, opacity: 0, scale: 0.5, rotate: 0 }}
+            animate={{ left: chip.to.x, top: chip.to.y, opacity: 1, scale: 1, rotate: 360 }}
+            exit={{ opacity: 0, scale: 0.2 }}
+            transition={{ duration: 0.8, ease: "easeInOut" }}
             onAnimationComplete={() => {
               setChips((prev) => prev.filter((c) => c.id !== chip.id));
             }}

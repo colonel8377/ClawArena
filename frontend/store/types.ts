@@ -7,7 +7,6 @@ export interface SpectatorPlayer {
   hole_cards?: string[]; // Only visible in Reveal Mode or Showdown
   current_bet?: number;
   last_action?: string;
-  wallet_address?: string;
 }
 
 export interface TexasGameState {
@@ -32,7 +31,6 @@ export interface WerewolfPlayer {
   role?: string | { name: string; type: string }; // Role info
   is_alive: boolean;
   voted_for?: string; // SID of target
-  wallet_address?: string;
 }
 
 export interface WerewolfGameState {

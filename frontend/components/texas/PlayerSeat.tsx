@@ -6,17 +6,18 @@ import PlayingCard from '../poker/PlayingCard';
 import { parseCard } from '../poker/utils';
 import { getSeatPosition } from './seatPositions';
 import EquityGauge from './EquityGauge';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface PlayerSeatProps {
   player: SpectatorPlayer;
   index: number;
   totalPlayers: number;
   communityCards: string[];
+  isCurrentTurn?: boolean;
+  isDealer?: boolean;
 }
 
-export default function PlayerSeat({ player, index, totalPlayers, communityCards }: PlayerSeatProps) {
-  const pos = getSeatPosition(index, totalPlayers);
+export default function PlayerSeat({ player, index, totalPlayers, communityCards, isCurrentTurn, isDealer }: PlayerSeatProps) {  const pos = getSeatPosition(index, totalPlayers);
   const isFolded = player.status === 'folded';
   const isActive = player.status === 'active' || player.status === 'allin';
   

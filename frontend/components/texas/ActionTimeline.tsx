@@ -17,9 +17,10 @@ export default function ActionTimeline() {
         <AnimatePresence initial={false}>
           {[...logs].reverse().map((log, i) => (
             <motion.div
+              layout
               key={`${i}-${log.substring(0, 10)}`}
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0, x: -20, height: 0 }}
+              animate={{ opacity: 1, x: 0, height: 'auto' }}
               className="text-xs font-mono"
             >
               <span className="text-green-600 mr-2">[{new Date().toLocaleTimeString().split(' ')[0]}]</span>

@@ -49,6 +49,7 @@ REDIS_PERSISTENCE_PREFIX = 'arena:persist:'  # Legacy, for full state
 REDIS_GAME_CORE_PREFIX = 'arena:core:'       # Core game state (frequent updates)
 REDIS_INDEXER_PREFIX = 'arena:indexer:'      # Indexer state and dedup
 REDIS_BALANCE_PREFIX = 'arena:balance:'      # User balance cache
+REDIS_SETTLEMENT_PREFIX = 'arena:settlement:'  # Settlement idempotency keys
 
 # Timeouts and TTLs (seconds)
 SESSION_EXPIRY = 3600           # 1 hour
@@ -59,6 +60,7 @@ GAME_CORE_EXPIRY = 7200         # 2 hours (active game core state)
 NONCE_EXPIRY = 86400            # 24 hours
 EVENT_PROCESSING_LOCK_EXPIRY = 300  # 5 minutes
 PROCESSED_EVENT_EXPIRY = 86400 * 30  # 30 days
+SETTLEMENT_STAGE_EXPIRY = 86400 * 30  # 30 days
 LEADERBOARD_CACHE_EXPIRY = 60      # 1 minute
 REDIS_LEADERBOARD_KEY = 'arena:leaderboard:top10'
 BALANCE_CACHE_EXPIRY = int(os.getenv('BALANCE_CACHE_EXPIRY', '300'))  # 5 minutes
@@ -826,6 +828,31 @@ class RedisManager:
         except Exception as e:
             logger.error(f"Error marking event processed {event_id}: {e}")
             return False
+
+    # ========================================================================
+    # SETTLEMENT IDEMPOTENCY
+    # ========================================================================
+
+    async def mark_settlement_stage_once(self, game_id: str, stage: str) -> bool:
+        """
+        Mark settlement stage as completed once (SET NX).
+
+        Returns:
+            True if this call acquired stage ownership (first execution),
+            False if the stage was already marked before.
+            If Redis is unavailable, returns True to avoid blocking settlement.
+        """
+        if not await self.ping():
+            logger.warning("Redis unavailable - settlement idempotency degraded")
+            return True
+
+        try:
+            key = f"{REDIS_SETTLEMENT_PREFIX}{game_id}:{stage}"
+            created = await self._redis.set(key, "1", nx=True, ex=SETTLEMENT_STAGE_EXPIRY)
+            return bool(created)
+        except Exception as e:
+            logger.error(f"Error marking settlement stage {game_id}:{stage}: {e}")
+            return True
     
     # ========================================================================
     # ANTI-COLLUSION (Stub for Future Implementation)

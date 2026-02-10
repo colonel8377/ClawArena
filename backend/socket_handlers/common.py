@@ -4,12 +4,10 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
-from backend.games.werewolf.werewolf_game import WerewolfPhase
 from backend.app.anti_bot_manager import (
-    get_agent_instructions,
     verify_socket_auth,
 )
-
+from backend.games.werewolf.werewolf_game import WerewolfPhase
 
 POKER_SPECTATOR_ROOM_PREFIX = "spectate:poker:"
 WEREWOLF_SPECTATOR_ROOM_PREFIX = "spectate:werewolf:"
@@ -80,6 +78,26 @@ def _remove_spectator_subscription(
 def _is_read_only_session(state, sid: str) -> bool:
     session = state.player_sessions.get(sid) or {}
     return bool(session.get("read_only") or session.get("spectator_mode"))
+
+
+def _verify_reveal_permission(state, sid: str, game_type: str, room_id: str) -> bool:
+    """
+    Verify if a socket session has permission to reveal hidden state.
+    
+    This should be strictly controlled. Currently relies on 'read_only' flag 
+    set during connection (which might come from admin auth).
+    """
+    session = state.player_sessions.get(sid) or {}
+    
+    # Check if session is explicitly marked as read-only/spectator
+    is_spectator = bool(session.get("read_only") or session.get("spectator_mode"))
+    
+    # Audit log for security monitoring
+    status = "Granted" if is_spectator else "Denied"
+    agent_id = session.get('agent_id', 'unknown')
+    print(f"[RevealAccess] {status}: sid={sid}, game={game_type}:{room_id}, agent={agent_id}")
+    
+    return is_spectator
 
 
 async def _reject_if_read_only(sio, state, sid: str, action_name: str) -> bool:

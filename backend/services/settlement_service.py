@@ -24,13 +24,18 @@ class SettlementService:
         principal_description: str,
         win_description: str,
         loss_description: str,
+        seat_session_id: str = None,
     ) -> None:
         if not wallet_address:
             return
 
+        idempotency_key = f"texas_settle:{wallet_address}"
+        if seat_session_id:
+            idempotency_key += f":{seat_session_id}"
+
         should_settle = await redis_manager.mark_settlement_stage_once(
             table_id,
-            f"texas_settle:{wallet_address}",
+            idempotency_key,
         )
         if not should_settle:
             return
@@ -72,7 +77,7 @@ class SettlementService:
                 # Clear idempotency marker to allow retry
                 await redis_manager.clear_settlement_stage(
                     table_id,
-                    f"texas_settle:{wallet_address}",
+                    idempotency_key,
                 )
                 raise e
 

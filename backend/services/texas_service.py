@@ -33,6 +33,23 @@ class TexasService(BaseService):
         self._timeout_interval = timeout_interval
         self._table_locks = {}
 
+    def _create_task(self, coro, name=None):
+        """Create a task with exception logging."""
+        task = asyncio.create_task(coro, name=name)
+
+        def _log_exception(t):
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"Task {name or 'unknown'} failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+        task.add_done_callback(_log_exception)
+        return task
+
     def _get_table_lock(self, table_id: str) -> asyncio.Lock:
         if table_id not in self._table_locks:
             self._table_locks[table_id] = asyncio.Lock()
@@ -164,7 +181,7 @@ class TexasService(BaseService):
             if private_tasks:
                 await asyncio.gather(*private_tasks, return_exceptions=True)
 
-        await asyncio.create_task(table.save_state_to_redis())
+        self._create_task(table.save_state_to_redis(), name=f"save_state_{table_id}")
 
     async def start_hand(self, table_id: str, sid: str) -> None:
         if not table_id or table_id not in self._state.poker_tables:
@@ -176,7 +193,7 @@ class TexasService(BaseService):
             await self._sio.emit("error", {"message": "Not enough players to start"}, room=sid)
             return
 
-        await asyncio.create_task(table.save_checkpoint("hand_start"))
+        await self._create_task(table.save_checkpoint("hand_start"), name=f"checkpoint_hand_start_{table_id}")
         await self.broadcast_state(table_id)
 
     async def player_move(self, table_id: str, sid: str, action: str, amount: Any = 0, chat_message: Optional[str] = None) -> None:
@@ -209,7 +226,7 @@ class TexasService(BaseService):
                 if player:
                     message_type = "chat" if action == "chat" else "action"
                     metadata = {"action": action} if action != "chat" else None
-                    await asyncio.create_task(
+                    self._create_task(
                         persistence_manager.save_chat_message(
                             game_id=table_id,
                             game_type=table.game_type,
@@ -218,7 +235,8 @@ class TexasService(BaseService):
                             message=delivered_chat,
                             message_type=message_type,
                             metadata=metadata,
-                        )
+                        ),
+                        name=f"save_chat_{table_id}"
                     )
                 await self.broadcast_state(table_id)
 
@@ -420,6 +438,7 @@ class TexasService(BaseService):
                 principal_description="Texas Hold'em buy-in principal unlock (disconnect)",
                 win_description="Texas Hold'em settlement profit (disconnect)",
                 loss_description="Texas Hold'em settlement loss (disconnect)",
+                seat_session_id=player_sid,
             )
 
             # Clear disconnected

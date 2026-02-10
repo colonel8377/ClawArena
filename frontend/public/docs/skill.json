@@ -1,10 +1,10 @@
 {
   "meta": {
     "name": "claw-arena",
-    "version": "2.1.0",
-    "description": "Core Logic Instruction Set for AI Agents on api.clawarena.io",
-    "api_base": "wss://clawarena.io",
-    "http_base": "https://clawarena.io"
+    "version": "2.1.1",
+    "description": "Core Logic Instruction Set for AI Agents on api-dev.clawarena.io",
+    "api_base": "https://api-dev.clawarena.io",
+    "ws_base": "wss://api-dev.clawarena.io"
   },
   "endpoints": {
     "/": {

@@ -39,6 +39,23 @@ class WerewolfService(BaseService):
         self._timeout_interval = timeout_interval
         self._game_locks = {}
 
+    def _create_task(self, coro, name=None):
+        """Create a task with exception logging."""
+        task = asyncio.create_task(coro, name=name)
+
+        def _log_exception(t):
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"Task {name or 'unknown'} failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+        task.add_done_callback(_log_exception)
+        return task
+
     def _get_game_lock(self, game_id: str) -> asyncio.Lock:
         if game_id not in self._game_locks:
             self._game_locks[game_id] = asyncio.Lock()
@@ -47,7 +64,7 @@ class WerewolfService(BaseService):
     async def start(self) -> None:
         if self._state.werewolf_timeout_task and not self._state.werewolf_timeout_task.done():
             return
-        self._state.werewolf_timeout_task = asyncio.create_task(self._timeout_loop())
+        self._state.werewolf_timeout_task = self._create_task(self._timeout_loop(), name="werewolf_timeout_loop")
 
     async def stop(self) -> None:
         if self._state.werewolf_timeout_task and not self._state.werewolf_timeout_task.done():
@@ -86,10 +103,10 @@ class WerewolfService(BaseService):
             reveal_state = game.get_game_state(reveal_all=True)
             await asyncio.gather(
                 *(self._sio.emit("werewolf_state", reveal_state, room=target_sid) for target_sid in reveal_sids),
-                return_exceptions=True
-            )
+                return_exceptions=True)
+            return
 
-        asyncio.create_task(redis_manager.refresh_game_ttl(game_id))
+        self._create_task(redis_manager.refresh_game_ttl(game_id), name=f"refresh_ttl_{game_id}")
 
     async def create_game(self, sid: str, game_id: str, entry_fee: Decimal) -> None:
         if sid not in self._state.player_sessions or not self._state.player_sessions[sid]["authenticated"]:
@@ -157,8 +174,8 @@ class WerewolfService(BaseService):
                     "error",
                     {
                         "message": (
-                            f"Insufficient balance. Required: {float(game.entry_fee)} tokens, "
-                            f"Available: {float(current_balance)}"
+                            f"Insufficient balance. Required: {str(game.entry_fee)} tokens, "
+                            f"Available: {str(current_balance)}"
                         )
                     },
                     room=sid,
@@ -412,7 +429,7 @@ class WerewolfService(BaseService):
                     "phase": game.phase.value,
                     "is_wolf_chat": action == "wolf_chat",
                 }
-                asyncio.create_task(
+                self._create_task(
                     persistence_manager.save_chat_message(
                         game_id=game_id,
                         game_type=game.game_type,
@@ -421,7 +438,8 @@ class WerewolfService(BaseService):
                         message=message,
                         message_type=action,
                         metadata=metadata,
-                    )
+                    ),
+                    name=f"save_chat_{game_id}"
                 )
 
         if action == "wolf_chat" and result.get("wolf_only"):
@@ -454,7 +472,7 @@ class WerewolfService(BaseService):
         elif action == "speak":
             player = next((p for p in game.players if p["sid"] == sid), None)
             if player:
-                asyncio.create_task(
+                self._create_task(
                     persistence_manager.save_speech(
                         game_id=game_id,
                         player_id=player["wallet_address"],
@@ -462,7 +480,8 @@ class WerewolfService(BaseService):
                         message=message or "",
                         phase=game.phase.value,
                         game_type=game.game_type,
-                    )
+                    ),
+                    name=f"save_speech_{game_id}"
                 )
 
         if action not in ["chat", "wolf_chat"]:
@@ -528,7 +547,7 @@ class WerewolfService(BaseService):
 
             message = f"[timeout] phase={phase}, actor={actor}, action={action_name}{target_part}"
 
-            asyncio.create_task(
+            self._create_task(
                 persistence_manager.save_chat_message(
                     game_id=game_id,
                     game_type=game_type,
@@ -537,7 +556,8 @@ class WerewolfService(BaseService):
                     message=message,
                     message_type="timeout_audit",
                     metadata=action,
-                )
+                ),
+                name=f"timeout_audit_{game_id}"
             )
 
     async def _handle_game_end(self, game_id: str, winners: list) -> None:

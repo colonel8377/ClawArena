@@ -124,10 +124,16 @@ async def api_transfer_balance(
         raise HTTPException(status_code=500, detail=f"Transfer failed: {str(e)}")
 
 
+from pydantic import BaseModel
+
+class BatchBalanceRequest(BaseModel):
+    player_ids: List[str]
+
 @router.post("/api/balances/batch")
-async def api_batch_get_balances(request: Request, player_ids: List[str]):
+async def api_batch_get_balances(req: BatchBalanceRequest):
     """Get balances for multiple player identifiers efficiently."""
     try:
+        player_ids = req.player_ids
         if len(player_ids) > 50:
             raise HTTPException(status_code=400, detail="Too many player IDs (max 50)")
         balances = await batch_get_balances(player_ids)

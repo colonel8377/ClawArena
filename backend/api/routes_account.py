@@ -5,16 +5,18 @@ from decimal import Decimal
 from typing import List, Optional
 
 from fastapi import APIRouter, Request, HTTPException
-from economy.account import (
+from ..economy.account import (
     register_user, handle_login, get_balance,
     get_account_summary, transfer_balance, batch_get_balances,
     InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError,
     get_leaderboard
 )
+from ..app.limiter import limiter
 
 router = APIRouter()
 
 @router.post("/api/register")
+@limiter.limit("5/minute")
 async def api_register(request: Request, player_name: str, address: Optional[str] = None):
     """
     Register a new user account.
@@ -31,6 +33,7 @@ async def api_register(request: Request, player_name: str, address: Optional[str
 
 
 @router.post("/api/login")
+@limiter.limit("10/minute")
 async def api_login(
     request: Request,
     login_key: Optional[str] = None,
@@ -57,6 +60,7 @@ async def api_login(
 
 
 @router.get("/api/balance/{player_id}")
+@limiter.limit("60/minute")
 async def api_get_balance(request: Request, player_id: str):
     """Get user's current balance."""
     try:
@@ -72,6 +76,7 @@ async def api_get_balance(request: Request, player_id: str):
 
 
 @router.get("/api/account/{player_id}")
+@limiter.limit("30/minute")
 async def api_get_account_summary(request: Request, player_id: str):
     """Get comprehensive account summary including validation and recent transactions."""
     try:
@@ -84,6 +89,7 @@ async def api_get_account_summary(request: Request, player_id: str):
 
 
 @router.post("/api/transfer")
+@limiter.limit("10/minute")
 async def api_transfer_balance(request: Request, from_player_id: str, to_player_id: str, amount: float):
     """Transfer balance between two accounts."""
     try:
@@ -114,6 +120,7 @@ async def api_batch_get_balances(request: Request, player_ids: List[str]):
 
 
 @router.get("/api/leaderboard")
+@limiter.limit("20/minute")
 async def api_get_leaderboard(request: Request, limit: int = 10):
     """Get top players ranked by off-chain token balance."""
     try:

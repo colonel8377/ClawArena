@@ -10,7 +10,7 @@ import uvicorn
 import asyncio
 from typing import Dict, Any
 
-from config.config import (
+from config.arena_config import (
     SOCKET_IO_LOGGER,
     SOCKET_ENGINEIO_LOGGER,
 )
@@ -23,10 +23,10 @@ from services.texas_service import TexasService
 from services.werewolf_service import WerewolfService
 from services.settlement_service import SettlementService
 
-from socket.common import register_common_handlers
-from socket.texas import register_texas_handlers
-from socket.werewolf import register_werewolf_handlers
-from socket.matchmaking import register_matchmaking_handlers
+from socket_handlers.common import register_common_handlers
+from socket_handlers.matchmaking import register_matchmaking_handlers
+from socket_handlers.texas import register_texas_handlers
+from socket_handlers.werewolf import register_werewolf_handlers
 
 
 # Werewolf game timeout check interval (seconds)
@@ -64,7 +64,7 @@ werewolf_service = WerewolfService(
 register_common_handlers(sio, runtime_state)
 register_texas_handlers(sio, runtime_state, texas_service)
 register_werewolf_handlers(sio, runtime_state, werewolf_service)
-register_matchmaking_handlers(sio, runtime_state)
+register_matchmaking_handlers(sio, runtime_state, texas_service, werewolf_service)
 
 
 @app.on_event("startup")

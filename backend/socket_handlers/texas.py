@@ -2,9 +2,7 @@
 
 import asyncio
 
-from socket.common import (
-    _reject_if_read_only,
-)
+from common import _reject_if_read_only
 
 def register_texas_handlers(sio, state, texas_service) -> None:
     """Register Texas Socket.IO event handlers."""

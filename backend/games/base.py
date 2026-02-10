@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import os
-from .channel import GameChannel
+
+from backend.events.game_channel import GameChannel
 
 
 class GamePhase(Enum):
@@ -171,10 +172,42 @@ class BaseGame(ABC):
         self.last_action_time: Dict[str, datetime] = {}  # sid -> last action timestamp
         self._action_lock = asyncio.Lock()  # Prevent race conditions
         
+        # Async Chat Processing
+        self._chat_queue: Optional[asyncio.Queue] = None
+        self._chat_task: Optional[asyncio.Task] = None
+        
         # Redis connection (lazy-initialized)
         self._redis_client = None
         self._redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
     
+    def _ensure_chat_queue(self):
+        """Lazy initialization of chat queue and processor task."""
+        if self._chat_queue is None:
+            self._chat_queue = asyncio.Queue()
+            
+        if self._chat_task is None or self._chat_task.done():
+            self._chat_task = asyncio.create_task(self._process_chat_queue())
+
+    async def _process_chat_queue(self):
+        """Background task to process chat messages."""
+        while True:
+            try:
+                if self._chat_queue is None:
+                    break
+                
+                item = await self._chat_queue.get()
+                player_id, message, message_type, metadata = item
+                
+                # Perform the actual IO/Broadcasting
+                self.channel.send_message(player_id, message, message_type, **metadata)
+                
+                self._chat_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error processing chat message: {e}")
+                await asyncio.sleep(0.1)  # Prevent tight loop on error
+
     def get_channel_id(self) -> str:
         """
         Get the unique channel ID for this game instance.
@@ -288,9 +321,10 @@ class BaseGame(ABC):
     def add_chat_message(self, player_id: str, message: str, 
                         message_type: str = "chat", **metadata) -> Dict:
         """
-        Add a chat message to the game channel.
+        Add a chat message to the game channel (Asynchronous).
         
-        Each agent can speak in the channel. Messages are published via event bus.
+        Queues the message for background processing to avoid blocking game logic.
+        Returns an optimistic message object immediately.
         
         Args:
             player_id: Player identifier (sid or wallet_address)
@@ -299,14 +333,28 @@ class BaseGame(ABC):
             **metadata: Additional message metadata
             
         Returns:
-            Dict with message data including timestamp
+            Dict with message data including timestamp (optimistic)
         """
-        return self.channel.send_message(
-            player_id=player_id,
-            message=message,
-            message_type=message_type,
+        # Ensure queue and task are running
+        self._ensure_chat_queue()
+        
+        # Optimistic timestamp
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Enqueue for background processing
+        if self._chat_queue:
+            self._chat_queue.put_nowait((player_id, message, message_type, metadata))
+        
+        # Return optimistic result so API consumers get immediate feedback
+        # The actual broadcast happens in _process_chat_queue
+        return {
+            'player_id': player_id,
+            'nickname': 'Pending...', # Will be resolved in broadcast, but for immediate return we might not have it easily without lookup
+            'message': message,
+            'type': message_type,
+            'timestamp': timestamp,
             **metadata
-        )
+        }
     
     def get_chat_history(self, player_id: Optional[str] = None, limit: Optional[int] = None) -> List[Dict]:
         """

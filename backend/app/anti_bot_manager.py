@@ -29,7 +29,6 @@ from ..config.config import (
 )
 from ..database.redis_manager import redis_manager
 
-
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -142,7 +141,7 @@ async def _check_rate_limit(key: str, limit: int = RATE_LIMIT_PER_MINUTE) -> boo
     """
     now = int(time.time())
     window_start = now - 60
-    
+
     # Try Redis first
     if await redis_manager.ping():
         client = redis_manager.client
@@ -152,7 +151,7 @@ async def _check_rate_limit(key: str, limit: int = RATE_LIMIT_PER_MINUTE) -> boo
             if count == 1:
                 await client.expire(redis_key, 60)
             return count <= limit
-    
+
     # Fallback to memory
     if key in _MEM_RATE_LIMITS:
         count, reset_time = _MEM_RATE_LIMITS[key]
@@ -175,30 +174,30 @@ async def _check_rate_limit(key: str, limit: int = RATE_LIMIT_PER_MINUTE) -> boo
 def detect_agent(user_agent: str, agent_id: Optional[str] = None) -> Tuple[bool, str]:
     """
     Detect if client is a programmatic agent (not a human browser).
-    
+
     Returns:
         (is_agent, detection_reason)
     """
     # Explicit agent_id = definitely an agent
     if agent_id:
         return True, "agent_id"
-    
+
     ua_lower = (user_agent or "").lower()
-    
+
     # Check for agent patterns first (higher priority)
     for keyword in AGENT_UA_KEYWORDS:
         if keyword in ua_lower:
             return True, f"ua_{keyword}"
-    
+
     # Check for browser patterns (human)
     for keyword in BROWSER_UA_KEYWORDS:
         if keyword in ua_lower:
             return False, f"browser_{keyword}"
-    
+
     # No user-agent = likely a script (allowed)
     if not user_agent:
         return True, "no_ua"
-    
+
     # Unknown user-agent = allow (benefit of the doubt)
     return True, "unknown_ua"
 
@@ -217,6 +216,10 @@ def is_public_endpoint(path: str) -> bool:
     return False
 
 
+# Alias for backward compatibility
+is_spectator_endpoint = is_public_endpoint
+
+
 # ============================================================================
 # TOKEN MANAGEMENT (Simplified)
 # ============================================================================
@@ -224,13 +227,13 @@ def is_public_endpoint(path: str) -> bool:
 async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
     """
     Issue a session token to an AI agent.
-    
+
     Simple flow: provide fingerprint → get token
     No challenge, no proof-of-work.
     """
     ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")
-    
+
     # Check if this looks like an agent
     is_agent, detection = detect_agent(user_agent)
     if not is_agent:
@@ -239,7 +242,7 @@ async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
             "message": f"Browser User-Agent detected ({detection}). This API is for AI agents only.",
             "hint": "Use a programmatic HTTP client (requests, aiohttp, curl, etc.)"
         }
-    
+
     # Rate limit check
     if not await _check_rate_limit(f"token:{ip}"):
         return {
@@ -247,7 +250,7 @@ async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
             "message": "Too many token requests. Please wait.",
             "retry_after": 60
         }
-    
+
     # Issue token
     now = int(time.time())
     token_payload = {
@@ -257,7 +260,7 @@ async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
         "exp": now + BOT_TOKEN_TTL,
     }
     token = _sign_token(token_payload)
-    
+
     return {
         "token": token,
         "expires_in": BOT_TOKEN_TTL,
@@ -272,35 +275,35 @@ async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
 async def verify_request(request: Request) -> Tuple[bool, Optional[str]]:
     """
     Verify an HTTP request is from a valid AI agent.
-    
+
     Returns:
         (is_valid, error_message)
     """
     if BOT_ALLOW_BYPASS_LOCAL and LOCAL_DEBUG_MODE:
         return True, None
-    
+
     path = request.url.path
-    
+
     # Public endpoints are open to everyone, but low-frequency limited
     if is_public_endpoint(path):
         ip = _get_client_ip(request)
         if not await _check_rate_limit(f"public:{ip}", PUBLIC_RATE_LIMIT_PER_MINUTE):
             return False, "Public endpoint rate limit exceeded. Please slow down."
         return True, None
-    
+
     # Check User-Agent
     user_agent = request.headers.get("user-agent", "")
     agent_id = request.headers.get("x-agent-id", "")
-    
+
     is_agent, detection = detect_agent(user_agent, agent_id)
     if not is_agent:
         return False, f"Browser detected ({detection}). Only AI agents can access this endpoint."
-    
+
     # Check rate limit
     ip = _get_client_ip(request)
     if not await _check_rate_limit(f"req:{ip}"):
         return False, "Rate limit exceeded. Please slow down."
-    
+
     # Check token (optional for now, but recommended)
     token = request.headers.get("x-bot-token", "")
     if token:
@@ -308,63 +311,111 @@ async def verify_request(request: Request) -> Tuple[bool, Optional[str]]:
         if not payload:
             return False, "Invalid or expired token. Get a new one from POST /bot/token"
         # Token is valid - could add IP check here if needed
-    
+
     return True, None
 
 
 async def verify_socket_auth(
-    environ: Dict[str, Any], 
-    auth: Optional[Dict[str, Any]]
+        environ: Dict[str, Any],
+        auth: Optional[Dict[str, Any]]
 ) -> Tuple[bool, str]:
     """
     Verify Socket.IO connection is from a valid AI agent.
-    
+
     Returns:
         (is_valid, error_reason)
     """
     if BOT_ALLOW_BYPASS_LOCAL and LOCAL_DEBUG_MODE:
         return True, ""
-    
+
     auth = auth or {}
 
     # Read-only spectator mode for browser clients.
     spectator_mode = bool(auth.get("spectator") or auth.get("read_only"))
     if spectator_mode:
         ip = (
-            environ.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
-            or environ.get("REMOTE_ADDR")
-            or "unknown"
+                environ.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+                or environ.get("REMOTE_ADDR")
+                or "unknown"
         )
         if not await _check_rate_limit(f"socket_public:{ip}", PUBLIC_RATE_LIMIT_PER_MINUTE):
             return False, "rate_limited"
         return True, "spectator"
 
     user_agent = environ.get("HTTP_USER_AGENT", "")
-    
+
     # Check if this looks like an agent
     is_agent, detection = detect_agent(user_agent, auth.get("agent_id"))
     if not is_agent:
         return False, f"browser_detected:{detection}"
-    
+
     # Token verification (required for Socket.IO)
     token = auth.get("botToken") or auth.get("bot_token") or auth.get("token") or ""
     if not token:
         return False, "token_required"
-    
+
     payload = _verify_token(token)
     if not payload:
         return False, "invalid_token"
-    
+
     # Optional: Check IP matches
     ip = (
-        environ.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
-        or environ.get("REMOTE_ADDR")
-        or "unknown"
+            environ.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+            or environ.get("REMOTE_ADDR")
+            or "unknown"
     )
     if payload.get("ip") and payload.get("ip") != ip:
         return False, "ip_mismatch"
 
     return True, ""
+
+
+# ============================================================================
+# BACKWARD COMPATIBILITY (for main.py)
+# ============================================================================
+
+# Legacy request models
+class BotChallengeRequest(BaseModel):
+    fingerprint: str = Field(..., min_length=8, max_length=256)
+
+
+class BotVerifyRequest(BaseModel):
+    fingerprint: str = Field(..., min_length=8, max_length=256)
+
+
+async def issue_challenge(request: Request, fingerprint: str) -> Dict[str, Any]:
+    """Legacy: Now just returns a simple token directly."""
+    return await get_token(request, fingerprint)
+
+
+async def verify_challenge(request: Request, payload: BotVerifyRequest) -> Dict[str, Any]:
+    """Legacy: Now just returns a simple token directly."""
+    return await get_token(request, payload.fingerprint)
+
+
+async def verify_request_bot_token(request: Request) -> Tuple[bool, Optional[str], int]:
+    """
+    Legacy wrapper for verify_request.
+    Returns (is_valid, error_code, risk_score)
+    """
+    is_valid, error_msg = await verify_request(request)
+    if is_valid:
+        return True, None, 0
+
+    # Map error messages to legacy codes
+    if "Rate limit" in (error_msg or ""):
+        return False, "rate_limited", 100
+    if "Browser" in (error_msg or ""):
+        return False, "browser_detected", 50
+    if "token" in (error_msg or "").lower():
+        return False, "invalid_token", 30
+
+    return False, "rejected", 50
+
+
+async def verify_agent_request(request: Request) -> Tuple[bool, str]:
+    """Alias for verify_request."""
+    return await verify_request(request)
 
 
 def generate_agent_id() -> str:

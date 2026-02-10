@@ -3,8 +3,8 @@
 from decimal import Decimal
 from typing import Iterable
 
-from database.models import TransactionType
-from economy.account import add_balance, deduct_balance, unlock_balance
+from ..database.models import TransactionType
+from ..economy.account import add_balance, deduct_balance, unlock_balance
 
 
 class SettlementService:
@@ -27,62 +27,104 @@ class SettlementService:
         if not wallet_address:
             return
 
-        if buy_in_tokens > 0:
-            await unlock_balance(
-                wallet_address,
-                buy_in_tokens,
-                game_session_id=table_id,
-                description=principal_description,
-            )
+        from ..database.connection import get_async_db_session
 
-        pnl_delta = chips_tokens - buy_in_tokens
-        if pnl_delta > 0:
-            await add_balance(
-                wallet_address,
-                pnl_delta,
-                tx_type=TransactionType.GAME_WIN,
-                description=win_description,
-            )
-        elif pnl_delta < 0:
-            await deduct_balance(
-                wallet_address,
-                -pnl_delta,
-                tx_type=TransactionType.GAME_ENTRY,
-                description=loss_description,
-            )
+        async with get_async_db_session() as db:
+            try:
+                if buy_in_tokens > 0:
+                    await unlock_balance(
+                        wallet_address,
+                        buy_in_tokens,
+                        game_session_id=table_id,
+                        description=principal_description,
+                        db_session=db
+                    )
 
-    async def refund_werewolf_entry_fees(
+                pnl_delta = chips_tokens - buy_in_tokens
+                if pnl_delta > 0:
+                    await add_balance(
+                        wallet_address,
+                        pnl_delta,
+                        tx_type=TransactionType.GAME_WIN,
+                        description=win_description,
+                        db_session=db
+                    )
+                elif pnl_delta < 0:
+                    await deduct_balance(
+                        wallet_address,
+                        -pnl_delta,
+                        tx_type=TransactionType.GAME_ENTRY,
+                        description=loss_description,
+                        db_session=db
+                    )
+                
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                raise e
+
+    async def process_werewolf_settlement(
         self,
         players: Iterable[dict],
-        game_id: str,
-        description: str,
-    ) -> None:
-        for player in players:
-            entry_fee = player.get("entry_fee_paid") or Decimal("0")
-            if entry_fee <= 0:
-                continue
-            await unlock_balance(
-                player["wallet_address"],
-                entry_fee,
-                game_session_id=game_id,
-                description=description,
-            )
-
-    async def award_werewolf_prizes(
-        self,
         winners: Iterable[str],
+        game_id: str,
         prize_pool: Decimal,
-        description: str,
     ) -> None:
-        winners = list(winners)
-        if not winners:
-            return
+        """
+        Process full settlement for a werewolf game.
+        
+        1. Unlock all locked balances (refund entry fee holds).
+        2. Deduct entry fees from ALL players (pay for the game).
+        3. Award prize pool to winners.
+        
+        Uses a single transaction to ensure atomicity.
+        """
+        from ..database.connection import get_async_db_session
+        
+        async with get_async_db_session() as db:
+            try:
+                # 1. Unlock & Deduct (Net result: User pays entry fee)
+                for player in players:
+                    wallet = player["wallet_address"]
+                    entry_fee = player.get("entry_fee_paid") or Decimal("0")
+                    
+                    if entry_fee <= 0:
+                        continue
 
-        prize_per_winner = prize_pool / len(winners)
-        for winner_address in winners:
-            await add_balance(
-                winner_address,
-                prize_per_winner,
-                tx_type=TransactionType.GAME_WIN,
-                description=description,
-            )
+                    # Unlock the hold
+                    await unlock_balance(
+                        wallet,
+                        entry_fee,
+                        game_session_id=game_id,
+                        description="Werewolf entry fee unlock (settlement)",
+                        db_session=db
+                    )
+                    
+                    # Deduct the fee
+                    await deduct_balance(
+                        wallet,
+                        entry_fee,
+                        tx_type=TransactionType.GAME_ENTRY,
+                        description=f"Werewolf game entry fee ({game_id})",
+                        db_session=db
+                    )
+
+                # 2. Award Prizes
+                if winners:
+                    prize_per_winner = prize_pool / len(winners)
+                    for winner_address in winners:
+                        await add_balance(
+                            winner_address,
+                            prize_per_winner,
+                            tx_type=TransactionType.GAME_WIN,
+                            description=f"Werewolf game prize ({game_id})",
+                            db_session=db
+                        )
+                
+                # Commit all changes at once
+                await db.commit()
+                
+            except Exception as e:
+                # Rollback everything on error
+                await db.rollback()
+                raise e

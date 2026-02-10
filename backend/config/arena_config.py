@@ -1,10 +1,8 @@
 """
-Centralized configuration for the Arena Poker Server.
+Arena runtime configuration.
 
-This module provides:
-- Environment variable loading
-- Local debug mode detection
-- Configuration validation
+This module centralizes environment-driven settings for debug mode, web3,
+economy values, and Socket.IO logging.
 """
 
 import os
@@ -19,22 +17,13 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
 
+
 # Load from environment
 LOCAL_DEBUG_MODE = _env_bool('LOCAL_DEBUG_MODE', False)
 DEV_MODE = _env_bool('DEV_MODE', False)
 
 # Local debug mode balance (unlimited funds for testing)
 LOCAL_DEBUG_BALANCE = Decimal(os.getenv('LOCAL_DEBUG_BALANCE', '999999999'))
-
-# Database configuration
-DB_USER = os.getenv('DB_USER', 'root')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = os.getenv('DB_PORT', '3306')
-DB_NAME = os.getenv('DB_NAME', 'agent_arena')
-
-# Redis configuration
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 
 # Web3 configuration (not used in local debug mode)
 WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL', 'https://mainnet.base.org')
@@ -44,70 +33,6 @@ SERVER_PRIVATE_KEY = os.getenv(
     '0x0000000000000000000000000000000000000000000000000000000000000001'
 )
 
-# CORS configuration
-def _parse_allowed_origins(raw_value: str):
-    """Parse/trim ALLOWED_ORIGINS into a clean list for CORS matching."""
-    origins = [item.strip() for item in raw_value.split(',') if item.strip()]
-    return origins or ['*']
-
-
-ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv('ALLOWED_ORIGINS', '*'))
-
-
-def _parse_allowed_hosts(raw_value: str):
-    """Parse and sanitize host patterns for Starlette TrustedHostMiddleware."""
-    valid_hosts = []
-    invalid_hosts = []
-
-    for item in raw_value.split(','):
-        host = item.strip().lower()
-        if not host:
-            continue
-
-        # Starlette accepts:
-        # 1) "*"
-        # 2) exact hosts without wildcard
-        # 3) wildcard subdomain patterns like "*.example.com"
-        if host == '*':
-            valid_hosts.append(host)
-            continue
-
-        if '*' not in host:
-            valid_hosts.append(host)
-            continue
-
-        if host.startswith('*.') and host.count('*') == 1 and len(host) > 2:
-            valid_hosts.append(host)
-            continue
-
-        invalid_hosts.append(host)
-
-    if invalid_hosts:
-        warnings.warn(
-            f"Ignored invalid ALLOWED_HOSTS patterns: {', '.join(invalid_hosts)}. "
-            "Wildcard entries must be '*' or '*.example.com'.",
-            RuntimeWarning,
-        )
-
-    # Keep service bootable even if env is misconfigured.
-    if not valid_hosts:
-        warnings.warn(
-            "No valid ALLOWED_HOSTS found. Falling back to '*' to avoid startup failure.",
-            RuntimeWarning,
-        )
-        return ['*']
-
-    return valid_hosts
-
-
-# Trusted host configuration (for TrustedHostMiddleware)
-ALLOWED_HOSTS = _parse_allowed_hosts(
-    os.getenv('ALLOWED_HOSTS', '*.railway.app, *.*.railway.app,*.clawarena.io,localhost,127.0.0.1')
-)
-
-# Anti-bot configuration (simplified - no PoW)
-BOT_TOKEN_SECRET = os.getenv('BOT_TOKEN_SECRET', 'dev-unsafe-secret')
-BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '3600'))  # 1 hour
 
 # Game economy configuration
 # 德州扑克筹码/Token比例：1 Token = 10 Chips，让用户感觉更值钱
@@ -136,18 +61,6 @@ BOT_ALLOW_BYPASS_LOCAL = os.getenv('BOT_ALLOW_BYPASS_LOCAL', 'true').lower() == 
 # Socket.IO logging (chatty in production if enabled, especially Engine.IO frame logs)
 SOCKET_IO_LOGGER = _env_bool('SOCKET_IO_LOGGER', LOCAL_DEBUG_MODE or DEV_MODE)
 SOCKET_ENGINEIO_LOGGER = _env_bool('SOCKET_ENGINEIO_LOGGER', LOCAL_DEBUG_MODE)
-
-# ============================================================================
-# AGENT-ONLY POLICY (Simplified)
-# ============================================================================
-# This arena is designed for AI Agents ONLY. Humans can only spectate.
-#
-# How it works:
-# 1. User-Agent detection: Block browsers, allow programmatic clients
-# 2. Simple token-based sessions: Track agents
-# 3. Rate limiting: Prevent abuse
-#
-# No challenge/PoW needed - we just want to filter out casual web scrapers.
 
 
 def is_local_debug_mode() -> bool:
@@ -184,8 +97,3 @@ if LOCAL_DEBUG_MODE:
     print("- All accounts have UNLIMITED funds")
     print("- DO NOT USE IN PRODUCTION!")
     print("=" * 70)
-elif BOT_TOKEN_SECRET == 'dev-unsafe-secret':
-    warnings.warn(
-        "BOT_TOKEN_SECRET is using a default value. Set BOT_TOKEN_SECRET in production!",
-        RuntimeWarning
-    )

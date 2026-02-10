@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database.models import UserLedger, TransactionLog, TransactionType
 from ..database.connection import get_async_db_session
 from ..database.redis_manager import redis_manager
-from ..config.config import is_local_debug_mode, get_debug_balance
+from ..config.arena_config import is_local_debug_mode, get_debug_balance
 
 
 # Custom exceptions for better error handling
@@ -616,6 +616,7 @@ async def log_transaction(
         game_session_id: Related game session (optional)
         tx_hash: On-chain transaction hash (optional)
         description: Human-readable description (optional)
+        db_session: Optional database session for atomic transaction logging
     """
     async def _log(db: AsyncSession):
         nonlocal user_id
@@ -650,12 +651,8 @@ async def log_transaction(
 
     if db_session is not None:
         # Use provided session (for atomic operations within existing transaction)
-        try:
-            await _log(db_session)
-        except Exception as e:
-            # Log error but don't fail the transaction
-            print(f"Warning: Failed to log transaction: {e}")
-            pass
+        # Do NOT catch exception here, let it propagate to rollback the whole transaction
+        await _log(db_session)
     else:
         # Create new session (for operations that need their own transaction)
         try:
@@ -728,7 +725,7 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
         )
         
         db.add(new_user)
-        await db.commit()
+        await db.flush()  # Generate ID for transaction logging
         await db.refresh(new_user)
 
         # Update cache
@@ -747,6 +744,10 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
                 description="Initial account balance on registration",
                 db_session=db
             )
+        
+        # Commit all changes (user creation + transaction log) atomically
+        await db.commit()
+        await db.refresh(new_user)
 
         return {
             'status': 'registered',
@@ -755,6 +756,7 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
         }
 
 
+@redis_manager.distributed_lock("lock:account:{login_key}", timeout=5)
 async def handle_login(login_key: str) -> Dict:
     """
     Handle user login with daily reward check using UserLedger.
@@ -864,7 +866,8 @@ async def handle_login(login_key: str) -> Dict:
         }
 
 
-async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_ENTRY, description: str = "Balance deduction") -> Dict:
+@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
+async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_ENTRY, description: str = "Balance deduction", db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Deduct balance from user account using atomic SQL operation.
     
@@ -876,6 +879,7 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     Args:
         wallet_address: Ethereum wallet address
         amount: Amount to deduct
+        db_session: Optional database session for atomic transaction logging
         
     Returns:
         Dict with operation status
@@ -886,7 +890,31 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    async with get_async_db_session() as db:
+    # Use provided session or create a new one
+    db = db_session if db_session else get_async_db_session()
+    # If we created the session, we need to manage it (enter context)
+    # If session was provided, we just use it (and don't close/commit it here unless we own it)
+    
+    # Helper to handle session context
+    class SessionContext:
+        def __init__(self, session, is_owned):
+            self.session = session
+            self.is_owned = is_owned
+            self.ctx = None
+            
+        async def __aenter__(self):
+            if self.is_owned:
+                self.ctx = self.session
+                return await self.ctx.__aenter__()
+            return self.session
+            
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            if self.is_owned:
+                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+                
+    session_ctx = SessionContext(db, db_session is None)
+
+    async with session_ctx as db:
         try:
             user = await get_user_with_validation(wallet_address, db)
         except (UserNotFoundError, InvalidWalletAddressError) as e:
@@ -916,7 +944,6 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
             """),
             {"amount": str(amount), "wallet": wallet_address}
         )
-        await db.commit()
         
         # Check if update succeeded (row was updated)
         if result.rowcount == 0:
@@ -927,14 +954,10 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
                 f"Insufficient available balance. Required: {amount}, Available: {available}"
             )
         
-        # Refresh to get updated balance
+        # Refresh to get updated balance (needed for logging)
         await db.refresh(user)
 
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
-
-        # Log deduction transaction
+        # Log deduction transaction (within the same transaction)
         await log_transaction(
             wallet_address=user.wallet_address,
             tx_type=tx_type,
@@ -946,6 +969,14 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
             db_session=db
         )
 
+        # Only commit if we own the session
+        if db_session is None:
+            await db.commit()
+        
+        # Update cache (fire and forget / after commit)
+        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
+
         return {
             'status': 'success',
             'deducted': float(amount),
@@ -954,27 +985,48 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
         }
 
 
-async def add_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_WIN, description: str = "Balance addition") -> Dict:
+@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
+async def add_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_WIN, description: str = "Balance addition", db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Add balance to user account using atomic SQL operation.
-    
-    This uses database-level atomic UPDATE to prevent race conditions during
-    concurrent additions (e.g., multiple game winnings).
     
     Args:
         wallet_address: Ethereum wallet address
         amount: Amount to add
+        db_session: Optional database session for atomic transaction logging
         
     Returns:
         Dict with operation status
         
     Raises:
-        ValueError: If user not found
+        ValueError: If amount is invalid or user not found
     """
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    async with get_async_db_session() as db:
+    # Use provided session or create a new one
+    db = db_session if db_session else get_async_db_session()
+    
+    # Helper to handle session context (duplicated for clarity in each function)
+    class SessionContext:
+        def __init__(self, session, is_owned):
+            self.session = session
+            self.is_owned = is_owned
+            self.ctx = None
+            
+        async def __aenter__(self):
+            if self.is_owned:
+                self.ctx = self.session
+                return await self.ctx.__aenter__()
+            return self.session
+            
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            if self.is_owned:
+                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+                
+    session_ctx = SessionContext(db, db_session is None)
+
+    async with session_ctx as db:
         try:
             user = await get_user_with_validation(wallet_address, db)
         except (UserNotFoundError, InvalidWalletAddressError) as e:
@@ -988,14 +1040,9 @@ async def add_balance(wallet_address: str, amount: Decimal, tx_type: Transaction
             text("UPDATE user_ledger SET offchain_balance = offchain_balance + :amount WHERE wallet_address = :wallet"),
             {"amount": str(amount), "wallet": wallet_address}
         )
-        await db.commit()
-
+        
         # Refresh to get updated balance
         await db.refresh(user)
-
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
 
         # Log addition transaction
         await log_transaction(
@@ -1008,6 +1055,14 @@ async def add_balance(wallet_address: str, amount: Decimal, tx_type: Transaction
             description=description,
             db_session=db
         )
+        
+        # Only commit if we own the session
+        if db_session is None:
+            await db.commit()
+
+        # Update cache
+        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         return {
             'status': 'success',
@@ -1054,7 +1109,8 @@ async def get_balance(wallet_address: str) -> Decimal:
         return user.offchain_balance
 
 
-async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Optional[str] = None) -> Dict:
+@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
+async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Optional[str] = None, db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Lock balance for in-game use (prevents double-spending).
     
@@ -1064,6 +1120,7 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
     Args:
         wallet_address: Ethereum wallet address
         amount: Amount to lock
+        db_session: Optional database session
         
     Returns:
         Dict with operation status
@@ -1140,7 +1197,8 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
         }
 
 
-async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_REFUND, game_session_id: Optional[str] = None, description: str = "Balance unlocked") -> Dict:
+@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
+async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_REFUND, game_session_id: Optional[str] = None, description: str = "Balance unlocked", db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Unlock balance after game completion.
     
@@ -1149,6 +1207,7 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     Args:
         wallet_address: Ethereum wallet address
         amount: Amount to unlock
+        db_session: Optional database session
         
     Returns:
         Dict with operation status
@@ -1159,7 +1218,29 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    async with get_async_db_session() as db:
+    # Use provided session or create a new one
+    db = db_session if db_session else get_async_db_session()
+    
+    # Helper to handle session context
+    class SessionContext:
+        def __init__(self, session, is_owned):
+            self.session = session
+            self.is_owned = is_owned
+            self.ctx = None
+            
+        async def __aenter__(self):
+            if self.is_owned:
+                self.ctx = self.session
+                return await self.ctx.__aenter__()
+            return self.session
+            
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            if self.is_owned:
+                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+                
+    session_ctx = SessionContext(db, db_session is None)
+
+    async with session_ctx as db:
         try:
             user = await get_user_with_validation(wallet_address, db)
         except (UserNotFoundError, InvalidWalletAddressError) as e:
@@ -1189,8 +1270,7 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
             """),
             {"amount": str(amount), "wallet": wallet_address}
         )
-        await db.commit()
-
+        
         if result.rowcount == 0:
             await db.refresh(user)
             raise InsufficientBalanceError(
@@ -1198,10 +1278,6 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
             )
 
         await db.refresh(user)
-
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
 
         # Log unlock transaction (this returns funds from locked state)
         await log_transaction(
@@ -1215,6 +1291,14 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
             description=description,
             db_session=db
         )
+        
+        # Only commit if we own the session
+        if db_session is None:
+            await db.commit()
+
+        # Update cache
+        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+        await invalidate_leaderboard_cache()
 
         return {
             'status': 'success',

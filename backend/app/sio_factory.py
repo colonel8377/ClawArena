@@ -1,11 +1,8 @@
 """Socket.IO server factory."""
 
 import socketio
-from config.config import (
-    ALLOWED_ORIGINS,
-    SOCKET_IO_LOGGER,
-    SOCKET_ENGINEIO_LOGGER,
-)
+from ..config.server_config import ALLOWED_ORIGINS
+from ..config.arena_config import SOCKET_IO_LOGGER, SOCKET_ENGINEIO_LOGGER
 
 def create_sio() -> socketio.AsyncServer:
     """Create and configure the Socket.IO server."""

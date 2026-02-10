@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Set
 
-from .game_config import get_setup
+from ...config.werewolf_config import get_setup
 from .roles import (
     RoleType, Team, create_role,
     Wolf, Seer, Witch, Hunter
@@ -1054,6 +1054,10 @@ class WerewolfGame(BaseGame):
         # Poison kill
         poison_target = self.witch_action.get('poison')
         if poison_target:
+            # Avoid double death if same target
+            if any(d.sid == poison_target for d in self.pending_deaths):
+                return
+
             target = self._get_player_by_sid(poison_target)
             if target:
                 death = DeathEvent(
@@ -1110,6 +1114,13 @@ class WerewolfGame(BaseGame):
         max_votes = max(vote_counts.values())
         candidates = [sid for sid, count in vote_counts.items() if count == max_votes]
         
+        # Majority check: must have strictly more than half of valid votes
+        # (or half of alive players? Standard is usually majority of valid votes cast)
+        # Let's use majority of valid votes cast as implied by "over half".
+        if max_votes <= total_votes / 2:
+            # No majority
+            return
+
         # Check for tie (no elimination on tie, different rule variants exist)
         if len(candidates) > 1:
             # Tie - no elimination (or could random choose)
@@ -1133,6 +1144,12 @@ class WerewolfGame(BaseGame):
                 if eliminated['role'].can_shoot():
                     self._hunter_death_pending = True
     
+    def _check_hunter_death(self, player: Dict):
+        """Check if dying player is a hunter who can shoot."""
+        if isinstance(player.get('role'), Hunter):
+            if player['role'].can_shoot():
+                self._hunter_death_pending = True
+    
     def _apply_deaths(self, deaths: List[DeathEvent]):
         """Apply a list of death events to player states."""
         for death in deaths:
@@ -1140,6 +1157,9 @@ class WerewolfGame(BaseGame):
             if player:
                 player['is_alive'] = False
                 player['status'] = 'dead'
+                # Reveal role only for public deaths (vote, hunter_shot)
+                if death.cause in ('vote', 'hunter_shot'):
+                    player['role_revealed'] = True
 
     def _apply_pending_deaths(self):
         """Apply and clear all pending deaths."""
@@ -1404,9 +1424,10 @@ class WerewolfGame(BaseGame):
                 # Wolves see each other
                 elif is_wolf and isinstance(player['role'], Wolf):
                     player_info['role'] = player['role'].get_role_info()
-                # Dead players' roles revealed (optional rule)
+                # Dead players' roles revealed (only if public death or game over)
                 elif not player['is_alive']:
-                    player_info['role'] = player['role'].get_role_info()
+                    if player.get('role_revealed') or self.phase == WerewolfPhase.FINISHED:
+                        player_info['role'] = player['role'].get_role_info()
             
             state['players'].append(player_info)
         

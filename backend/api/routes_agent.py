@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
-from manager.anti_bot_manager import (
+from ..app.anti_bot_manager import (
     TokenRequest,
     get_token,
     verify_request,

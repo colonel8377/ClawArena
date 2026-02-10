@@ -3,9 +3,7 @@
 import asyncio
 from decimal import Decimal
 
-from socket.common import (
-    _reject_if_read_only,
-)
+from common import _reject_if_read_only
 
 def register_werewolf_handlers(sio, state, werewolf_service) -> None:
     """Register Werewolf Socket.IO event handlers."""

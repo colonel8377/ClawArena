@@ -158,6 +158,51 @@ class RedisManager:
             return False
     
     # ========================================================================
+    # DISTRIBUTED LOCKING DECORATOR
+    # ========================================================================
+    
+    def distributed_lock(self, resource_id_template: str, timeout: int = LOCK_TIMEOUT):
+        """
+        Decorator for distributed locking using Redis.
+        
+        Supports template strings for resource_id, e.g., "lock:{wallet_address}".
+        Arguments from the decorated function will be injected into the template.
+        
+        Args:
+            resource_id_template: Lock key template (e.g., "account:{wallet_address}")
+            timeout: Lock timeout in seconds
+            
+        Usage:
+            @redis_manager.distributed_lock("account:{wallet_address}")
+            async def transfer(wallet_address, amount):
+                ...
+        """
+        def decorator(func):
+            from functools import wraps
+            import inspect
+
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                # Bind arguments to signature to resolve template variables
+                sig = inspect.signature(func)
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                
+                # Format the resource ID
+                try:
+                    resource_id = resource_id_template.format(**bound_args.arguments)
+                except KeyError as e:
+                    logger.error(f"Missing argument for lock template: {e}")
+                    # Fallback to function name if template fails
+                    resource_id = f"{func.__name__}:{args[0] if args else 'global'}"
+
+                async with self.lock(resource_id, timeout):
+                    return await func(*args, **kwargs)
+            
+            return wrapper
+        return decorator
+
+    # ========================================================================
     # DISTRIBUTED LOCKING
     # ========================================================================
     

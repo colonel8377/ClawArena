@@ -1,8 +1,9 @@
 """Root routes."""
 
 from fastapi import APIRouter, Request
-from config.config import LOCAL_DEBUG_MODE
-from app.state import runtime_state
+
+from ..app.state import runtime_state
+from ..config import LOCAL_DEBUG_MODE
 
 router = APIRouter()
 

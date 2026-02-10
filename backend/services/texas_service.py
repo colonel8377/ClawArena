@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, Dict, Any
 
-from config.config import TEXAS_CHIP_TO_TOKEN_RATIO
+from config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
 from database.models import TransactionType
 from database.persistence_manager import persistence_manager
 from economy.account import add_balance, deduct_balance, unlock_balance

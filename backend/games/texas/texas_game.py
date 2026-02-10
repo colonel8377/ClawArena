@@ -10,7 +10,8 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Any, Set
 
 from .texas_engine import TexasEngine
-from .game_config import (
+from .utils import censor_card_info
+from ...config.texas_config import (
     TEXAS_DEFAULT_BIG_BLIND,
     TEXAS_DEFAULT_SMALL_BLIND,
     TEXAS_MAX_PLAYERS,

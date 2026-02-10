@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from .game_config import (
+from ...config.texas_config import (
     TEXAS_MATCHMAKING_ADAPTIVE_WAIT_TIME,
     TEXAS_MATCHMAKING_CHECK_INTERVAL,
     TEXAS_MATCHMAKING_FULL_RING_SIZE,

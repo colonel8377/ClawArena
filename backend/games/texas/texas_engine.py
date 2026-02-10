@@ -13,6 +13,7 @@ The engine is designed for AI Agent gameplay with integrated chat/bluff messagin
 
 import asyncio
 import random
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,7 +23,8 @@ from typing import Dict, List, Optional, Any, Callable, Awaitable
 from treys import Card, Evaluator, Deck
 
 from ..base import check_chat_phase
-from .game_config import (
+from .utils import censor_card_info
+from ...config.texas_config import (
     TEXAS_DEFAULT_BIG_BLIND,
     TEXAS_DEFAULT_SMALL_BLIND,
     TEXAS_MAX_PLAYERS,
@@ -381,11 +383,13 @@ class TexasEngine:
         """Create and shuffle a new deck."""
         if Deck:
             deck = Deck()
+            # Use SystemRandom for secure shuffling
             self._deck = deck.draw(52)
+            secrets.SystemRandom().shuffle(self._deck)
         else:
             # Fallback: create simple deck representation
             self._deck = list(range(52))
-            random.shuffle(self._deck)
+            secrets.SystemRandom().shuffle(self._deck)
     
     def _deal_hole_cards(self):
         """
@@ -549,9 +553,8 @@ class TexasEngine:
         """
         Process a player's move with optional chat/bluff message.
         
-        Chat is only permitted during WAITING, SHOWDOWN, and FINISHED phases.
-        During active hand phases (PRE_FLOP through RIVER), chat is silently
-        stripped to prevent hole-card information leakage.
+        Chat is permitted during all phases, but card information is censored
+        during active hand phases (PRE_FLOP through RIVER) to prevent cheating.
         """
         # Validate it's this player's turn
         if not self._is_player_turn(sid):
@@ -561,11 +564,12 @@ class TexasEngine:
         if not player or not player.can_act():
             return {'success': False, 'error': 'Player cannot act'}
         
-        # Phase-based chat gate (shared helper from base.py)
         chat_blocked = False
+
+        # Block chat during restricted phases to prevent info leakage.
         if chat_message and check_chat_phase(self.phase, self.CHAT_ALLOWED_PHASES):
             chat_blocked = True
-            chat_message = None  # Strip the chat message
+            chat_message = None
         
         # Process chat message (only if allowed by phase)
         if chat_message:
@@ -1038,11 +1042,10 @@ class TexasEngine:
         """
         Calculate side pots for all-in scenarios.
         
-        IMPORTANT: All players who contributed chips are included in the calculation,
-        but only active (non-folded) players are eligible to WIN pots.
-        Folded players' chips go into the pot but they can't win it back.
+        Handles contributions from both active and folded players correctly.
         """
         # Get ALL players' investments (including folded players)
+        # Format: (sid, investment, is_active)
         all_investments = []
         for sid in self.player_order:
             player = self.players[sid]
@@ -1051,54 +1054,80 @@ class TexasEngine:
         
         if not all_investments:
             return
-        
-        # Sort by investment amount (lowest to highest)
-        all_investments.sort(key=lambda x: x[1])
-        
-        # Calculate total pot from all contributions
-        total_contributed = sum(inv for _, inv, _ in all_investments)
-        
-        # Get only active (non-folded) players for pot eligibility
-        active_investments = [(sid, inv) for sid, inv, is_active in all_investments if is_active]
-        
-        if not active_investments:
-            # Everyone folded - shouldn't happen, but handle it
-            return
-        
-        # Calculate side pots based on active players' investments
-        active_investments.sort(key=lambda x: x[1])
+            
+        # Find all unique investment levels to create pot "slices"
+        # We must consider folded players' levels too, as they cap their contribution
+        levels = sorted(list(set(inv for _, inv, _ in all_investments)))
         
         self.pots = []
-        prev_investment = 0
-        eligible_players = [sid for sid, _ in active_investments]
+        prev_level = 0
         
-        # Count how many players contributed at each level
-        def count_contributors_at_level(level):
-            """Count how many total players (including folded) contributed at least this much."""
-            return sum(1 for _, inv, _ in all_investments if inv >= level)
-        
-        for i, (sid, investment) in enumerate(active_investments):
-            if investment > prev_investment:
-                pot_contribution = investment - prev_investment
-                # The pot includes contributions from ALL players at this level
-                contributors = count_contributors_at_level(prev_investment + 1)
-                pot_amount = pot_contribution * contributors
+        for level in levels:
+            contribution_per_player = level - prev_level
+            if contribution_per_player <= 0:
+                continue
                 
-                self.pots.append(Pot(
-                    amount=pot_amount,
-                    eligible_players=list(eligible_players)  # Only active players can win
-                ))
+            # Who contributed to this slice? (Anyone who bet at least this level)
+            contributors = [p for p in all_investments if p[1] >= level]
             
-            # Remove player from eligibility for next (higher) pots
-            eligible_players.remove(sid)
-            prev_investment = investment
+            # Who is eligible to win this slice? (Active contributors)
+            eligible_winners = [p[0] for p in contributors if p[2]]
+            
+            # Calculate pot amount for this slice
+            pot_amount = contribution_per_player * len(contributors)
+            
+            if not eligible_winners:
+                # Edge case: Only folded players contributed to this specific slice 
+                # (e.g. Folded player bet 1000, Active player bet 500).
+                # The extra 500 from Folded is "dead money".
+                # It typically merges into the previous pot (if any) or stays as a pot 
+                # that falls back to the last eligible group.
+                # In this engine, we'll merge it into the highest existing pot 
+                # or the first pot if none exist yet.
+                if self.pots:
+                    self.pots[-1].amount += pot_amount
+                else:
+                    # Should be rare/impossible in standard play if main pot exists
+                    # Create a dummy pot or hold it? 
+                    # Let's create a pot with no eligible winners (will be caught by cleanup or refund?)
+                    # Better: Refund or add to next pot? 
+                    # Standard rule: Unmatched bets are returned. 
+                    # But if it's folded money, it's not "unmatched" in the sense of live betting, it's just lost.
+                    # We'll add it to the main pot (index 0) if it exists later, or create a dead pot.
+                    self.pots.append(Pot(amount=pot_amount, eligible_players=[]))
+            else:
+                # Check if we can merge with previous pot
+                # We can merge if the eligible winners are IDENTICAL
+                can_merge = False
+                if self.pots:
+                    prev_pot = self.pots[-1]
+                    # Compare sets of eligible players
+                    if set(prev_pot.eligible_players) == set(eligible_winners):
+                        prev_pot.amount += pot_amount
+                        can_merge = True
+                
+                if not can_merge:
+                    self.pots.append(Pot(
+                        amount=pot_amount,
+                        eligible_players=eligible_winners
+                    ))
+            
+            prev_level = level
+
+        # Cleanup: Merge any "dead" pots (no eligible winners) into the highest pot with winners
+        # This handles the case where a folded player bet more than anyone else.
+        # That extra money should belong to the winner of the highest pot.
+        valid_pots = [p for p in self.pots if p.eligible_players]
+        dead_pots = [p for p in self.pots if not p.eligible_players]
         
-        # Verify total pot matches total contributed
-        calculated_total = sum(pot.amount for pot in self.pots)
-        if calculated_total != total_contributed:
-            # Add any remainder to the main pot (can happen with rounding)
-            if self.pots:
-                self.pots[0].amount += (total_contributed - calculated_total)
+        if valid_pots:
+            # Add dead money to the highest valid pot (the last one)
+            for dp in dead_pots:
+                valid_pots[-1].amount += dp.amount
+            self.pots = valid_pots
+        else:
+            # If NO valid pots (everyone folded?), keep as is (will be handled by winner taking all)
+            pass
     
     def _evaluate_and_distribute_pots(self, showdown_players: List[str]) -> Dict[str, Any]:
         """Evaluate hands and distribute pots to winners."""

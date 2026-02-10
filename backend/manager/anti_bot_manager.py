@@ -217,10 +217,6 @@ def is_public_endpoint(path: str) -> bool:
     return False
 
 
-# Alias for backward compatibility
-is_spectator_endpoint = is_public_endpoint
-
-
 # ============================================================================
 # TOKEN MANAGEMENT (Simplified)
 # ============================================================================
@@ -367,56 +363,8 @@ async def verify_socket_auth(
     )
     if payload.get("ip") and payload.get("ip") != ip:
         return False, "ip_mismatch"
-    
+
     return True, ""
-
-
-# ============================================================================
-# BACKWARD COMPATIBILITY (for main.py)
-# ============================================================================
-
-# Legacy request models
-class BotChallengeRequest(BaseModel):
-    fingerprint: str = Field(..., min_length=8, max_length=256)
-
-
-class BotVerifyRequest(BaseModel):
-    fingerprint: str = Field(..., min_length=8, max_length=256)
-
-
-async def issue_challenge(request: Request, fingerprint: str) -> Dict[str, Any]:
-    """Legacy: Now just returns a simple token directly."""
-    return await get_token(request, fingerprint)
-
-
-async def verify_challenge(request: Request, payload: BotVerifyRequest) -> Dict[str, Any]:
-    """Legacy: Now just returns a simple token directly."""
-    return await get_token(request, payload.fingerprint)
-
-
-async def verify_request_bot_token(request: Request) -> Tuple[bool, Optional[str], int]:
-    """
-    Legacy wrapper for verify_request.
-    Returns (is_valid, error_code, risk_score)
-    """
-    is_valid, error_msg = await verify_request(request)
-    if is_valid:
-        return True, None, 0
-    
-    # Map error messages to legacy codes
-    if "Rate limit" in (error_msg or ""):
-        return False, "rate_limited", 100
-    if "Browser" in (error_msg or ""):
-        return False, "browser_detected", 50
-    if "token" in (error_msg or "").lower():
-        return False, "invalid_token", 30
-    
-    return False, "rejected", 50
-
-
-async def verify_agent_request(request: Request) -> Tuple[bool, str]:
-    """Alias for verify_request."""
-    return await verify_request(request)
 
 
 def generate_agent_id() -> str:

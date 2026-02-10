@@ -35,6 +35,20 @@ from config import (
 from database.connection import init_db
 from database.persistence_manager import persistence_manager
 from database.redis_manager import redis_manager
+from app.state import runtime_state
+from socket.common import (
+    _clear_poker_disconnected as _clear_poker_disconnected_impl,
+    _emit_poker_event as _emit_poker_event_impl,
+    _emit_to_sids as _emit_to_sids_impl,
+    _emit_werewolf_action_trace as _emit_werewolf_action_trace_impl,
+    _emit_werewolf_event as _emit_werewolf_event_impl,
+    _iter_reveal_spectators as _iter_reveal_spectators_impl,
+    _mark_poker_disconnected as _mark_poker_disconnected_impl,
+    _poker_spectator_room,
+    _reject_if_read_only as _reject_if_read_only_impl,
+    _werewolf_spectator_room,
+    register_common_handlers,
+)
 from economy.account import (
     register_user, handle_login, add_balance, get_balance,
     get_account_summary, transfer_balance, batch_get_balances, deduct_balance,
@@ -49,9 +63,7 @@ from games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
 from manager.anti_bot_manager import (
     TokenRequest,
     get_token,
-    verify_request_bot_token,
-    verify_socket_auth,
-    verify_agent_request,
+    verify_request,
     generate_agent_id,
     get_agent_instructions,
     is_public_endpoint,
@@ -100,16 +112,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Anti-bot middleware
 @app.middleware("http")
 async def bot_protection_middleware(request: Request, call_next):
-    allowed, reason, risk = await verify_request_bot_token(request)
+    allowed, error_msg = await verify_request(request)
     if not allowed:
-        status = 429 if reason == "risk_blocked" else 403
         return JSONResponse(
-            status_code=status,
+            status_code=403,
             content={
                 "error": "bot_protection",
-                "code": reason,
-                "challenge_required": reason in {"challenge_required", "invalid_token", "token_mismatch"},
-                "risk": risk,
+                "message": error_msg or "Bot protection rejected the request.",
             },
         )
     return await call_next(request)
@@ -129,7 +138,7 @@ async def agent_only_middleware(request: Request, call_next):
         return await call_next(request)
     
     # Verify agent for protected endpoints
-    is_valid, error_msg = await verify_agent_request(request)
+    is_valid, error_msg = await verify_request(request)
     
     if not is_valid:
         return JSONResponse(
@@ -160,30 +169,67 @@ app.add_middleware(
     allowed_hosts=ALLOWED_HOSTS,
 )
 
-# Game state management
-poker_tables: Dict[str, TexasGame] = {}  # Using unified TexasGame architecture
-werewolf_games: Dict[str, WerewolfGame] = {}  # game_id -> WerewolfGame
-player_sessions: Dict[str, Dict] = {}  # sid -> {player_id, player_name, table_id, game_id, authenticated}
-# Spectator reveal subscriptions by sid. Shape:
-# {
-#   sid: {
-#     'poker': {table_id: reveal_bool},
-#     'werewolf': {game_id: reveal_bool}
-#   }
-# }
-spectator_subscriptions: Dict[str, Dict[str, Dict[str, bool]]] = {}
+# Game state management (moved to centralized runtime_state in app/state.py)
+poker_tables = runtime_state.poker_tables  # table_id -> TexasGame
+werewolf_games = runtime_state.werewolf_games  # game_id -> WerewolfGame
+player_sessions = runtime_state.player_sessions  # sid -> session dict
+spectator_subscriptions = runtime_state.spectator_subscriptions
 
-POKER_SPECTATOR_ROOM_PREFIX = "spectate:poker:"
-WEREWOLF_SPECTATOR_ROOM_PREFIX = "spectate:werewolf:"
+# Matchmakers/background tasks/settlement state in centralized runtime state
+werewolf_settlement_locks = runtime_state.werewolf_settlement_locks
+werewolf_finalized_games = runtime_state.werewolf_finalized_games
+poker_disconnected_since = runtime_state.poker_disconnected_since
 
-# Matchmaker for Werewolf games
-werewolf_matchmaker: Optional[WerewolfMatchmaker] = None
-texas_matchmaker: Optional[TexasMatchmaker] = None
-werewolf_timeout_task: Optional[asyncio.Task] = None
-poker_timeout_task: Optional[asyncio.Task] = None
-werewolf_settlement_locks: Dict[str, asyncio.Lock] = {}
-werewolf_finalized_games: Dict[str, str] = {}
-poker_disconnected_since: Dict[str, Dict[str, datetime]] = {}
+# Register common socket handlers (connect/auth/spectate).
+register_common_handlers(sio, runtime_state)
+
+
+def _mark_poker_disconnected(table_id: str, player_id: str, seen_at: Optional[datetime] = None) -> None:
+    _mark_poker_disconnected_impl(runtime_state, table_id, player_id, seen_at)
+
+
+def _clear_poker_disconnected(table_id: str, player_id: str) -> None:
+    _clear_poker_disconnected_impl(runtime_state, table_id, player_id)
+
+
+async def _reject_if_read_only(sid: str, action_name: str) -> bool:
+    return await _reject_if_read_only_impl(sio, runtime_state, sid, action_name)
+
+
+def _iter_reveal_spectators(game_type: str, room_id: str):
+    return _iter_reveal_spectators_impl(runtime_state, game_type, room_id)
+
+
+async def _emit_to_sids(event: str, payload: Dict, sids) -> None:
+    await _emit_to_sids_impl(sio, event, payload, sids)
+
+
+async def _emit_poker_event(table_id: str, event: str, payload: Dict) -> None:
+    await _emit_poker_event_impl(sio, table_id, event, payload)
+
+
+async def _emit_werewolf_event(game_id: str, event: str, payload: Dict) -> None:
+    await _emit_werewolf_event_impl(sio, game_id, event, payload)
+
+
+async def _emit_werewolf_action_trace(
+    game,
+    sid: str,
+    action: str,
+    result: Dict[str, Any],
+    target_sid: Optional[str],
+    message: Optional[str],
+) -> None:
+    await _emit_werewolf_action_trace_impl(
+        sio,
+        runtime_state,
+        game,
+        sid,
+        action,
+        result,
+        target_sid,
+        message,
+    )
 
 
 def _get_werewolf_settlement_lock(game_id: str) -> asyncio.Lock:
@@ -192,26 +238,6 @@ def _get_werewolf_settlement_lock(game_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         werewolf_settlement_locks[game_id] = lock
     return lock
-
-
-def _mark_poker_disconnected(table_id: str, player_id: str, seen_at: Optional[datetime] = None) -> None:
-    if not table_id or not player_id:
-        return
-    table_map = poker_disconnected_since.setdefault(table_id, {})
-    table_map[player_id] = seen_at or datetime.utcnow()
-
-
-def _clear_poker_disconnected(table_id: str, player_id: str) -> None:
-    table_map = poker_disconnected_since.get(table_id)
-    if not table_map:
-        return
-    table_map.pop(player_id, None)
-    if not table_map:
-        poker_disconnected_since.pop(table_id, None)
-
-
-def _forget_poker_disconnect_table(table_id: str) -> None:
-    poker_disconnected_since.pop(table_id, None)
 
 
 async def _settle_texas_player(
@@ -320,160 +346,6 @@ async def _check_disconnected_texas_players(table_id: str, table: TexasGame) -> 
             await broadcast_game_state(table_id)
 
 
-def _set_spectator_subscription(sid: str, game_type: str, room_id: str, reveal: bool) -> None:
-    """Track spectator reveal preference per room."""
-    sid_subs = spectator_subscriptions.setdefault(sid, {'poker': {}, 'werewolf': {}})
-    room_subs = sid_subs.setdefault(game_type, {})
-    room_subs[room_id] = bool(reveal)
-
-
-def _remove_spectator_subscription(sid: str, game_type: str, room_id: Optional[str] = None) -> None:
-    """Remove one or all spectator subscriptions for a sid/game type."""
-    sid_subs = spectator_subscriptions.get(sid)
-    if not sid_subs:
-        return
-
-    if room_id:
-        sid_subs.get(game_type, {}).pop(room_id, None)
-    else:
-        sid_subs[game_type] = {}
-
-    if not sid_subs.get('poker') and not sid_subs.get('werewolf'):
-        spectator_subscriptions.pop(sid, None)
-
-
-def _iter_reveal_spectators(game_type: str, room_id: str):
-    """Yield sids that subscribed with reveal=True for this room."""
-    for sid, sid_subs in spectator_subscriptions.items():
-        # Defense-in-depth: only read-only spectator sessions can receive
-        # reveal-all state so active players cannot subscribe to hidden info.
-        if sid_subs.get(game_type, {}).get(room_id) and _is_read_only_session(sid):
-            yield sid
-
-
-def _poker_spectator_room(table_id: str) -> str:
-    return f"{POKER_SPECTATOR_ROOM_PREFIX}{table_id}"
-
-
-def _werewolf_spectator_room(game_id: str) -> str:
-    return f"{WEREWOLF_SPECTATOR_ROOM_PREFIX}{game_id}"
-
-
-async def _emit_poker_event(table_id: str, event: str, payload: Dict) -> None:
-    """Emit an event to poker players and spectator room."""
-    await sio.emit(event, payload, room=table_id)
-    await sio.emit(event, payload, room=_poker_spectator_room(table_id))
-
-
-def _is_read_only_session(sid: str) -> bool:
-    session = player_sessions.get(sid) or {}
-    return bool(session.get('read_only') or session.get('spectator_mode'))
-
-
-async def _reject_if_read_only(sid: str, action_name: str) -> bool:
-    """Return True when action should be stopped due to read-only spectator session."""
-    if _is_read_only_session(sid):
-        await sio.emit('error', {
-            'message': f"Read-only spectator session cannot perform '{action_name}'",
-            'error_code': 'SPECTATOR_READ_ONLY'
-        }, room=sid)
-        return True
-    return False
-
-
-async def _emit_werewolf_event(game_id: str, event: str, payload: Dict) -> None:
-    """Emit an event to werewolf players and spectator room."""
-    await sio.emit(event, payload, room=game_id)
-    await sio.emit(event, payload, room=_werewolf_spectator_room(game_id))
-
-
-def _is_night_phase(phase: str) -> bool:
-    return phase.startswith('night_')
-
-
-def _build_werewolf_action_trace(
-    game: WerewolfGame,
-    sid: str,
-    action: str,
-    result: Dict[str, Any],
-    target_sid: Optional[str],
-    message: Optional[str],
-    reveal: bool,
-) -> Dict[str, Any]:
-    """Build spectator action trace payload with masked/reveal variants."""
-    actor = next((p for p in game.players if p.get('sid') == sid), None)
-    actor_nickname = actor.get('nickname', 'Unknown') if actor else 'Unknown'
-    phase = game.phase.value
-    target_player = next((p for p in game.players if p.get('sid') == target_sid), None) if target_sid else None
-    target_nickname = target_player.get('nickname') if target_player else None
-
-    payload: Dict[str, Any] = {
-        'game_id': game.game_id,
-        'phase': phase,
-        'actor_sid': sid,
-        'actor_nickname': actor_nickname,
-        'action': action,
-        'timestamp': datetime.utcnow().isoformat(),
-    }
-
-    # Hide hidden-information targets during night actions in masked mode.
-    hide_target = _is_night_phase(phase) and not reveal
-    if action == 'wolf_chat':
-        payload['message'] = (message or '') if reveal else '[hidden wolf chat]'
-        payload['visibility'] = 'reveal_only' if reveal else 'hidden'
-    elif action in {'chat', 'speak'}:
-        payload['message'] = message or ''
-        payload['visibility'] = 'public'
-    elif action in {'night_kill', 'seer_check', 'witch_poison', 'hunter_shoot', 'vote'}:
-        if target_sid is None:
-            payload['target'] = None
-        elif hide_target:
-            payload['target'] = {'sid': target_sid, 'nickname': 'Hidden Target'}
-        else:
-            payload['target'] = {'sid': target_sid, 'nickname': target_nickname or 'Unknown'}
-    elif action == 'witch_save':
-        payload['target'] = None if hide_target else {
-            'sid': game.pending_wolf_kill,
-            'nickname': (next((p.get('nickname') for p in game.players if p.get('sid') == game.pending_wolf_kill), None) or 'Unknown')
-            if game.pending_wolf_kill else None
-        }
-
-    # Include seer result only for reveal subscribers.
-    if action == 'seer_check' and reveal and result.get('result'):
-        payload['seer_result'] = result.get('result')
-
-    return payload
-
-
-async def _emit_werewolf_action_trace(
-    game: WerewolfGame,
-    sid: str,
-    action: str,
-    result: Dict[str, Any],
-    target_sid: Optional[str],
-    message: Optional[str],
-) -> None:
-    """Emit action timeline events to spectators (masked + reveal modes)."""
-    game_id = game.game_id
-    masked_payload = _build_werewolf_action_trace(game, sid, action, result, target_sid, message, reveal=False)
-    await sio.emit('werewolf_action_trace', masked_payload, room=_werewolf_spectator_room(game_id))
-
-    reveal_sids = list(_iter_reveal_spectators('werewolf', game_id))
-    if reveal_sids:
-        reveal_payload = _build_werewolf_action_trace(game, sid, action, result, target_sid, message, reveal=True)
-        await _emit_to_sids('werewolf_action_trace', reveal_payload, reveal_sids)
-
-
-async def _emit_to_sids(event: str, payload: Dict, sids: List[str]) -> None:
-    """Emit same payload to many sockets concurrently."""
-    if not sids:
-        return
-    await asyncio.gather(
-        *(sio.emit(event, payload, room=target_sid) for target_sid in sids),
-        return_exceptions=True,
-    )
-
-
 # ============================================================================
 # DATABASE INITIALIZATION
 # ============================================================================
@@ -512,24 +384,15 @@ async def startup_event():
     
     # Restore persisted games from Redis
     try:
-        # Check new optimized storage first
         active_game_ids = await redis_manager.list_active_games()
-        legacy_game_ids = await redis_manager.list_persisted_games()
-        
-        all_game_ids = set(active_game_ids + legacy_game_ids)
-        
-        if all_game_ids:
-            print(f"Found {len(all_game_ids)} persisted games")
+
+        if active_game_ids:
+            print(f"Found {len(active_game_ids)} persisted games")
             restored_count = 0
             
-            for game_id in all_game_ids:
+            for game_id in active_game_ids:
                 try:
-                    # Try new optimized storage first
                     state_data = await persistence_manager.restore_game_state(game_id)
-                    
-                    # Fallback to legacy storage
-                    if not state_data:
-                        state_data = await redis_manager.restore_game_state(game_id)
                     
                     if state_data and state_data.get('state'):
                         state = state_data['state']
@@ -578,13 +441,11 @@ async def startup_event():
         traceback.print_exc()
     
     # Start werewolf game timeout checker
-    global werewolf_timeout_task
-    werewolf_timeout_task = asyncio.create_task(werewolf_timeout_checker())
+    runtime_state.werewolf_timeout_task = asyncio.create_task(werewolf_timeout_checker())
     print("✓ Werewolf game timeout checker started")
 
     # Start poker game timeout checker
-    global poker_timeout_task
-    poker_timeout_task = asyncio.create_task(poker_timeout_checker())
+    runtime_state.poker_timeout_task = asyncio.create_task(poker_timeout_checker())
     print("✓ Poker game timeout checker started")
 
 
@@ -954,21 +815,6 @@ async def bot_get_token(request: Request, payload: TokenRequest):
     return await get_token(request, payload.fingerprint)
 
 
-# Legacy endpoints (redirect to /bot/token)
-@app.post("/bot/challenge")
-@limiter.limit("30/minute")
-async def bot_challenge_legacy(request: Request, payload: TokenRequest):
-    """Legacy endpoint - now just returns a token directly."""
-    return await get_token(request, payload.fingerprint)
-
-
-@app.post("/bot/verify")
-@limiter.limit("30/minute")
-async def bot_verify_legacy(request: Request, payload: TokenRequest):
-    """Legacy endpoint - now just returns a token directly."""
-    return await get_token(request, payload.fingerprint)
-
-
 # ============================================================================
 # AGENT ENDPOINTS
 # ============================================================================
@@ -1030,21 +876,19 @@ async def api_register(request: Request, player_name: str, address: Optional[str
 async def api_login(
     request: Request,
     login_key: Optional[str] = None,
-    player_id: Optional[str] = None,
 ):
     """
     Handle user login with daily reward check.
     
     Checks if it's a new UTC day and grants daily login reward if applicable.
 
-    Accepts either:
-    - login_key: canonical login identifier (recommended)
-    - player_id: backward-compatible alias
+    Accepts:
+    - login_key: canonical login identifier
     """
     try:
-        resolved_login_key = (login_key or player_id or "").strip()
+        resolved_login_key = (login_key or "").strip()
         if not resolved_login_key:
-            raise HTTPException(status_code=400, detail="login_key or player_id is required")
+            raise HTTPException(status_code=400, detail="login_key is required")
 
         result = await handle_login(resolved_login_key)
         return result
@@ -1167,332 +1011,33 @@ async def api_get_leaderboard(request: Request, limit: int = 10):
 @app.get("/api/spectate/poker/{table_id}")
 @limiter.limit("30/minute")
 async def api_spectate_poker(request: Request, table_id: str, reveal: bool = False):
-    """Return poker state for spectators.
-
-    `reveal=true` is intentionally blocked for public HTTP endpoints to avoid
-    hidden-info leakage without an authenticated read-only socket session.
-    """
-    if table_id not in poker_tables:
-        raise HTTPException(status_code=404, detail="Table not found")
     if reveal:
         raise HTTPException(
-            status_code=403,
-            detail="Reveal mode is only available to read-only spectator Socket.IO sessions"
+            status_code=400,
+            detail="Reveal mode is only available via read-only Socket.IO spectate",
         )
-    table = poker_tables[table_id]
+
+    table = poker_tables.get(table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Poker table not found")
+
     return table.get_game_state(for_spectator=True, reveal_all=False)
 
 
 @app.get("/api/spectate/werewolf/{game_id}")
 @limiter.limit("30/minute")
 async def api_spectate_werewolf(request: Request, game_id: str, reveal: bool = False):
-    """Return werewolf state for spectators.
-
-    `reveal=true` is intentionally blocked for public HTTP endpoints to avoid
-    hidden-role leakage without an authenticated read-only socket session.
-    """
-    if game_id not in werewolf_games:
-        raise HTTPException(status_code=404, detail="Game not found")
     if reveal:
         raise HTTPException(
-            status_code=403,
-            detail="Reveal mode is only available to read-only spectator Socket.IO sessions"
+            status_code=400,
+            detail="Reveal mode is only available via read-only Socket.IO spectate",
         )
-    game = werewolf_games[game_id]
+
+    game = werewolf_games.get(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Werewolf game not found")
+
     return game.get_game_state(reveal_all=False)
-
-
-# ============================================================================
-# SOCKET.IO EVENT HANDLERS
-# ============================================================================
-
-@sio.event
-async def connect(sid, environ, auth):
-    """
-    Handle client connection.
-    
-    AGENT-ONLY: Only AI agents can connect via Socket.IO.
-    Humans should use HTTP API endpoints for spectating.
-    
-    Verification (all in verify_socket_auth):
-    1. Bot token verification (proof-of-work)
-    2. Agent detection (User-Agent check)
-    """
-    # Combined bot token + agent verification
-    allowed, reason = await verify_socket_auth(environ, auth)
-    if not allowed:
-        print(f"Rejected socket connection: {sid} ({reason})")
-        return False
-    
-    # Extract agent_id from auth (optional but recommended)
-    auth = auth or {}
-    agent_id = auth.get("agent_id") or auth.get("agentId") or "anonymous"
-    
-    is_spectator_connection = reason == "spectator"
-    role_label = "spectator" if is_spectator_connection else "agent"
-    print(f"AI Client connected: {sid} (agent_id: {agent_id}, role: {role_label})")
-    
-    player_sessions[sid] = {
-        'player_id': None,
-        'player_name': None,
-        'table_id': None,
-        'game_id': None,
-        'authenticated': False,
-        'agent_id': agent_id,
-        'read_only': is_spectator_connection,
-        'spectator_mode': is_spectator_connection,
-    }
-    await sio.emit('connected', {
-        'sid': sid,
-        'agent_id': agent_id,
-        'read_only': is_spectator_connection,
-        'message': 'Welcome, AI Agent! You are connected to the arena.'
-    }, room=sid)
-
-
-@sio.event
-async def disconnect(sid):
-    """Handle client disconnection."""
-    global werewolf_matchmaker, texas_matchmaker
-    
-    print(f"Client disconnected: {sid}")
-    
-    if sid in player_sessions:
-        session = player_sessions[sid]
-        
-        # Remove from table if in one
-        if session['table_id'] and session['table_id'] in poker_tables:
-            table_id = session['table_id']
-            table = poker_tables[table_id]
-            player_id = session.get('player_id')
-            if player_id:
-                _mark_poker_disconnected(table_id, player_id)
-            # Keep in-hand seats for reconnection and timeout auto-play.
-            # Remove only when no hand is active.
-            if table.engine.phase in POKER_ACTIVE_PHASES:
-                print(f"[Disconnect] Preserving poker seat for reconnect: sid={sid}, table={session['table_id']}")
-                # Persist SID-preserving in-hand state immediately so restart can
-                # still recover the table even when no further action happens.
-                asyncio.create_task(table.save_state_to_redis())
-        
-        # Remove from matchmaking queue if in one
-        if werewolf_matchmaker:
-            werewolf_matchmaker.remove_player(sid)
-        if texas_matchmaker:
-            texas_matchmaker.remove_player(sid)
-        
-        del player_sessions[sid]
-
-    # Always clear spectator reveal subscriptions for disconnected sockets.
-    spectator_subscriptions.pop(sid, None)
-
-
-@sio.event
-async def authenticate(sid, data):
-    """
-    Authenticate a client using a login key.
-    
-    On successful authentication, checks if player was in an active game and sends
-    GAME_SNAPSHOT for reconnection recovery.
-    
-    Expected data: {'login_key': str}
-    Backward compatible: {'player_id': str}
-    """
-    try:
-        if await _reject_if_read_only(sid, 'authenticate'):
-            return
-
-        data = data or {}
-        login_key = data.get('login_key') or data.get('player_id') or data.get('address')
-        if not login_key or not str(login_key).strip():
-            await sio.emit('error', {'message': 'Missing login_key (or player_id)'}, room=sid)
-            return
-
-        login_key = str(login_key).strip()
-        if len(login_key) > 128:
-            await sio.emit('error', {'message': 'Login key too long (max 128)'}, room=sid)
-            return
-
-        login_result = await handle_login(login_key)
-        user = login_result.get('user', {})
-        player_id = user.get('player_id', '')
-        player_name = user.get('player_name', 'Player')
-
-        if not player_id:
-            await sio.emit('error', {'message': 'Login succeeded but player_id missing'}, room=sid)
-            return
-
-        # Mark as authenticated
-        player_sessions[sid]['player_id'] = player_id
-        player_sessions[sid]['player_name'] = player_name
-        player_sessions[sid]['authenticated'] = True
-
-        await sio.emit('authenticated', {
-            'player_id': player_id,
-            'player_name': player_name,
-        }, room=sid)
-
-        # Check for reconnection to active game
-        await handle_reconnection(sid, player_id)
-
-    except Exception as e:
-        await sio.emit('error', {'message': f'Authentication failed: {str(e)}'}, room=sid)
-
-
-async def handle_reconnection(sid: str, player_id: str):
-    """
-    Handle reconnection by checking if player was in an active game.
-    
-    If found, updates the player's sid and sends GAME_SNAPSHOT.
-    
-    Args:
-        sid: New socket ID
-        player_id: Player identifier
-    """
-    # Inactive werewolf phases (no need to reconnect)
-    # NOTE: WAITING must remain reconnectable because entry fees are already
-    # locked on join_werewolf_game(), and players should be able to restore
-    # their lobby seat after reconnect just like poker seats.
-    INACTIVE_PHASES = {WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}
-    
-    # Check werewolf games for this player id
-    for game_id, game in werewolf_games.items():
-        # Skip finished/aborted/waiting games
-        if game.phase in INACTIVE_PHASES:
-            continue
-        
-        # Find player by stored legacy wallet_address field (value is player_id)
-        for player in game.players:
-            if player['wallet_address'] == player_id:
-                old_sid = player['sid']
-                
-                # Update player's socket ID
-                if old_sid != sid:
-                    game.update_player_sid(old_sid, sid)
-                    print(f"[Reconnect] Player {player_id} reconnected to game {game_id}")
-                
-                # Update session
-                player_sessions[sid]['game_id'] = game_id
-                
-                # Join Socket.IO room
-                await sio.enter_room(sid, game_id)
-                
-                # Send GAME_SNAPSHOT for recovery
-                snapshot = game.get_game_snapshot(sid)
-                await sio.emit('GAME_SNAPSHOT', snapshot, room=sid)
-                
-                print(f"[Reconnect] Sent GAME_SNAPSHOT to {player_id} for game {game_id}")
-                return
-    
-    # Check poker tables for this player_id
-    for table_id, table in poker_tables.items():
-        for player in table.players:
-            if player.get('wallet_address', '') == player_id:
-                old_sid = player.get('sid')
-
-                # Rebind player seat/state to the new socket id so turn checks,
-                # private hand delivery, and action routing continue to work.
-                if old_sid and old_sid != sid:
-                    table.engine.update_player_sid(old_sid, sid)
-                    player['sid'] = sid
-                    asyncio.create_task(table.save_checkpoint('reconnect_rebind'))
-
-                # Update session
-                player_sessions[sid]['table_id'] = table_id
-                _clear_poker_disconnected(table_id, player_id)
-                
-                # Join Socket.IO room
-                await sio.enter_room(sid, table_id)
-                
-                # Send game state
-                await sio.emit('GAME_SNAPSHOT', table.get_game_snapshot(sid), room=sid)
-                
-                print(f"[Reconnect] Sent GAME_SNAPSHOT to {player_id} for poker table {table_id}")
-                return
-
-
-@sio.event
-async def join_game(sid, data):
-    """
-    Join or create a game table.
-    
-    Expected data: {'table_id': str, 'chips': int (optional)}
-    """
-    try:
-        if await _reject_if_read_only(sid, 'join_game'):
-            return
-
-        # Check authentication
-        if sid not in player_sessions or not player_sessions[sid]['authenticated']:
-            await sio.emit('error', {'message': 'Not authenticated'}, room=sid)
-            return
-        
-        table_id = data.get('table_id')
-        player_id = player_sessions[sid]['player_id']
-        player_name = player_sessions[sid]['player_name'] or 'Player'
-
-        # 支持chips或tokens买入，默认使用chips
-        if 'tokens' in data:
-            buy_in_tokens = Decimal(str(data['tokens']))
-            buy_in_chips = buy_in_tokens / TEXAS_CHIP_TO_TOKEN_RATIO
-        else:
-            buy_in_chips = Decimal(str(data.get('chips', 1000)))
-            buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
-
-        if not table_id:
-            await sio.emit('error', {'message': 'table_id required'}, room=sid)
-            return
-
-        # 检查余额是否足够
-        try:
-            current_balance = await get_balance(player_id)
-            if current_balance < buy_in_tokens:
-                await sio.emit('error', {
-                    'message': f'Insufficient balance. Required: {float(buy_in_tokens)} tokens, Available: {float(current_balance)}'
-                }, room=sid)
-                return
-        except Exception as e:
-            await sio.emit('error', {'message': f'Balance check failed: {str(e)}'}, room=sid)
-            return
-
-        # Create table if it doesn't exist
-        if table_id not in poker_tables:
-            poker_tables[table_id] = create_texas_game(table_id)
-
-        table = poker_tables[table_id]
-
-        # Add player to table with token amount
-        if not table.add_player(sid, player_id, nickname=player_name, buy_in_tokens=buy_in_tokens):
-            await sio.emit('error', {'message': 'Could not join table'}, room=sid)
-            return
-
-        # 锁定资金
-        try:
-            await lock_balance(player_id, buy_in_tokens, game_session_id=table_id)
-        except Exception as e:
-            await sio.emit('error', {'message': f'Failed to lock funds: {str(e)}'}, room=sid)
-            # 移除玩家
-            table.remove_player(sid)
-            return
-        
-        # Update session
-        player_sessions[sid]['table_id'] = table_id
-        
-        # Join Socket.IO room
-        await sio.enter_room(sid, table_id)
-        
-        # Notify player
-        await sio.emit('joined_game', {
-            'table_id': table_id,
-            'player_id': player_id,
-            'player_name': player_name,
-        }, room=sid)
-        
-        # Broadcast updated state
-        await broadcast_game_state(table_id)
-        
-    except Exception as e:
-        await sio.emit('error', {'message': f'Join game failed: {str(e)}'}, room=sid)
 
 
 @sio.event
@@ -1662,28 +1207,6 @@ async def player_move(sid, data):
 
 
 @sio.event
-async def poker_action(sid, data):
-    """
-    Alternative handler for poker actions (used in SKILL.md).
-    
-    This is an alias for player_move that matches the protocol in SKILL.md.
-    
-    Expected data: {
-        'game_id': str,
-        'action': str ('fold', 'check', 'call', 'raise'),
-        'amount': int (optional, for raise),
-        'message': str (optional, for chat/bluff)
-    }
-    """
-    if await _reject_if_read_only(sid, 'poker_action'):
-        return
-
-    # Convert game_id to table_id for compatibility
-    data['table_id'] = data.get('game_id', data.get('table_id'))
-    await player_move(sid, data)
-
-
-@sio.event
 async def get_state(sid, data):
     """
     Get current game state.
@@ -1704,82 +1227,6 @@ async def get_state(sid, data):
         
     except Exception as e:
         await sio.emit('error', {'message': f'Get state failed: {str(e)}'}, room=sid)
-
-
-@sio.event
-async def join_spectate(sid, data):
-    """
-    Join spectator room for poker or werewolf.
-
-    Expected data:
-      - Poker: {'table_id': str, 'reveal': bool (optional)}
-      - Werewolf: {'game_id': str, 'reveal': bool (optional)}
-    """
-    try:
-        payload = data or {}
-        reveal_requested = bool(payload.get('reveal', False))
-        reveal_allowed = reveal_requested and _is_read_only_session(sid)
-        table_id = payload.get('table_id')
-        game_id = payload.get('game_id')
-        joined_any = False
-
-        if reveal_requested and not reveal_allowed:
-            await sio.emit('error', {
-                'message': 'Reveal mode is only available to read-only spectator sessions',
-                'error_code': 'SPECTATOR_REVEAL_FORBIDDEN'
-            }, room=sid)
-
-        if table_id and table_id in poker_tables:
-            poker_room = _poker_spectator_room(table_id)
-            if reveal_allowed:
-                # Avoid duplicate masked+reveal payloads for reveal subscribers.
-                await sio.leave_room(sid, poker_room)
-            else:
-                await sio.enter_room(sid, poker_room)
-            _set_spectator_subscription(sid, 'poker', table_id, reveal_allowed)
-            table = poker_tables[table_id]
-            state = table.get_game_state(for_spectator=True, reveal_all=reveal_allowed)
-            await sio.emit('game_state', state, room=sid)
-            joined_any = True
-
-        if game_id and game_id in werewolf_games:
-            werewolf_room = _werewolf_spectator_room(game_id)
-            if reveal_allowed:
-                # Avoid duplicate masked+reveal payloads for reveal subscribers.
-                await sio.leave_room(sid, werewolf_room)
-            else:
-                await sio.enter_room(sid, werewolf_room)
-            _set_spectator_subscription(sid, 'werewolf', game_id, reveal_allowed)
-            game = werewolf_games[game_id]
-            state = game.get_game_state(reveal_all=reveal_allowed)
-            await sio.emit('werewolf_state', state, room=sid)
-            joined_any = True
-
-        if not joined_any:
-            await sio.emit('error', {
-                'message': 'No valid table_id/game_id to spectate'
-            }, room=sid)
-
-    except Exception as e:
-        await sio.emit('error', {'message': f'Join spectate failed: {str(e)}'}, room=sid)
-
-
-@sio.event
-async def leave_spectate(sid, data):
-    """Leave spectator room for poker or werewolf."""
-    try:
-        table_id = (data or {}).get('table_id')
-        game_id = (data or {}).get('game_id')
-
-        if table_id:
-            await sio.leave_room(sid, _poker_spectator_room(table_id))
-            _remove_spectator_subscription(sid, 'poker', table_id)
-        if game_id:
-            await sio.leave_room(sid, _werewolf_spectator_room(game_id))
-            _remove_spectator_subscription(sid, 'werewolf', game_id)
-
-    except Exception as e:
-        await sio.emit('error', {'message': f'Leave spectate failed: {str(e)}'}, room=sid)
 
 
 @sio.event
@@ -2759,8 +2206,6 @@ async def on_game_matched(players, game_size: int):
 @sio.event
 async def join_texas_matchmaking(sid, data):
     """Join Texas Hold'em matchmaking queue for auto-seating."""
-    global texas_matchmaker
-
     try:
         if await _reject_if_read_only(sid, 'join_texas_matchmaking'):
             return
@@ -2785,15 +2230,15 @@ async def join_texas_matchmaking(sid, data):
             await sio.emit('error', {'message': 'Invalid buy-in amount'}, room=sid)
             return
 
-        if texas_matchmaker is None:
-            texas_matchmaker = TexasMatchmaker(
+        if runtime_state.texas_matchmaker is None:
+            runtime_state.texas_matchmaker = TexasMatchmaker(
                 game_start_callback=on_texas_game_matched,
                 fallback_warning_callback=on_texas_matchmaking_fallback,
             )
-            texas_matchmaker.start()
+            runtime_state.texas_matchmaker.start()
 
-        if texas_matchmaker.add_player(sid, player_id, nickname, buy_in_tokens):
-            queue_info = texas_matchmaker.get_queue_info()
+        if runtime_state.texas_matchmaker.add_player(sid, player_id, nickname, buy_in_tokens):
+            queue_info = runtime_state.texas_matchmaker.get_queue_info()
             await sio.emit('texas_matchmaking_joined', {
                 'queue_size': queue_info['size'],
                 'buy_in_tokens': float(buy_in_tokens),
@@ -2809,14 +2254,12 @@ async def join_texas_matchmaking(sid, data):
 @sio.event
 async def leave_texas_matchmaking(sid, data):
     """Leave Texas Hold'em matchmaking queue."""
-    global texas_matchmaker
-
     try:
-        if texas_matchmaker is None:
+        if runtime_state.texas_matchmaker is None:
             await sio.emit('error', {'message': 'Texas matchmaker not initialized'}, room=sid)
             return
 
-        if texas_matchmaker.remove_player(sid):
+        if runtime_state.texas_matchmaker.remove_player(sid):
             await sio.emit('texas_matchmaking_left', {
                 'message': 'Left Texas matchmaking queue'
             }, room=sid)
@@ -2830,10 +2273,8 @@ async def leave_texas_matchmaking(sid, data):
 @sio.event
 async def get_texas_matchmaking_status(sid, data):
     """Get Texas matchmaking queue status for the requesting socket."""
-    global texas_matchmaker
-
     try:
-        if texas_matchmaker is None:
+        if runtime_state.texas_matchmaker is None:
             await sio.emit('texas_matchmaking_status', {
                 'queue_size': 0,
                 'in_queue': False,
@@ -2841,14 +2282,14 @@ async def get_texas_matchmaking_status(sid, data):
             }, room=sid)
             return
 
-        queue_info = texas_matchmaker.get_queue_info()
-        in_queue = texas_matchmaker.is_player_in_queue(sid)
+        queue_info = runtime_state.texas_matchmaker.get_queue_info()
+        in_queue = runtime_state.texas_matchmaker.is_player_in_queue(sid)
         await sio.emit('texas_matchmaking_status', {
             'queue_size': queue_info['size'],
             'oldest_wait_time': queue_info['oldest_wait_time'],
             'average_wait_time': queue_info['average_wait_time'],
             'in_queue': in_queue,
-            'is_running': texas_matchmaker.is_running(),
+            'is_running': runtime_state.texas_matchmaker.is_running(),
         }, room=sid)
 
     except Exception as e:
@@ -2862,8 +2303,6 @@ async def join_matchmaking(sid, data):
     
     Expected data: {'nickname': str (optional)}
     """
-    global werewolf_matchmaker
-    
     try:
         if await _reject_if_read_only(sid, 'join_matchmaking'):
             return
@@ -2887,15 +2326,15 @@ async def join_matchmaking(sid, data):
             return
 
         # Initialize matchmaker if needed
-        if werewolf_matchmaker is None:
-            werewolf_matchmaker = WerewolfMatchmaker(
+        if runtime_state.werewolf_matchmaker is None:
+            runtime_state.werewolf_matchmaker = WerewolfMatchmaker(
                 game_start_callback=on_game_matched,
                 fallback_warning_callback=on_matchmaking_fallback
             )
-            werewolf_matchmaker.start()
+            runtime_state.werewolf_matchmaker.start()
 
-        if werewolf_matchmaker.get_queue_size() > 0:
-            queued_fee = werewolf_matchmaker.queue[0].entry_fee
+        if runtime_state.werewolf_matchmaker.get_queue_size() > 0:
+            queued_fee = runtime_state.werewolf_matchmaker.queue[0].entry_fee
             if queued_fee != entry_fee:
                 await sio.emit('error', {
                     'message': (
@@ -2921,8 +2360,8 @@ async def join_matchmaking(sid, data):
                 return
         
         # Add to queue
-        if werewolf_matchmaker.add_player(sid, player_id, nickname, entry_fee):
-            queue_info = werewolf_matchmaker.get_queue_info()
+        if runtime_state.werewolf_matchmaker.add_player(sid, player_id, nickname, entry_fee):
+            queue_info = runtime_state.werewolf_matchmaker.get_queue_info()
             await sio.emit('matchmaking_joined', {
                 'queue_size': queue_info['size'],
                 'entry_fee': float(entry_fee),
@@ -2938,15 +2377,13 @@ async def join_matchmaking(sid, data):
 @sio.event
 async def leave_matchmaking(sid, data):
     """Leave the Werewolf matchmaking queue."""
-    global werewolf_matchmaker
-    
     try:
-        if werewolf_matchmaker is None:
+        if runtime_state.werewolf_matchmaker is None:
             await sio.emit('error', {'message': 'Matchmaker not initialized'}, room=sid)
             return
         
         # Remove from queue
-        if werewolf_matchmaker.remove_player(sid):
+        if runtime_state.werewolf_matchmaker.remove_player(sid):
             await sio.emit('matchmaking_left', {
                 'message': 'Left matchmaking queue'
             }, room=sid)
@@ -2960,10 +2397,8 @@ async def leave_matchmaking(sid, data):
 @sio.event
 async def get_matchmaking_status(sid, data):
     """Get current matchmaking queue status."""
-    global werewolf_matchmaker
-    
     try:
-        if werewolf_matchmaker is None:
+        if runtime_state.werewolf_matchmaker is None:
             await sio.emit('matchmaking_status', {
                 'queue_size': 0,
                 'in_queue': False,
@@ -2971,15 +2406,15 @@ async def get_matchmaking_status(sid, data):
             }, room=sid)
             return
         
-        queue_info = werewolf_matchmaker.get_queue_info()
-        in_queue = werewolf_matchmaker.is_player_in_queue(sid)
+        queue_info = runtime_state.werewolf_matchmaker.get_queue_info()
+        in_queue = runtime_state.werewolf_matchmaker.is_player_in_queue(sid)
         
         await sio.emit('matchmaking_status', {
             'queue_size': queue_info['size'],
             'oldest_wait_time': queue_info['oldest_wait_time'],
             'average_wait_time': queue_info['average_wait_time'],
             'in_queue': in_queue,
-            'is_running': werewolf_matchmaker.is_running()
+            'is_running': runtime_state.werewolf_matchmaker.is_running()
         }, room=sid)
     
     except Exception as e:
@@ -2998,24 +2433,22 @@ async def graceful_shutdown():
     
     Security improvement: Save active game states before shutdown.
     """
-    global werewolf_matchmaker, texas_matchmaker, werewolf_timeout_task, poker_timeout_task
-    
     print("\nGraceful shutdown initiated...")
     
     # Stop matchmaker
-    if werewolf_matchmaker:
-        werewolf_matchmaker.stop()
-    if texas_matchmaker:
-        texas_matchmaker.stop()
+    if runtime_state.werewolf_matchmaker:
+        runtime_state.werewolf_matchmaker.stop()
+    if runtime_state.texas_matchmaker:
+        runtime_state.texas_matchmaker.stop()
 
     # Stop background timeout task cleanly.
-    if werewolf_timeout_task and not werewolf_timeout_task.done():
-        werewolf_timeout_task.cancel()
-        await asyncio.gather(werewolf_timeout_task, return_exceptions=True)
+    if runtime_state.werewolf_timeout_task and not runtime_state.werewolf_timeout_task.done():
+        runtime_state.werewolf_timeout_task.cancel()
+        await asyncio.gather(runtime_state.werewolf_timeout_task, return_exceptions=True)
 
-    if poker_timeout_task and not poker_timeout_task.done():
-        poker_timeout_task.cancel()
-        await asyncio.gather(poker_timeout_task, return_exceptions=True)
+    if runtime_state.poker_timeout_task and not runtime_state.poker_timeout_task.done():
+        runtime_state.poker_timeout_task.cancel()
+        await asyncio.gather(runtime_state.poker_timeout_task, return_exceptions=True)
     
     # Notify all connected clients
     await sio.emit('server_shutdown', {

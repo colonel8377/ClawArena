@@ -19,6 +19,8 @@ import random
 import base64
 import hashlib
 import hmac
+import os
+import ssl
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -36,10 +38,52 @@ from decimal import Decimal
 # CONFIGURATION
 # ============================================================================
 
-# Backend URL (docker backend)
-BACKEND_HOST = "api-dev.clawarena.io"
-BACKEND_URL = f"http://{BACKEND_HOST}"
+# Backend URL
+# Default to HTTPS because production endpoint redirects HTTP -> HTTPS (301).
+def _select_backend():
+    env_host = os.getenv("ARENA_BACKEND_HOST")
+    env_scheme = os.getenv("ARENA_BACKEND_SCHEME")
+    env_port = os.getenv("ARENA_BACKEND_PORT")
 
+    if env_host:
+        scheme = (env_scheme or "https").strip().lower() or "https"
+        port = int(env_port or ("443" if scheme == "https" else "80"))
+        return scheme, env_host.strip(), port
+
+    # Prefer local docker backend when available.
+    try:
+        conn = http.client.HTTPConnection("localhost", 8080, timeout=1)
+        conn.request("GET", "/health")
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status == 200:
+            return "http", "localhost", 8080
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    scheme = (env_scheme or "https").strip().lower() or "https"
+    port = int(env_port or ("443" if scheme == "https" else "80"))
+    host = (env_host or "api-dev.clawarena.io").strip()
+    return scheme, host, port
+
+
+BACKEND_SCHEME, BACKEND_HOST, BACKEND_PORT = _select_backend()
+
+
+def _format_backend_url(scheme: str, host: str, port: int) -> str:
+    """Build backend URL and keep explicit non-default ports for Socket.IO."""
+    default_port = 443 if scheme == "https" else 80
+    if port == default_port:
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+BACKEND_URL = _format_backend_url(BACKEND_SCHEME, BACKEND_HOST, BACKEND_PORT)
 # Number of agents for each game
 WEREWOLF_AGENTS = 6
 TEXAS_AGENTS = 3
@@ -73,12 +117,21 @@ class SocketIOClient:
     def connect(self):
         """Connect to Socket.IO server."""
         # Parse URL
+        use_tls = False
         if self.url.startswith('ws://'):
             host_port = self.url[5:].split('/')[0]
             path = '/' + '/'.join(self.url[5:].split('/')[1:])
+        elif self.url.startswith('wss://'):
+            host_port = self.url[6:].split('/')[0]
+            path = '/' + '/'.join(self.url[6:].split('/')[1:])
+            use_tls = True
         elif self.url.startswith('http://'):
             host_port = self.url[7:].split('/')[0]
             path = '/socket.io/'
+        elif self.url.startswith('https://'):
+            host_port = self.url[8:].split('/')[0]
+            path = '/socket.io/'
+            use_tls = True
         else:
             raise ValueError(f"Invalid URL: {self.url}")
         
@@ -87,10 +140,11 @@ class SocketIOClient:
             port = int(port)
         else:
             host = host_port
-            port = 80 if self.url.startswith('http://') else 80
+            port = 443 if use_tls else 80
         
         # Perform HTTP handshake first
-        conn = http.client.HTTPConnection(host, port)
+        conn_cls = http.client.HTTPSConnection if use_tls else http.client.HTTPConnection
+        conn = conn_cls(host, port, timeout=10)
         try:
             conn.request('GET', f'{path}?EIO=4&transport=polling')
             resp = conn.getresponse()
@@ -108,16 +162,21 @@ class SocketIOClient:
             raise ConnectionError("Failed to get session ID")
         
         # Upgrade to WebSocket
-        self._connect_websocket(host, port, path)
+        self._connect_websocket(host, port, path, use_tls)
     
-    def _connect_websocket(self, host: str, port: int, path: str):
+    def _connect_websocket(self, host: str, port: int, path: str, use_tls: bool = False):
         """Connect via WebSocket."""
         # Create WebSocket key
         key = base64.b64encode(bytes(random.getrandbits(8) for _ in range(16))).decode('utf-8')
         
         # Create socket
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect((host, port))
+        raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw_sock.connect((host, port))
+        if use_tls:
+            context = ssl.create_default_context()
+            self.sock = context.wrap_socket(raw_sock, server_hostname=host)
+        else:
+            self.sock = raw_sock
         
         # Send WebSocket upgrade request
         upgrade_request = (
@@ -463,7 +522,8 @@ class SocketIOClient:
 def http_request(method: str, path: str, params: Optional[Dict] = None, 
                  data: Optional[Dict] = None, headers: Optional[Dict] = None) -> Dict:
     """Make HTTP request using standard library."""
-    conn = http.client.HTTPConnection(BACKEND_HOST, timeout=10)
+    conn_cls = http.client.HTTPSConnection if BACKEND_SCHEME == 'https' else http.client.HTTPConnection
+    conn = conn_cls(BACKEND_HOST, BACKEND_PORT, timeout=10)
     
     try:
         # Build URL with params
@@ -582,9 +642,11 @@ class BaseAgent:
                 user = result.get('user') or {}
                 player_id = user.get('player_id')
                 if not player_id:
+                    print(f"[{self.state.nickname}] register returned no player_id: {result}")
                     return False
                 self.state.player_id = player_id
                 self.state.player_name = user.get('player_name') or self.state.player_name
+
                 return True
 
             if status_code == 429 and attempt < max_attempts:
@@ -596,7 +658,7 @@ class BaseAgent:
                 time.sleep(wait_seconds)
                 continue
 
-            return False
+            print(f"[{self.state.nickname}] register failed: {result}")
 
         return False
     
@@ -605,7 +667,7 @@ class BaseAgent:
         if not self.state.player_id:
             return False
         result = http_request('POST', '/api/login', params={
-            'player_id': self.state.player_id
+            'login_key': self.state.player_id
         })
         return result.get('status_code') == 200
     
@@ -674,6 +736,7 @@ class BaseAgent:
     def on_game_snapshot(self, data: Dict):
         """Handle game snapshot - override in subclasses."""
         pass
+
 
 
 def wait_until(predicate, timeout: float, interval: float = 0.5) -> bool:

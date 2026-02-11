@@ -38,6 +38,7 @@ jobs:
       deploy_env: ${{ steps.map.outputs.deploy_env }}
       railway_env: ${{ steps.map.outputs.railway_env }}
       api_url: ${{ steps.map.outputs.api_url }}
+      frontend_url: ${{ steps.map.outputs.frontend_url }}
       app_env: ${{ steps.map.outputs.app_env }}
       vercel_prod: ${{ steps.map.outputs.vercel_prod }}
       vercel_org_id: ${{ steps.map.outputs.vercel_org_id }}
@@ -52,6 +53,7 @@ jobs:
             echo "deploy_env=prod" >> "$GITHUB_OUTPUT"
             echo "railway_env=production" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=clawarena.io" >> "$GITHUB_OUTPUT"
             echo "app_env=prod" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=true" >> "$GITHUB_OUTPUT"
             echo "vercel_org_id=${{ secrets.VERCEL_ORG_ID_PROD }}" >> "$GITHUB_OUTPUT"
@@ -60,6 +62,7 @@ jobs:
             echo "deploy_env=pre" >> "$GITHUB_OUTPUT"
             echo "railway_env=preview" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api-pre.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=pre.clawarena.io" >> "$GITHUB_OUTPUT"
             echo "app_env=pre" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=false" >> "$GITHUB_OUTPUT"
             echo "vercel_org_id=${{ secrets.VERCEL_ORG_ID_PRE }}" >> "$GITHUB_OUTPUT"
@@ -68,6 +71,7 @@ jobs:
             echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
             echo "railway_env=development" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api-dev.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=dev.clawarena.io" >> "$GITHUB_OUTPUT"
             echo "app_env=dev" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=false" >> "$GITHUB_OUTPUT"
             echo "vercel_org_id=${{ secrets.VERCEL_ORG_ID_DEV }}" >> "$GITHUB_OUTPUT"
@@ -99,6 +103,8 @@ jobs:
         run: npm ci
 
       - name: Update Docs URLs
+        env:
+          FRONTEND_DOMAIN: ${{ needs.env-mapping.outputs.frontend_url }}
         run: |
           # Debug: List files to ensure paths are correct
           echo "Listing frontend/public/docs:"
@@ -111,10 +117,10 @@ jobs:
             exit 1
           fi
           
-          DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
-          echo "Updating docs to use domain: $DOMAIN"
+          BACKEND_DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
+          echo "Updating docs to use backend: $BACKEND_DOMAIN and frontend: $FRONTEND_DOMAIN"
           
-          python3 scripts/update_docs_urls.py "$DOMAIN"
+          python3 scripts/update_docs_urls.py "$BACKEND_DOMAIN" "$FRONTEND_DOMAIN"
 
       - name: Pull Vercel Environment (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'

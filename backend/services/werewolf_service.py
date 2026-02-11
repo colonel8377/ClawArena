@@ -74,6 +74,14 @@ class WerewolfService(BaseService):
     def _werewolf_spectator_room(self, game_id: str) -> str:
         return f"{self.WEREWOLF_SPECTATOR_ROOM_PREFIX}{game_id}"
 
+    async def _acquire_game_state_lock(self, game_id: str):
+        """Return a Redis lock context for game state transitions.
+
+        This lock is shared by join/start flows to prevent cross-node races
+        where a game could start while a player is mid-join.
+        """
+        return redis_manager.lock(f"game_state:{game_id}", timeout=10)
+
     async def broadcast_state(self, game_id: str) -> None:
         """Broadcast werewolf state to players and spectators."""
         game = self._state.werewolf_games.get(game_id)
@@ -104,7 +112,6 @@ class WerewolfService(BaseService):
             await asyncio.gather(
                 *(self._sio.emit("werewolf_state", reveal_state, room=target_sid) for target_sid in reveal_sids),
                 return_exceptions=True)
-            return
 
         self._create_task(redis_manager.refresh_game_ttl(game_id), name=f"refresh_ttl_{game_id}")
 
@@ -129,7 +136,10 @@ class WerewolfService(BaseService):
                 await self._sio.emit("error", {"message": "Game already exists"}, room=sid)
                 return
 
-            self._state.werewolf_games[game_id] = WerewolfGame(game_id, entry_fee=entry_fee)
+            game = WerewolfGame(game_id, entry_fee=entry_fee)
+            # Track host identity for start-game authorization checks.
+            game.created_by_sid = sid
+            self._state.werewolf_games[game_id] = game
 
             await persistence_manager.on_game_created(
                 game_id=game_id,
@@ -189,37 +199,38 @@ class WerewolfService(BaseService):
             )
             return
 
-        async with redis_manager.lock(f"game_join:{game_id}"):
-            if not game.add_player(sid, player_id, nickname=nickname):
-                await self._sio.emit("error", {"message": "Could not join game"}, room=sid)
-                return
+        async with self._get_game_lock(game_id):
+            async with redis_manager.lock(f"game_state:{game_id}", timeout=10):
+                if not game.add_player(sid, player_id, nickname=nickname):
+                    await self._sio.emit("error", {"message": "Could not join game"}, room=sid)
+                    return
 
-            try:
-                await lock_balance(player_id, game.entry_fee, game_session_id=game_id)
-            except Exception as exc:
-                await self._sio.emit(
-                    "error",
-                    {"message": f"Failed to lock entry fee: {str(exc)}"},
-                    room=sid,
+                try:
+                    await lock_balance(player_id, game.entry_fee, game_session_id=game_id)
+                except Exception as exc:
+                    await self._sio.emit(
+                        "error",
+                        {"message": f"Failed to lock entry fee: {str(exc)}"},
+                        room=sid,
+                    )
+                    game.remove_player(sid)
+                    return
+
+                self._state.player_sessions[sid]["game_id"] = game_id
+
+                await persistence_manager.on_player_joined(
+                    game_id=game_id,
+                    player_id=player_id,
+                    socket_sid=sid,
+                    nickname=nickname,
+                    entry_paid=game.entry_fee,
                 )
-                game.remove_player(sid)
-                return
 
-            self._state.player_sessions[sid]["game_id"] = game_id
-
-            await persistence_manager.on_player_joined(
-                game_id=game_id,
-                player_id=player_id,
-                socket_sid=sid,
-                nickname=nickname,
-                entry_paid=game.entry_fee,
-            )
-
-            await redis_manager.save_game_core(
-                game_id,
-                game.get_core_state(),
-                game_type="werewolf",
-            )
+                await redis_manager.save_game_core(
+                    game_id,
+                    game.get_core_state(),
+                    game_type="werewolf",
+                )
 
         await self._sio.enter_room(sid, game_id)
 
@@ -240,30 +251,63 @@ class WerewolfService(BaseService):
             await self._sio.emit("error", {"message": "Invalid game_id"}, room=sid)
             return
 
-        game = self._state.werewolf_games[game_id]
-        if not game.start_game():
-            await self._sio.emit(
-                "error",
-                {"message": "Cannot start game (need more players)"},
-                room=sid,
-            )
-            return
+        async with self._get_game_lock(game_id):
+            async with redis_manager.lock(f"game_start:{game_id}", timeout=5):
+                async with redis_manager.lock(f"game_state:{game_id}", timeout=10):
+                    game = self._state.werewolf_games[game_id]
 
-        players_with_roles = []
-        for player in game.players:
-            players_with_roles.append(
-                {
-                    "wallet_address": player["wallet_address"],
-                    "role_type": player["role"].role_type.value if player.get("role") else None,
-                    "team": player["role"].team.value if player.get("role") else None,
-                }
-            )
+                    if getattr(game, "started", False):
+                        return
 
-        await persistence_manager.on_game_started(
-            game_id=game_id,
-            players_with_roles=players_with_roles,
-            initial_state=game.to_dict(),
-        )
+                    player_sids = {player.get("sid") for player in game.players}
+                    if sid not in player_sids:
+                        await self._sio.emit(
+                            "error",
+                            {"message": "Only players in this game can start it"},
+                            room=sid,
+                        )
+                        return
+
+                    host_sid = getattr(game, "created_by_sid", None)
+                    if host_sid and sid != host_sid:
+                        await self._sio.emit(
+                            "error",
+                            {"message": "Only game host can start the game"},
+                            room=sid,
+                        )
+                        return
+
+                    if game.phase != WerewolfPhase.WAITING:
+                        await self._sio.emit(
+                            "error",
+                            {"message": "Game already started"},
+                            room=sid,
+                        )
+                        return
+
+                    if not game.start_game():
+                        await self._sio.emit(
+                            "error",
+                            {"message": "Cannot start game (need more players)"},
+                            room=sid,
+                        )
+                        return
+
+                    players_with_roles = []
+                    for player in game.players:
+                        players_with_roles.append(
+                            {
+                                "wallet_address": player["wallet_address"],
+                                "role_type": player["role"].role_type.value if player.get("role") else None,
+                                "team": player["role"].team.value if player.get("role") else None,
+                            }
+                        )
+
+                    await persistence_manager.on_game_started(
+                        game_id=game_id,
+                        players_with_roles=players_with_roles,
+                        initial_state=game.to_dict(),
+                    )
 
         await self.broadcast_state(game_id)
 
@@ -600,36 +644,30 @@ class WerewolfService(BaseService):
 
             try:
                 if game:
-                    should_refund = await redis_manager.mark_settlement_stage_once(
+                    should_settle = await redis_manager.mark_settlement_stage_once(
                         game_id,
-                        "werewolf_refund",
+                        "werewolf_settlement",
                     )
-                    if should_refund:
-                        await self._settlement_service.refund_werewolf_entry_fees(
-                            game.players,
-                            game_id,
-                            description="Werewolf entry fee principal unlock",
-                        )
-                    else:
-                        print(f"[WerewolfSettle] Skip duplicate refund stage for game {game_id}")
+                    if not should_settle:
+                        print(f"[WerewolfSettle] Skip duplicate settlement for game {game_id}")
+                        return
 
-                if game and winners:
-                    should_prize = await redis_manager.mark_settlement_stage_once(
-                        game_id,
-                        "werewolf_prize",
-                    )
-                    if should_prize:
+                    try:
                         print(
-                            f"Werewolf game prize pool: {float(prize_pool)} tokens from {len(winners)} winners"
+                            f"Werewolf game prize pool: {str(prize_pool)} tokens from {len(winners)} winners"
                         )
-                        await self._settlement_service.award_werewolf_prizes(
+                        await self._settlement_service.process_werewolf_settlement(
+                            game.players,
                             winners,
+                            game_id,
                             prize_pool,
-                            description="Werewolf game prize",
                         )
-                    else:
-                        print(f"[WerewolfSettle] Skip duplicate prize stage for game {game_id}")
-
+                    except Exception:
+                        await redis_manager.clear_settlement_stage(
+                            game_id,
+                            "werewolf_settlement",
+                        )
+                        raise
                 elif game and not winners:
                     print("Werewolf game ended without winners, refunding entry fees")
                 else:

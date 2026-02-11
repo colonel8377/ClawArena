@@ -256,21 +256,30 @@ async def on_game_matched(sio, state, players, game_size: int, werewolf_service)
 
         seated_players = []
         for player in eligible_players:
-            if not game.add_player(player.sid, player.wallet_address, nickname=player.nickname):
+            try:
+                await lock_balance(player.wallet_address, entry_fee, game_session_id=game_id)
+            except Exception as exc:
                 await sio.emit(
                     "error",
-                    {"message": "Could not join auto-matched werewolf game"},
+                    {"message": f"Failed to lock werewolf entry fee: {str(exc)}"},
                     room=player.sid,
                 )
                 continue
 
-            try:
-                await lock_balance(player.wallet_address, entry_fee, game_session_id=game_id)
-            except Exception as exc:
-                game.remove_player(player.sid)
+            if not game.add_player(player.sid, player.wallet_address, nickname=player.nickname):
+                try:
+                    await unlock_balance(
+                        player.wallet_address,
+                        entry_fee,
+                        game_session_id=game_id,
+                        description="Werewolf matchmaking seat allocation failed",
+                    )
+                except Exception:
+                    pass
+
                 await sio.emit(
                     "error",
-                    {"message": f"Failed to lock werewolf entry fee: {str(exc)}"},
+                    {"message": "Could not join auto-matched werewolf game"},
                     room=player.sid,
                 )
                 continue
@@ -522,8 +531,8 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                         {
                             "message": (
                                 "Insufficient balance for werewolf matchmaking entry fee. "
-                                f"Required: {float(entry_fee)} tokens, "
-                                f"Available: {float(current_balance)}"
+                                f"Required: {str(entry_fee)} tokens, "
+                                f"Available: {str(current_balance)}"
                             )
                         },
                         room=sid,

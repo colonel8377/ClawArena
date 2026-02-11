@@ -322,63 +322,64 @@ class TexasService(BaseService):
         await asyncio.create_task(table.save_checkpoint("action"))
 
     async def leave_game(self, table_id: str, sid: str) -> None:
-        if not table_id or table_id not in self._state.poker_tables:
-            await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
-            return
+        async with self._get_table_lock(table_id):
+            if not table_id or table_id not in self._state.poker_tables:
+                await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
+                return
 
-        table = self._state.poker_tables[table_id]
-        if table.engine.phase in POKER_ACTIVE_PHASES:
-            await self._sio.emit(
-                "error",
-                {
-                    "message": "Cannot leave during active hand. Fold or wait for the hand to finish."
-                },
-                room=sid,
-            )
-            return
+            table = self._state.poker_tables[table_id]
+            if table.engine.phase in POKER_ACTIVE_PHASES:
+                await self._sio.emit(
+                    "error",
+                    {
+                        "message": "Cannot leave during active hand. Fold or wait for the hand to finish."
+                    },
+                    room=sid,
+                )
+                return
 
-        player_dict = next((p for p in table.players if p.get("sid") == sid), None)
-        engine_player = table.engine.players.get(sid)
+            player_dict = next((p for p in table.players if p.get("sid") == sid), None)
+            engine_player = table.engine.players.get(sid)
 
-        table.remove_player(sid)
-        if sid in table.engine.players:
-            await self._sio.emit(
-                "error",
-                {"message": "Leave request deferred until the current hand completes."},
-                room=sid,
-            )
-            return
+            table.remove_player(sid)
+            if sid in table.engine.players:
+                await self._sio.emit(
+                    "error",
+                    {"message": "Leave request deferred until the current hand completes."},
+                    room=sid,
+                )
+                return
 
-        await self._sio.leave_room(sid, table_id)
+            await self._sio.leave_room(sid, table_id)
 
-        if sid in self._state.player_sessions:
-            self._state.player_sessions[sid]["table_id"] = None
-        
-        if player_dict:
-             # Clean up disconnected tracking if exists
-            table_map = self._state.poker_disconnected_since.get(table_id)
-            if table_map:
-                table_map.pop(player_dict.get("wallet_address", ""), None)
-                if not table_map:
-                    self._state.poker_disconnected_since.pop(table_id, None)
+            if sid in self._state.player_sessions:
+                self._state.player_sessions[sid]["table_id"] = None
+            
+            if player_dict:
+                 # Clean up disconnected tracking if exists
+                table_map = self._state.poker_disconnected_since.get(table_id)
+                if table_map:
+                    table_map.pop(player_dict.get("wallet_address", ""), None)
+                    if not table_map:
+                        self._state.poker_disconnected_since.pop(table_id, None)
 
-        if player_dict and engine_player:
-            wallet_address = player_dict["wallet_address"]
-            buy_in_tokens = Decimal(str(player_dict.get("buy_in_tokens", 0) or 0))
-            chips_tokens = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
+            if player_dict and engine_player:
+                wallet_address = player_dict["wallet_address"]
+                buy_in_tokens = Decimal(str(player_dict.get("buy_in_tokens", 0) or 0))
+                chips_tokens = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
 
-            await self._settlement_service.settle_texas_player(
-                wallet_address,
-                buy_in_tokens,
-                chips_tokens,
-                table_id,
-                principal_description="Texas Hold'em buy-in principal unlock",
-                win_description="Texas Hold'em settlement profit",
-                loss_description="Texas Hold'em settlement loss",
-            )
+                await self._settlement_service.settle_texas_player(
+                    wallet_address,
+                    buy_in_tokens,
+                    chips_tokens,
+                    table_id,
+                    principal_description="Texas Hold'em buy-in principal unlock",
+                    win_description="Texas Hold'em settlement profit",
+                    loss_description="Texas Hold'em settlement loss",
+                )
 
-        await self._sio.emit("left_game", {"table_id": table_id}, room=sid)
-        await self.broadcast_state(table_id)
+            await self._sio.emit("left_game", {"table_id": table_id}, room=sid)
+            await self.broadcast_state(table_id)
 
     async def _check_disconnected_players(self, table_id: str, table) -> None:
         """Auto-settle disconnected poker players after a grace period."""

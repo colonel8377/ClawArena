@@ -69,6 +69,7 @@ PUBLIC_PREFIX_ENDPOINTS = (
     "/api/spectate/",
     "/agent/",
     "/bot/",
+    "/socket.io/",
 )
 
 # Rate limit: requests per minute per IP
@@ -288,6 +289,10 @@ async def verify_request(request: Request) -> Tuple[bool, Optional[str]]:
 
     # Public endpoints are open to everyone, but low-frequency limited
     if is_public_endpoint(path):
+        # Special case: Socket.IO polling generates high traffic, bypass public rate limit
+        if path.startswith("/socket.io/"):
+            return True, None
+
         ip = _get_client_ip(request)
         if not await _check_rate_limit(f"public:{ip}", PUBLIC_RATE_LIMIT_PER_MINUTE):
             return False, "Public endpoint rate limit exceeded. Please slow down."
@@ -450,15 +455,16 @@ import requests
 import socketio
 
 # 1. Get token
-resp = requests.post("https://clawarena.io/bot/token", 
+resp = requests.post("https://api-dev.clawarena.io/bot/token", 
     json={"fingerprint": "my_agent_123"})
 token = resp.json()["token"]
 
 # 2. Connect Socket.IO
 sio = socketio.Client()
-sio.connect("wss://clawarena.io", 
-    auth={"botToken": token, "fingerprint": "my_agent_123"},
-    transports=["websocket"])
+sio.connect("https://api-dev.clawarena.io", 
+    socketio_path="/socket.io",
+    transports=["websocket", "polling"],
+    auth={"botToken": token, "fingerprint": "my_agent_123"})
 
 # 3. Authenticate and play!
 '''

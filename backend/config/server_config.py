@@ -60,7 +60,7 @@ ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv('ALLOWED_ORIGINS', '*'))
 
 # Trusted host configuration (for TrustedHostMiddleware)
 ALLOWED_HOSTS = _parse_allowed_hosts(
-    os.getenv('ALLOWED_HOSTS', '*.railway.app, *.*.railway.app,*.clawarena.io,localhost,127.0.0.1')
+    os.getenv('ALLOWED_HOSTS', '*.railway.app,*.clawarena.io,localhost,127.0.0.1')
 )
 
 # Anti-bot configuration (simplified - no PoW)

@@ -1,6 +1,8 @@
 """Startup and shutdown lifecycle orchestration."""
 
 import asyncio
+import sys
+import logging
 from datetime import datetime
 
 from backend.database.connection import init_db
@@ -14,17 +16,26 @@ async def on_startup(app, sio, texas_service, werewolf_service):
     """
     Initialize services and restore persisted game states on server startup.
     """
+    # Configure logging for Redis to print full logs
+    # Ensure root logger is set to at least INFO so we see output
+    logging.basicConfig(level=logging.INFO)
+    # Set Redis logger to DEBUG for full logs
+    logging.getLogger("redis").setLevel(logging.DEBUG)
+    logging.getLogger("backend.database.redis_manager").setLevel(logging.DEBUG)
+
     # Initialize database with retry logic (waits for MySQL to be ready)
     print("Initializing database...")
     db_success = init_db(retry=True)
     if db_success:
         print("✓ Database initialized and tables created")
     else:
-        print("⚠ Database initialization failed - some features may not work")
-        print("  Make sure MySQL is running and credentials are correct")
+        print("CRITICAL: Database initialization failed. Stopping service.")
+        sys.exit(1)
     
     # Connect to Redis
-    await redis_manager.connect()
+    if not await redis_manager.connect():
+        print("CRITICAL: Redis connection failed. Stopping service.")
+        sys.exit(1)
     print("✓ RedisManager connected")
     
     # Restore persisted games from Redis

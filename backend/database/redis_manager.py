@@ -23,6 +23,8 @@ Features:
 import os
 import json
 import asyncio
+import socket
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', '')
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
 
 # Key prefixes for namespacing
 REDIS_SESSION_PREFIX = 'arena:session:'
@@ -89,6 +91,16 @@ class RedisManager:
         Args:
             redis_url: Redis connection URL
         """
+        # Mask password for logging/printing
+        safe_url = redis_url
+        if '@' in redis_url:
+            parts = redis_url.split('@')
+            safe_url = f"*****@{parts[-1]}"
+            
+        # Use print to ensure visibility even if logging isn't configured yet (Import time)
+        print(f"DEBUG: Initializing RedisManager with URL: {safe_url}")
+        logger.info(f"Initializing RedisManager with URL: {safe_url}")
+        
         self.redis_url = redis_url
         self.redis_password = redis_password
         self._redis: Optional[redis.Redis] = None
@@ -121,12 +133,48 @@ class RedisManager:
                     self._connected = False
             
             try:
+                # Prioritize password in URL if REDIS_PASSWORD is empty
+                # redis-py's from_url might use empty string password if provided
+                kwargs = {
+                    "encoding": "utf-8",
+                    "decode_responses": True,
+                    "max_connections": 20
+                }
+                
+                # Only explicitly pass password if it's set in env var
+                if self.redis_password:
+                    kwargs["password"] = self.redis_password
+                
+                # DIAGNOSTIC: Perform explicit DNS lookup to verify network visibility
+                try:
+                    parsed = urlparse(self.redis_url)
+                    hostname = parsed.hostname
+                    port = parsed.port or 6379
+                    print(f"DEBUG: Diagnosing connection to host: '{hostname}' on port {port}...")
+                    
+                    # Try to resolve IP
+                    ip_address = socket.gethostbyname(hostname)
+                    print(f"DEBUG: ✓ DNS Resolution successful: {hostname} -> {ip_address}")
+                    
+                    # Optional: Try simple TCP handshake
+                    s = socket.create_connection((hostname, port), timeout=2)
+                    s.close()
+                    print(f"DEBUG: ✓ TCP Handshake successful to {hostname}:{port}")
+                    
+                except socket.gaierror as e:
+                    print(f"CRITICAL: ❌ DNS Resolution FAILED for '{hostname}'.")
+                    print(f"  Reason: {e}")
+                    print(f"  Diagnosis: The service name '{hostname}' cannot be found in this private network.")
+                    print(f"  Fix: Check if your Railway Service Name is exactly '{hostname.split('.')[0]}'.")
+                except socket.timeout:
+                    print(f"CRITICAL: ❌ TCP Connection TIMED OUT to {hostname}:{port}.")
+                    print(f"  Diagnosis: Host resolved but port is not reachable.")
+                except Exception as e:
+                    print(f"DEBUG: Network diagnosis warning: {e}")
+
                 self._redis = redis.from_url(
                     self.redis_url,
-                    password=self.redis_password,
-                    encoding="utf-8",
-                    decode_responses=True,
-                    max_connections=20
+                    **kwargs
                 )
                 await self._redis.ping()
                 self._connected = True
@@ -209,7 +257,12 @@ class RedisManager:
     # ========================================================================
     
     @asynccontextmanager
-    async def lock(self, resource_id: str, timeout: int = LOCK_TIMEOUT):
+    async def lock(
+        self,
+        resource_id: str,
+        timeout: int = LOCK_TIMEOUT,
+        fail_closed: bool = True,
+    ):
         """
         Distributed lock context manager using Redis.
         
@@ -218,6 +271,7 @@ class RedisManager:
         Args:
             resource_id: Unique identifier for the resource to lock
             timeout: Lock timeout in seconds
+            fail_closed: If True, raise when Redis is unavailable instead of proceeding unlocked
             
         Usage:
             async with redis_manager.lock(game_id):
@@ -232,14 +286,25 @@ class RedisManager:
         acquired = False
         
         try:
-            # Try to acquire lock with retry
-            start_time = asyncio.get_event_loop().time()
-            while (asyncio.get_event_loop().time() - start_time) < timeout:
-                if not await self.ping():
-                    # Redis unavailable - log warning but allow operation
-                    logger.warning(f"Redis unavailable for lock '{resource_id}', proceeding without lock")
-                    yield
-                    return
+            if not await self.ping():
+                if fail_closed:
+                    raise RuntimeError(
+                        f"Redis unavailable; refusing to enter critical section for '{resource_id}'"
+                    )
+                logger.warning(
+                    f"Redis unavailable for lock '{resource_id}', proceeding without lock"
+                )
+                yield
+                return
+
+            if not self._redis:
+                raise RuntimeError(
+                    f"Redis unavailable; refusing to enter critical section for '{resource_id}'"
+                )
+
+            loop_time = asyncio.get_event_loop().time
+            start_time = loop_time()
+            while (loop_time() - start_time) < timeout:
                 
                 # Try to acquire lock (SET NX with expiry)
                 acquired = await self._redis.set(
@@ -840,11 +905,11 @@ class RedisManager:
         Returns:
             True if this call acquired stage ownership (first execution),
             False if the stage was already marked before.
-            If Redis is unavailable, returns True to avoid blocking settlement.
+            If Redis is unavailable, returns False to avoid duplicate settlement.
         """
         if not await self.ping():
-            logger.warning("Redis unavailable - settlement idempotency degraded")
-            return True
+            logger.warning("Redis unavailable - settlement idempotency blocked")
+            return False
 
         try:
             key = f"{REDIS_SETTLEMENT_PREFIX}{game_id}:{stage}"
@@ -852,7 +917,7 @@ class RedisManager:
             return bool(created)
         except Exception as e:
             logger.error(f"Error marking settlement stage {game_id}:{stage}: {e}")
-            return True
+            return False
 
     async def clear_settlement_stage(self, game_id: str, stage: str) -> bool:
         """

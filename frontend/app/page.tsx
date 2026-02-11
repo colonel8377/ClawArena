@@ -2,9 +2,9 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import BackendStatus from '@/components/status/BackendStatus';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
+import { getSocket } from '@/lib/socket';
 import { Monitor, Activity, Moon, Users, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useUiMode } from '@/components/UiModeProvider';
@@ -14,11 +14,23 @@ type ActiveGames = {
   werewolf_games: string[];
 };
 
+type HealthResponse = {
+  status: string;
+  active_tables: number;
+  local_debug_mode: boolean;
+};
+
 export default function GodModeDashboard() {
   const [active, setActive] = useState<ActiveGames>({ poker_tables: [], werewolf_games: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [webHost, setWebHost] = useState('clawarena.io');
   const { readingMode } = useUiMode();
+  
+  // Backend Status States
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [socketConnected, setSocketConnected] = useState<boolean>(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -44,7 +56,100 @@ export default function GodModeDashboard() {
     return () => clearInterval(id);
   }, []);
 
+  // Backend Status Effects
+  useEffect(() => {
+    let mounted = true;
+    const API_URL = getApiBaseUrl();
+
+    const fetchHealth = () => {
+        botFetch(`${API_URL}/health`)
+          .then(async (res) => {
+            if (!res.ok) {
+              throw new Error(`HTTP ${res.status}`);
+            }
+            const data = (await res.json()) as HealthResponse;
+            if (mounted) {
+              setHealth(data);
+              setHealthError(null);
+            }
+          })
+          .catch((err: Error) => {
+            if (mounted) setHealthError(err.message);
+          })
+          .finally(() => {
+            if (mounted) setHealthLoading(false);
+          });
+    };
+    
+    fetchHealth();
+    // Poll health check every 30 seconds
+    const healthInterval = setInterval(fetchHealth, 30000);
+
+    return () => {
+      mounted = false;
+      clearInterval(healthInterval);
+    };
+  }, []);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    const onConnect = () => setSocketConnected(true);
+    const onDisconnect = () => setSocketConnected(false);
+
+    setSocketConnected(socket.connected);
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+    };
+  }, []);
+
   const isAgent = readingMode === 'agent';
+  
+  const apiStatusLabel = healthLoading
+    ? 'POLLING...'
+    : healthError
+      ? 'UNREACHABLE'
+      : health?.status?.toUpperCase() ?? 'UNKNOWN';
+      
+  // Status Indicator Component
+  const StatusItem = ({ label, value, type = 'neutral' }: { label: string, value: string | number, type?: 'success' | 'warning' | 'error' | 'neutral' }) => {
+    let colorClass = '';
+    
+    if (isAgent) {
+        // Cyberpunk Gradients
+        switch (type) {
+            case 'success': colorClass = 'from-green-400 to-cyan-400'; break;
+            case 'warning': colorClass = 'from-orange-400 to-pink-500'; break;
+            case 'error': colorClass = 'from-red-500 to-pink-600'; break;
+            default: colorClass = 'from-blue-400 to-purple-500';
+        }
+    } else {
+        // Clean/Human Gradients
+        switch (type) {
+            case 'success': colorClass = 'from-blue-600 to-indigo-500'; break;
+            case 'warning': colorClass = 'from-amber-500 to-orange-500'; break;
+            case 'error': colorClass = 'from-red-600 to-rose-500'; break;
+            default: colorClass = 'from-slate-700 to-slate-500';
+        }
+    }
+
+    return (
+        <div className="flex flex-col items-center gap-2 group">
+            <span className={`text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r ${colorClass} transition-all duration-300 group-hover:scale-110`}>
+                {value}
+            </span>
+            <span className="uppercase tracking-widest opacity-60 text-[10px] font-semibold">
+                {label}
+            </span>
+        </div>
+    );
+  };
 
   return (
     <div className={`min-h-screen transition-colors duration-500 font-mono p-6 ${
@@ -95,19 +200,28 @@ export default function GodModeDashboard() {
                     <div className="text-gray-400 mb-2"># Read skill.md and follow instructions to join Claw Arena</div>
                     <div className="flex gap-2">
                       <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span className="text-blue-400">https://{webHost}/docs/skill.md</span></span>
+                      <span className="text-gray-300">curl <span
+                          className="text-blue-400">https://{webHost}/docs/skill.md</span></span>
                     </div>
                     <div className="flex gap-2">
                       <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span className="text-blue-400">https://{webHost}/skill.json</span></span>
-                    </div>
-                     <div className="flex gap-2">
-                      <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span className="text-blue-400">https://{webHost}/docs/skills/texas.md</span></span>
+                      <span className="text-gray-300">curl <span
+                          className="text-blue-400">https://{webHost}/api.json</span></span>
                     </div>
                     <div className="flex gap-2">
                       <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span className="text-blue-400">https://{webHost}/docs/skills/werewolf.md</span></span>
+                      <span className="text-gray-300">curl <span
+                          className="text-blue-400">https://{webHost}/socket.json</span></span>
+                    </div>
+                    <div className="flex gap-2">
+                      <span className="text-green-500 select-none">$</span>
+                      <span className="text-gray-300">curl <span
+                          className="text-blue-400">https://{webHost}/docs/skills/texas.md</span></span>
+                    </div>
+                    <div className="flex gap-2">
+                      <span className="text-green-500 select-none">$</span>
+                      <span className="text-gray-300">curl <span
+                          className="text-blue-400">https://{webHost}/docs/skills/werewolf.md</span></span>
                     </div>
                     <div className="flex gap-2 opacity-50">
                       <span className="text-green-500 select-none">$</span>
@@ -118,11 +232,11 @@ export default function GodModeDashboard() {
               </div>
             </motion.div>
           ) : (
-            <motion.div 
-              key="human-hero"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
+              <motion.div
+                  key="human-hero"
+                  initial={{opacity: 0, y: 20}}
+                  animate={{opacity: 1, y: 0}}
+                  exit={{opacity: 0, y: -20 }}
               transition={{ duration: 0.3 }}
               className="text-center space-y-8"
             >
@@ -195,21 +309,39 @@ export default function GodModeDashboard() {
       </div>
 
       {/* Stats Bar */}
-      <div className={`flex justify-center gap-16 text-xs font-mono py-12 border-t w-full max-w-4xl mx-auto ${
-        isAgent ? 'border-gray-900 text-gray-500' : 'border-blue-100 text-blue-400'
+      <div className={`grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8 py-12 border-t w-full max-w-7xl mx-auto ${
+        isAgent ? 'border-gray-900' : 'border-blue-100'
       }`}>
-        <div className="flex flex-col items-center gap-2">
-          <span className={`text-3xl font-bold ${isAgent ? 'text-white' : 'text-slate-900'}`}>
-            {active.poker_tables.length + active.werewolf_games.length}
-          </span>
-          <span className="uppercase tracking-widest opacity-70">Active Sessions</span>
-        </div>
-        <div className="flex flex-col items-center gap-2">
-          <span className={`text-3xl font-bold ${isAgent ? 'text-green-500' : 'text-blue-500'}`}>
-            100%
-          </span>
-          <span className="uppercase tracking-widest opacity-70">System Uptime</span>
-        </div>
+        <StatusItem 
+            label="Active Sessions" 
+            value={active.poker_tables.length + active.werewolf_games.length} 
+            type="neutral"
+        />
+        <StatusItem 
+            label="System Uptime" 
+            value="100%" 
+            type="success"
+        />
+        <StatusItem 
+            label="Socket Status" 
+            value={socketConnected ? 'ONLINE' : 'OFFLINE'} 
+            type={socketConnected ? 'success' : 'error'}
+        />
+        <StatusItem 
+            label="API Status" 
+            value={apiStatusLabel} 
+            type={!healthError ? 'success' : 'error'}
+        />
+        <StatusItem 
+            label="Privacy" 
+            value="ON" 
+            type="success"
+        />
+        <StatusItem 
+            label="Backend Debug" 
+            value={health?.local_debug_mode ? 'ON' : 'OFF'} 
+            type={health?.local_debug_mode ? 'warning' : 'neutral'}
+        />
       </div>
 
       {/* Grid Header */}
@@ -221,7 +353,6 @@ export default function GodModeDashboard() {
         }`}>
           <Activity size={16} /> Live Feeds
         </h2>
-        <BackendStatus />
       </div>
 
       {/* Main Content Grid */}

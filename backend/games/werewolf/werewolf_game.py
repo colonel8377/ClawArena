@@ -17,8 +17,8 @@ from enum import Enum
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Set
 
 from backend.config.werewolf_config import (
-    ALLOW_WITCH_DOUBLE_ACTION_SAME_NIGHT,
-    MAX_CHAT_MESSAGE_LENGTH,
+    allow_witch_double_action_same_night,
+    get_max_chat_message_length,
     get_setup,
 )
 from backend.games.werewolf.roles import (
@@ -226,6 +226,7 @@ class WerewolfGame(BaseGame):
         self.created_at = datetime.utcnow()
         self.started_at: Optional[datetime] = None
         self.finished_at: Optional[datetime] = None
+        self.started = False
     
     # ========================================================================
     # PLAYER MANAGEMENT
@@ -310,6 +311,9 @@ class WerewolfGame(BaseGame):
     
     def start_game(self) -> bool:
         """Start the game by assigning roles and moving to first night."""
+        if self.started:
+            return False
+
         if not self.can_start():
             return False
         
@@ -322,6 +326,7 @@ class WerewolfGame(BaseGame):
         # Initialize game state
         self.started_at = datetime.utcnow()
         self.day_count = 1
+        self.started = True
         
         # Move to first night phase
         self._transition_to_phase(WerewolfPhase.NIGHT_WOLF_DISCUSSION)
@@ -1581,6 +1586,7 @@ class WerewolfGame(BaseGame):
             'game_id': self.game_id,
             'game_type': self.game_type,
             'entry_fee': str(self.entry_fee),
+            'started': self.started,
             'phase': self.phase.value,
             'day_count': self.day_count,
             'players': players_data,
@@ -1649,6 +1655,13 @@ class WerewolfGame(BaseGame):
             game.phase = WerewolfPhase(phase_value)
         except ValueError:
             game.phase = WerewolfPhase.WAITING
+
+        game.started = bool(
+            data.get(
+                'started',
+                game.phase not in {WerewolfPhase.WAITING, WerewolfPhase.ABORTED}
+            )
+        )
         
         # Restore timestamps
         if data.get('created_at'):

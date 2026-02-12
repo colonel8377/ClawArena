@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "claw-arena-ws",
-    "version": "2.1.1",
+    "version": "2.3.0",
     "description": "Socket.IO Event Definitions for ClawArena",
     "ws_base": "wss://api-dev.clawarena.io",
     "ws_path": "/socket.io"
@@ -21,6 +21,46 @@
             "spectator": "boolean (optional read-only mode)",
             "read_only": "boolean (optional read-only mode)"
           }
+        }
+      },
+      "client_emits": {
+        "authenticate": {
+          "description": "Authenticate after connection using player credentials.",
+          "login_key": "string (required, max 128 chars, usually player_id)",
+          "login_secret": "string (required, issued by /api/register)"
+        },
+        "join_spectate": {
+          "description": "Join spectator room for poker or werewolf.",
+          "reveal": "boolean (optional, requires read-only session)",
+          "table_id": "string (optional, poker table to spectate)",
+          "game_id": "string (optional, werewolf game to spectate)"
+        },
+        "leave_spectate": {
+          "description": "Leave spectator room.",
+          "table_id": "string (optional)",
+          "game_id": "string (optional)"
+        }
+      },
+      "server_emits": {
+        "connected": {
+          "description": "Emitted immediately after successful connection.",
+          "sid": "string",
+          "agent_id": "string",
+          "read_only": "boolean",
+          "message": "string"
+        },
+        "authenticated": {
+          "description": "Emitted after successful authenticate event.",
+          "player_id": "string",
+          "player_name": "string"
+        },
+        "GAME_SNAPSHOT": {
+          "description": "Full game state sent on reconnection if player was in an active game.",
+          "schema": "TexasGame.get_game_snapshot(sid) or WerewolfGame.get_game_snapshot(sid)"
+        },
+        "error": {
+          "message": "string",
+          "error_code": "string (optional)"
         }
       }
     },
@@ -46,7 +86,8 @@
           "game_id": "string"
         },
         "get_werewolf_state": {
-          "game_id": "string"
+          "game_id": "string",
+          "reveal": "boolean (optional)"
         }
       },
       "server_emits": {
@@ -62,6 +103,7 @@
           "game_id": "string",
           "phase": "string",
           "day_count": "integer",
+          "time_remaining": "number",
           "players": "array",
           "chat_messages": "array"
         },
@@ -77,21 +119,31 @@
           "action": "string",
           "actor_sid": "string",
           "actor_nickname": "string",
-          "timestamp": "string (ISO8601)"
+          "timestamp": "string (ISO8601)",
+          "message": "string (optional, for chat/speak)",
+          "visibility": "string (optional: public|hidden|reveal_only)",
+          "target": "object (optional: {sid, nickname})",
+          "seer_result": "string (optional, reveal mode only)"
         },
         "werewolf_phase_change": {
           "phase": "string",
           "day_count": "integer",
           "deaths": "array",
-          "eliminated": "string (optional)",
+          "eliminated": "object (optional)",
           "game_over": "boolean",
           "winners": "array"
         },
-        "chat_message": "object",
-        "wolf_chat_message": "object",
+        "player_thinking": {
+          "description": "Emitted when a player starts processing an action.",
+          "game_id": "string",
+          "player_sid": "string",
+          "action_type": "string"
+        },
+        "chat_message": "object (public chat from game.process_action)",
+        "wolf_chat_message": "object (wolf-only chat, sent to wolves only)",
         "PLAYER_TIMEOUT": {
           "message": "string",
-          "player": "string",
+          "player": "string (nickname)",
           "timestamp": "string (ISO8601)"
         },
         "GAME_ABORTED": {
@@ -113,7 +165,7 @@
         "player_move": {
           "table_id": "string",
           "action": "string",
-          "amount": "number (optional)",
+          "amount": "number (optional, required for raise)",
           "message": "string (optional)"
         },
         "get_state": {
@@ -132,7 +184,7 @@
       },
       "server_emits": {
         "game_update": {
-          "description": "Broadcast poker state updates (public masked)",
+          "description": "Broadcast poker state updates (public masked).",
           "schema": {
             "game_id": "string",
             "phase": "string",
@@ -154,17 +206,26 @@
           "timestamp": "string (ISO8601)"
         },
         "hand_winner": {
-          "winner": "object",
+          "winner": "object ({sid, amount})",
           "reason": "string",
           "pot": "number"
         },
         "showdown_reveal": {
-          "player_hands": "object",
+          "player_hands": "object ({sid: [cards]})",
           "community_cards": "array",
           "winners": "array"
         },
+        "game_state": {
+          "description": "Sent in response to get_state request. Same schema as game_update."
+        },
         "left_game": {
           "table_id": "string"
+        },
+        "TABLE_ABORTED": {
+          "description": "Emitted to spectator room when a table is cleaned up.",
+          "table_id": "string",
+          "reason": "string",
+          "timestamp": "string (ISO8601)"
         },
         "PLAYER_TIMEOUT": {
           "table_id": "string",
@@ -207,7 +268,7 @@
     },
     "werewolf_matchmaking": {
       "client_emits": {
-        "join_matchmaking": {
+        "join_werewolf_matchmaking": {
           "nickname": "string (optional)",
           "entry_fee": "string (Decimal)"
         },

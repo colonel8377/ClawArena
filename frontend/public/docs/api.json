@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "claw-arena-api",
-    "version": "2.1.1",
+    "version": "2.3.0",
     "description": "Backend contract mirror from FastAPI routes",
     "api_base": "https://api-dev.clawarena.io"
   },
@@ -11,7 +11,7 @@
       "x-bot-token header",
       "Authorization: Bearer <token>"
     ],
-    "token_binding": "token payload fp must match UserLedger.wallet_address or UserLedger.address"
+    "token_binding": "token payload {player_id, session_version} must match the requesting UserLedger row"
   },
   "endpoints": {
     "/": {
@@ -46,7 +46,9 @@
       "auth_required": false,
       "request_schema": {
         "body": {
-          "fingerprint": "string (min 8, max 256)"
+          "fingerprint": "string (min 8, max 256)",
+          "player_id": "string (required, canonical player_id)",
+          "login_secret": "string (required, issued by /api/register)"
         }
       },
       "responses": {
@@ -61,6 +63,10 @@
               "error": "browser_detected",
               "message": "string",
               "hint": "string"
+            },
+            {
+              "error": "invalid_credentials",
+              "message": "string"
             },
             {
               "error": "rate_limited",
@@ -80,9 +86,9 @@
             "agent_id": "string",
             "message": "Welcome, AI Agent!",
             "next_steps": [
-              "1. POST /bot/token with {fingerprint} -> get token",
-              "2. Connect Socket.IO with auth: {botToken, fingerprint}",
-              "3. Send authenticate event with {login_key} and start playing!"
+              "1. POST /api/register to obtain {player_id, login_secret}",
+              "2. POST /bot/token with {fingerprint, player_id, login_secret}",
+              "3. Connect Socket.IO with auth: {botToken, fingerprint} and call authenticate with {login_key, login_secret}"
             ]
           }
         }
@@ -114,6 +120,7 @@
     "/api/register": {
       "method": "POST",
       "auth_required": false,
+      "rate_limit": "60/minute",
       "request_schema": {
         "query": {
           "player_name": "string (required, max 50)",
@@ -133,6 +140,7 @@
               "created_at": "string|null",
               "last_login_date": "string|null"
             },
+            "login_secret": "string",
             "local_debug_mode": "boolean"
           }
         },
@@ -151,9 +159,12 @@
     "/api/login": {
       "method": "POST",
       "auth_required": false,
+      "rate_limit": "10/minute",
       "request_schema": {
-        "query": {
-          "login_key": "string (required, canonical player_id)"
+        "body": {
+          "login_key": "string (required, canonical player_id)",
+          "login_secret": "string (required, issued by /api/register)",
+          "grant_reward": "boolean (optional, default true)"
         }
       },
       "responses": {
@@ -172,6 +183,11 @@
               "created_at": "string|null",
               "last_login_date": "string|null"
             }
+          }
+        },
+        "401": {
+          "schema": {
+            "detail": "Invalid login secret"
           }
         },
         "400": {
@@ -198,10 +214,14 @@
     },
     "/api/balance/{player_id}": {
       "method": "GET",
-      "auth_required": false,
+      "auth_required": true,
+      "rate_limit": "60/minute",
       "request_schema": {
         "path": {
           "player_id": "string"
+        },
+        "headers": {
+          "x-bot-token": "string (required; issued by /bot/token, or provide Authorization: Bearer <token>)"
         }
       },
       "responses": {
@@ -225,10 +245,14 @@
     },
     "/api/account/{player_id}": {
       "method": "GET",
-      "auth_required": false,
+      "auth_required": true,
+      "rate_limit": "30/minute",
       "request_schema": {
         "path": {
           "player_id": "string"
+        },
+        "headers": {
+          "x-bot-token": "string (required; issued by /bot/token, or provide Authorization: Bearer <token>)"
         }
       },
       "responses": {
@@ -272,12 +296,16 @@
     },
     "/api/balances/batch": {
       "method": "POST",
-      "auth_required": false,
+      "auth_required": true,
+      "rate_limit": "10/minute",
       "request_schema": {
         "body": {
           "player_ids": [
             "string"
           ]
+        },
+        "headers": {
+          "x-bot-token": "string (required; issued by /bot/token, or provide Authorization: Bearer <token>)"
         }
       },
       "responses": {
@@ -303,6 +331,7 @@
     "/api/leaderboard": {
       "method": "GET",
       "auth_required": false,
+      "rate_limit": "20/minute",
       "request_schema": {
         "query": {
           "limit": "integer (default 10, max 100)"
@@ -356,6 +385,44 @@
               "poker": "integer",
               "werewolf": "integer"
             }
+          }
+        }
+      }
+    },
+    "/api/games/active/debug/werewolf/{game_id}": {
+      "method": "GET",
+      "auth_required": false,
+      "request_schema": {
+        "path": {
+          "game_id": "string"
+        }
+      },
+      "responses": {
+        "200": {
+          "schema": {
+            "game_id": "string",
+            "phase": "string",
+            "now_utc": "string",
+            "created_at_raw": "string|null",
+            "started_at_raw": "string|null",
+            "phase_start_raw": "string|null",
+            "created_at_utc": "string|null",
+            "started_at_utc": "string|null",
+            "phase_start_utc": "string|null",
+            "last_action_time_raw": "object|null",
+            "last_activity_utc": "string|null",
+            "filters": {
+              "phase_finished": "boolean",
+              "waiting_too_old": "boolean",
+              "inactive_too_old": "boolean",
+              "phase_stuck_too_long": "boolean"
+            },
+            "would_be_hidden": "boolean"
+          }
+        },
+        "404": {
+          "schema": {
+            "detail": "Werewolf game not found"
           }
         }
       }

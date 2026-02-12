@@ -54,7 +54,12 @@ export default function WerewolfListPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let fetching = false;
+
     const fetchGames = async () => {
+      if (fetching) return;
+      fetching = true;
       try {
         const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
         const data = await res.json();
@@ -85,18 +90,47 @@ export default function WerewolfListPage() {
             };
           })
         );
-        
-        setGames(gamesWithInfo);
+
+        if (!cancelled) {
+          setGames(gamesWithInfo);
+        }
       } catch (err) {
         console.error('Failed to load games', err);
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
+        fetching = false;
       }
     };
 
-    fetchGames();
-    const interval = setInterval(fetchGames, 7000);
-    return () => clearInterval(interval);
+    const triggerRefresh = () => {
+      void fetchGames();
+    };
+
+    void fetchGames();
+
+    // Faster polling so newly created sessions show up quickly.
+    const interval = setInterval(triggerRefresh, 2000);
+
+    // Refresh immediately when the tab is focused/visible again.
+    window.addEventListener('focus', triggerRefresh);
+    const onVisibilityChange = () => {
+      if (!document.hidden) triggerRefresh();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    // If socket reconnects, fetch immediately instead of waiting for the next poll.
+    const socket = getSocket();
+    socket?.on('connect', triggerRefresh);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener('focus', triggerRefresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      socket?.off('connect', triggerRefresh);
+    };
   }, []);
 
   const filteredGames = games.filter((g) =>
@@ -155,40 +189,23 @@ export default function WerewolfListPage() {
             <div className="flex gap-3">
               {/* Werewolf */}
               <div className="icon-badge-lg border-neonPink/50 bg-neonPink/10 hover:neon-glow-pink transition-all hover:scale-110" title="Werewolf">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-neonPink icon-depth">
-                  <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
-                  <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
-                  <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
-                </svg>
+                <span className="text-2xl leading-none">🐺</span>
               </div>
               {/* Seer */}
               <div className="icon-badge-lg border-electricPurple/50 bg-electricPurple/10 hover:neon-glow-purple transition-all hover:scale-110" title="Seer">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-electricPurple icon-depth">
-                  <ellipse cx="12" cy="12" rx="10" ry="6" fill="none" stroke="currentColor" strokeWidth="2"/>
-                  <circle cx="12" cy="12" r="3" fill="currentColor"/>
-                </svg>
+                <span className="text-2xl leading-none">🔮</span>
               </div>
               {/* Witch */}
               <div className="icon-badge-lg border-acidGreen/50 bg-acidGreen/10 hover:neon-glow-green transition-all hover:scale-110" title="Witch">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-acidGreen icon-depth">
-                  <path fill="currentColor" d="M9 3v5l-3 6v6c0 1 1 2 6 2s6-1 6-2v-6l-3-6V3h-6z"/>
-                  <rect x="10" y="1" width="4" height="3" fill="currentColor"/>
-                </svg>
+                <span className="text-2xl leading-none">🧙‍♀️</span>
               </div>
               {/* Hunter */}
               <div className="icon-badge-lg border-warning/50 bg-warning/10 hover:shadow-[0_0_15px_rgba(255,170,0,0.5)] transition-all hover:scale-110" title="Hunter">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-warning icon-depth">
-                  <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="2"/>
-                  <circle cx="12" cy="12" r="2" fill="currentColor"/>
-                  <path stroke="currentColor" strokeWidth="2" d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
-                </svg>
+                <span className="text-2xl leading-none">🔫</span>
               </div>
               {/* Villager */}
               <div className="icon-badge-lg border-cyberBlue/50 bg-cyberBlue/10 hover:neon-glow-blue transition-all hover:scale-110" title="Villager">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-cyberBlue icon-depth">
-                  <circle cx="12" cy="7" r="4" fill="currentColor"/>
-                  <path fill="currentColor" d="M6 14v7h5v-4h2v4h5v-7l-2-2H8l-2 2z"/>
-                </svg>
+                <span className="text-2xl leading-none">🧑‍🌾</span>
               </div>
             </div>
             <p className="text-base text-foreground/80 font-orbitron uppercase tracking-[0.2em] text-right whitespace-nowrap">
@@ -241,11 +258,7 @@ export default function WerewolfListPage() {
                       <div className="relative z-10 flex justify-between items-center">
                         <div className="flex items-center gap-4">
                           <div className="icon-badge border-neonPink/50 bg-neonPink/10 group-hover:neon-glow-pink transition-all">
-                            <svg viewBox="0 0 24 24" className="w-5 h-5 text-neonPink">
-                              <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
-                              <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
-                              <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
-                            </svg>
+                            <span className="text-base leading-none">🐺</span>
                           </div>
                           <div>
                             <div className="font-mono text-cyberBlue font-bold">{game.game_id}</div>

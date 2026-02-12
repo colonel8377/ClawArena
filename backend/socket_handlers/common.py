@@ -1,7 +1,7 @@
 """Common Socket.IO handlers and shared socket helpers."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
 from backend.app.anti_bot_manager import (
@@ -52,6 +52,10 @@ def _set_spectator_subscription(
     """Track spectator reveal preference per room."""
     sid_subs = state.spectator_subscriptions.setdefault(sid, {"poker": {}, "werewolf": {}})
     room_subs = sid_subs.setdefault(game_type, {})
+    # Cap subscriptions per game type to prevent unbounded memory growth
+    MAX_SUBS_PER_TYPE = 50
+    if room_id not in room_subs and len(room_subs) >= MAX_SUBS_PER_TYPE:
+        return
     room_subs[room_id] = bool(reveal)
 
 
@@ -175,7 +179,7 @@ def _build_werewolf_action_trace(
         "actor_sid": sid,
         "actor_nickname": actor_nickname,
         "action": action,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     hide_target = _is_night_phase(phase) and not reveal
@@ -361,9 +365,9 @@ def register_common_handlers(sio, state) -> None:
                     asyncio.create_task(table.save_state_to_redis())
 
             if state.werewolf_matchmaker:
-                state.werewolf_matchmaker.remove_player(sid)
+                await state.werewolf_matchmaker.remove_player(sid)
             if state.texas_matchmaker:
-                state.texas_matchmaker.remove_player(sid)
+                await state.texas_matchmaker.remove_player(sid)
 
             del state.player_sessions[sid]
 
@@ -374,7 +378,7 @@ def register_common_handlers(sio, state) -> None:
         """
         Authenticate a client using a login key.
 
-        Expected data: {'login_key': str}
+        Expected data: {'login_key': str, 'login_secret': str}
         """
         try:
             if await _reject_if_read_only(sio, state, sid, "authenticate"):
@@ -385,6 +389,10 @@ def register_common_handlers(sio, state) -> None:
             if not login_key or not str(login_key).strip():
                 await sio.emit("error", {"message": "Missing login_key"}, room=sid)
                 return
+            login_secret = data.get("login_secret")
+            if not login_secret or not str(login_secret).strip():
+                await sio.emit("error", {"message": "Missing login_secret"}, room=sid)
+                return
 
             login_key = str(login_key).strip()
             if len(login_key) > 128:
@@ -393,7 +401,7 @@ def register_common_handlers(sio, state) -> None:
 
             from backend.economy.account import handle_login
 
-            login_result = await handle_login(login_key, grant_reward=False)
+            login_result = await handle_login(login_key, str(login_secret), grant_reward=False)
             user = login_result.get("user", {})
             player_id = user.get("player_id", "")
             player_name = user.get("player_name", "Player")

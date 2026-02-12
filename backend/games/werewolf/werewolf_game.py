@@ -242,6 +242,9 @@ class WerewolfGame(BaseGame):
         
         if any(p['sid'] == sid for p in self.players):
             return False
+
+        if wallet_address and self.has_wallet(wallet_address):
+            return False
         
         nickname = kwargs.get('nickname', f'Player{len(self.players) + 1}')
         
@@ -271,6 +274,12 @@ class WerewolfGame(BaseGame):
             return False
         self.players = [p for p in self.players if p['sid'] != sid]
         return True
+
+    def has_wallet(self, wallet_address: str) -> bool:
+        """Return True if the wallet/player is already seated in the game."""
+        if not wallet_address:
+            return False
+        return any(p['wallet_address'] == wallet_address for p in self.players)
     
     def _get_player_by_sid(self, sid: str) -> Optional[Dict]:
         """Get player by socket ID."""
@@ -1199,6 +1208,12 @@ class WerewolfGame(BaseGame):
     
     def _check_game_over(self) -> bool:
         """Check if game is over."""
+        # Never treat pre-start lobby games as finished. Active listing and
+        # matchmaking flows rely on waiting rooms being visible until the game
+        # actually begins and roles are assigned.
+        if not self.started or self.phase == WerewolfPhase.WAITING:
+            return False
+        
         # Count with pending deaths excluded so winner checks stay correct even
         # before announcement phase consumes the pending list.
         alive_players = self._get_effective_alive_players()
@@ -1461,7 +1476,7 @@ class WerewolfGame(BaseGame):
     # STATE SERIALIZATION
     # ========================================================================
     
-    def get_game_state(self, sid: Optional[str] = None, reveal_all: bool = False) -> Dict:
+    def get_game_state(self, sid: Optional[str] = None, reveal_all: bool = False) -> Optional[Dict]:
         """
         Get game state with appropriate masking.
         
@@ -1476,7 +1491,8 @@ class WerewolfGame(BaseGame):
         # In this codebase, spectator means a non-player context (typically
         # HTTP /api/spectate requests where sid is not provided).
         is_spectator = sid is None
-        allow_full_reveal = reveal_all and is_spectator
+        # Allow full reveal if requested (e.g. God View), even if sid is present
+        allow_full_reveal = reveal_all
         
         state = {
             'game_id': self.game_id,

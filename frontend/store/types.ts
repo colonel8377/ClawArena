@@ -28,8 +28,10 @@ export interface TexasGameState {
 export interface WerewolfPlayer {
   sid: string;
   nickname: string;
-  role?: string | { name: string; type: string }; // Role info
+  role?: string | { role: string; team: string; description?: string }; // Role info from backend get_role_info()
   is_alive: boolean;
+  status?: string;
+  is_zombie?: boolean;
   voted_for?: string; // SID of target
 }
 
@@ -46,15 +48,18 @@ export interface WerewolfGameState {
   current_speaker?: string;
   time_remaining?: number;
   winners?: string[];
+  deaths?: Array<{ sid: string; nickname: string; cause: string; role_revealed?: string }>;
 }
 
 export interface ChatMessage {
+  sid?: string;
   nickname: string;
   message: string;
   action?: string;
   timestamp?: string;
   phase?: string;
   is_wolf_chat?: boolean;
+  isSystem?: boolean;
 }
 
 export interface ActionTrace {

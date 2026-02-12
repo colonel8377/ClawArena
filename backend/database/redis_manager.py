@@ -75,7 +75,7 @@ BALANCE_CACHE_EXPIRY = int(os.getenv('BALANCE_CACHE_EXPIRY', '300'))  # 5 minute
 class RedisManager:
     """
     Centralized Redis manager for all Arena operations.
-    
+
     Provides:
     - Connection management with pooling
     - Distributed locking
@@ -83,7 +83,18 @@ class RedisManager:
     - Game state persistence
     - Session management
     """
-    
+
+    # Lua script for atomic lock release: only deletes the key if it still
+    # holds the expected value, preventing accidental release of another
+    # process's lock (TOCTOU race between GET and DELETE).
+    _UNLOCK_SCRIPT = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+    else
+        return 0
+    end
+    """
+
     def __init__(self, redis_url: str = REDIS_URL, redis_password: str = REDIS_PASSWORD):
         """
         Initialize Redis Manager.
@@ -326,14 +337,14 @@ class RedisManager:
             yield
             
         finally:
-            # Release lock only if we acquired it
+            # Release lock only if we acquired it, using atomic Lua script
+            # to prevent releasing another process's lock (TOCTOU safety).
             if acquired and self._redis:
                 try:
-                    # Only delete if value matches (prevent releasing someone else's lock)
-                    current_value = await self._redis.get(lock_key)
-                    if current_value == lock_value:
-                        await self._redis.delete(lock_key)
-                        logger.debug(f"Lock released: {resource_id}")
+                    await self._redis.eval(
+                        self._UNLOCK_SCRIPT, 1, lock_key, lock_value
+                    )
+                    logger.debug(f"Lock released: {resource_id}")
                 except Exception as e:
                     logger.error(f"Error releasing lock '{resource_id}': {e}")
     
@@ -848,20 +859,20 @@ class RedisManager:
     async def acquire_event_processing_lock(self, event_id: str) -> bool:
         """
         Acquire a short-lived lock for event processing.
-        
+
         Returns:
-            True if lock acquired (or Redis unavailable), False otherwise
+            True if lock acquired, False if already locked or Redis unavailable
         """
         if not await self.ping():
-            logger.warning("Redis unavailable - proceeding without event lock")
-            return True
+            logger.warning("Redis unavailable - blocking event processing (fail-closed)")
+            return False
         
         try:
             key = self._processing_lock_key(event_id)
             return await self._redis.set(key, "1", nx=True, ex=EVENT_PROCESSING_LOCK_EXPIRY)
         except Exception as e:
             logger.error(f"Error acquiring event lock {event_id}: {e}")
-            return True
+            return False
     
     async def release_event_processing_lock(self, event_id: str):
         """

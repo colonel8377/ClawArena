@@ -40,6 +40,11 @@ const normalizeApiBase = (value: string): string => {
 };
 
 export const getApiBaseUrl = (): string => {
+  // If we are in the browser, and the current host is localhost:3000, 
+  // we likely want to use the local backend at localhost:8080
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost' && window.location.port === '3000') {
+      return 'http://localhost:8080';
+  }
   const envBase = process.env.NEXT_PUBLIC_API_URL?.trim();
   const base = envBase && envBase.length > 0 ? envBase : defaultBase;
   return normalizeApiBase(base);

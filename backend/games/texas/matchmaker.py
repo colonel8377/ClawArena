@@ -51,8 +51,9 @@ class TexasMatchmaker:
         self.fallback_warning_callback = fallback_warning_callback
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._queue_lock = asyncio.Lock()
 
-    def add_player(
+    async def add_player(
         self,
         sid: str,
         wallet_address: str,
@@ -60,27 +61,29 @@ class TexasMatchmaker:
         buy_in_tokens: Decimal,
     ) -> bool:
         """Add a player to queue; returns False if already queued."""
-        if sid in self.queue_sids:
-            return False
+        async with self._queue_lock:
+            if sid in self.queue_sids:
+                return False
 
-        self.queue.append(
-            QueuedPokerPlayer(
-                sid=sid,
-                wallet_address=wallet_address,
-                nickname=nickname,
-                buy_in_tokens=buy_in_tokens,
+            self.queue.append(
+                QueuedPokerPlayer(
+                    sid=sid,
+                    wallet_address=wallet_address,
+                    nickname=nickname,
+                    buy_in_tokens=buy_in_tokens,
+                )
             )
-        )
-        self.queue_sids.add(sid)
-        return True
+            self.queue_sids.add(sid)
+            return True
 
-    def remove_player(self, sid: str) -> bool:
+    async def remove_player(self, sid: str) -> bool:
         """Remove player from queue if present."""
-        if sid not in self.queue_sids:
-            return False
-        self.queue = [p for p in self.queue if p.sid != sid]
-        self.queue_sids.discard(sid)
-        return True
+        async with self._queue_lock:
+            if sid not in self.queue_sids:
+                return False
+            self.queue = [p for p in self.queue if p.sid != sid]
+            self.queue_sids.discard(sid)
+            return True
 
     def is_player_in_queue(self, sid: str) -> bool:
         return sid in self.queue_sids
@@ -110,46 +113,53 @@ class TexasMatchmaker:
             await asyncio.sleep(self.CHECK_INTERVAL)
 
     async def _process_queue(self):
-        queue_size = len(self.queue)
-        if queue_size < self.MIN_PLAYERS:
-            return
+        async with self._queue_lock:
+            queue_size = len(self.queue)
+            if queue_size < self.MIN_PLAYERS:
+                return
 
-        # Highest priority: launch full-ring table immediately.
-        if queue_size >= self.FULL_RING_SIZE:
-            players = self.queue[:self.FULL_RING_SIZE]
-            self.queue = self.queue[self.FULL_RING_SIZE:]
-            for p in players:
-                self.queue_sids.discard(p.sid)
-            await self._start_game(players, self.FULL_RING_SIZE)
-            return
+            # Highest priority: launch full-ring table immediately.
+            if queue_size >= self.FULL_RING_SIZE:
+                players = self.queue[:self.FULL_RING_SIZE]
+                self.queue = self.queue[self.FULL_RING_SIZE:]
+                for p in players:
+                    self.queue_sids.discard(p.sid)
+                # Release lock before the potentially slow callback
+                await self._start_game_unlocked(players, self.FULL_RING_SIZE)
+                return
 
-        oldest_wait = time.time() - self.queue[0].join_time
+            oldest_wait = time.time() - self.queue[0].join_time
 
-        # Start preferred-size table after a short wait for better fill quality.
-        if queue_size >= self.PREFERRED_GAME_SIZE and oldest_wait >= self.ADAPTIVE_WAIT_TIME / 2:
-            players = self.queue[:self.PREFERRED_GAME_SIZE]
-            self.queue = self.queue[self.PREFERRED_GAME_SIZE:]
-            for p in players:
-                self.queue_sids.discard(p.sid)
-            await self._start_game(players, self.PREFERRED_GAME_SIZE)
-            return
+            # Start preferred-size table after a short wait for better fill quality.
+            if queue_size >= self.PREFERRED_GAME_SIZE and oldest_wait >= self.ADAPTIVE_WAIT_TIME / 2:
+                players = self.queue[:self.PREFERRED_GAME_SIZE]
+                self.queue = self.queue[self.PREFERRED_GAME_SIZE:]
+                for p in players:
+                    self.queue_sids.discard(p.sid)
+                await self._start_game_unlocked(players, self.PREFERRED_GAME_SIZE)
+                return
 
-        # Fallback: start any legal short-handed table after full wait budget.
-        if oldest_wait >= self.ADAPTIVE_WAIT_TIME:
-            target_size = min(queue_size, self.PREFERRED_GAME_SIZE)
-            if self.fallback_warning_callback:
-                try:
-                    await self.fallback_warning_callback(self.queue[:target_size], target_size)
-                except Exception as e:
-                    print(f"Error in texas fallback warning callback: {e}")
+            # Fallback: start any legal short-handed table after full wait budget.
+            if oldest_wait >= self.ADAPTIVE_WAIT_TIME:
+                target_size = min(queue_size, self.PREFERRED_GAME_SIZE)
+                if self.fallback_warning_callback:
+                    try:
+                        await self.fallback_warning_callback(self.queue[:target_size], target_size)
+                    except Exception as e:
+                        print(f"Error in texas fallback warning callback: {e}")
 
-            players = self.queue[:target_size]
-            self.queue = self.queue[target_size:]
-            for p in players:
-                self.queue_sids.discard(p.sid)
-            await self._start_game(players, target_size)
+                players = self.queue[:target_size]
+                self.queue = self.queue[target_size:]
+                for p in players:
+                    self.queue_sids.discard(p.sid)
+                await self._start_game_unlocked(players, target_size)
 
-    async def _start_game(self, players: List[QueuedPokerPlayer], game_size: int):
+    async def _start_game_unlocked(self, players: List[QueuedPokerPlayer], game_size: int):
+        """Start a game. Must NOT be called while holding _queue_lock if the
+        callback may re-enter the matchmaker (e.g. to re-queue failed players).
+        In _process_queue the lock is held for the pop, then this is called
+        inside the same ``async with`` block which is fine because re-queue
+        happens via ``self.queue.extend`` which is also inside the lock."""
         if not self.game_start_callback:
             return
         try:

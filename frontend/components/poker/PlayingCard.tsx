@@ -23,62 +23,45 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     }
   };
 
-  // Get suit color and glow
+  // Get suit color
   const getSuitColor = (suit: Suit): string => {
     if (suit === 'hearts' || suit === 'diamonds') {
-      return 'text-neonPink';
+      return 'text-red-600';
     }
-    return 'text-cyberBlue';
-  };
-
-  const getSuitGlow = (suit: Suit): string => {
-    if (suit === 'hearts' || suit === 'diamonds') {
-      return 'shadow-neon-pink';
-    }
-    return 'shadow-neon-blue';
+    return 'text-slate-800';
   };
 
   const getSuitTextShadow = (suit: Suit): string => {
     if (suit === 'hearts' || suit === 'diamonds') {
-      return 'text-shadow-neon-pink';
+      return 'drop-shadow-[0_1px_0_rgba(255,255,255,0.2)]';
     }
-    return 'text-shadow-neon-blue';
+    return 'drop-shadow-[0_1px_0_rgba(255,255,255,0.25)]';
   };
 
   const getBorderColor = (suit: Suit): string => {
     if (suit === 'hearts' || suit === 'diamonds') {
-      return 'border-neonPink neon-glow-pink';
+      return 'border-red-200';
     }
-    return 'border-cyberBlue neon-glow-blue';
+    return 'border-slate-200';
   };
-
-  // Check if it's a face card for holographic effect
-  const isFaceCard = rank === 'J' || rank === 'Q' || rank === 'K';
 
   if (hidden) {
     return (
       <div
         className={`
           relative w-20 h-28 
-          bg-backgroundSlate border-2 border-electricPurple
+          bg-slate-900 border-2 border-slate-700
           rounded-lg overflow-hidden
-          shadow-neon-purple
+          shadow-lg
           ${className}
         `}
         role="img"
         aria-label="Hidden playing card"
       >
-        {/* Circuit board pattern background */}
-        <div className="absolute inset-0 circuit-pattern opacity-30"></div>
-        
-        {/* Central design */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-electricPurple text-3xl font-bold opacity-50">?</div>
+          <div className="text-5xl opacity-70">🃏</div>
         </div>
-        
-        {/* Animated lines */}
-        <div className="absolute top-0 left-0 right-0 h-0.5 bg-electricPurple pulse-glow"></div>
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-electricPurple pulse-glow"></div>
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-800/70 via-transparent to-slate-900/70" />
       </div>
     );
   }
@@ -87,45 +70,44 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     <div
       className={`
         relative w-20 h-28 
-        bg-backgroundSlate/80 border-2 ${getBorderColor(suit)}
+        bg-white border-2 ${getBorderColor(suit)}
         rounded-lg overflow-hidden
-        ${getSuitGlow(suit)}
-        transition-transform hover:scale-105 hover:rotate-2
+        shadow-md
+        transition-transform hover:scale-[1.03]
         ${className}
       `}
       role="img"
       aria-label={`${rank} of ${suit}`}
     >
-      {/* Holographic effect for face cards */}
-      {isFaceCard && (
-        <div className="absolute inset-0 holographic opacity-10"></div>
-      )}
+      <div className="absolute inset-0 flex items-center justify-center text-6xl opacity-5 select-none">
+        🃏
+      </div>
       
       {/* Card content */}
       <div className="relative h-full flex flex-col p-2">
         {/* Top rank and suit */}
         <div className="flex flex-col items-start">
-          <div className={`text-lg font-bold ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+          <div className={`text-[15px] font-bold leading-none tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
             {rank}
           </div>
-          <div className={`text-2xl ${getSuitColor(suit)} leading-none`}>
+          <div className={`text-xl ${getSuitColor(suit)} leading-none`}>
             {getSuitSymbol(suit)}
           </div>
         </div>
         
-        {/* Center suit symbol */}
+        {/* Center suit symbol (consistent for all ranks) */}
         <div className="flex-1 flex items-center justify-center">
-          <div className={`text-4xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)} ${isFaceCard ? 'font-orbitron' : ''}`}>
-            {isFaceCard ? rank : getSuitSymbol(suit)}
+          <div className={`text-3xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+            {getSuitSymbol(suit)}
           </div>
         </div>
         
         {/* Bottom rank and suit (rotated) */}
         <div className="flex flex-col items-end rotate-180">
-          <div className={`text-lg font-bold ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+          <div className={`text-[15px] font-bold leading-none tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
             {rank}
           </div>
-          <div className={`text-2xl ${getSuitColor(suit)} leading-none`}>
+          <div className={`text-xl ${getSuitColor(suit)} leading-none`}>
             {getSuitSymbol(suit)}
           </div>
         </div>

@@ -6,6 +6,7 @@ economy values, and Socket.IO logging.
 """
 
 import os
+import sys
 import warnings
 from decimal import Decimal
 
@@ -18,8 +19,28 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _detect_production_environment() -> bool:
+    """Detect if we are running in a production-like environment."""
+    production_indicators = (
+        'RAILWAY_ENVIRONMENT',
+        'RAILWAY_SERVICE_NAME',
+        'FLY_APP_NAME',
+        'RENDER_SERVICE_ID',
+        'HEROKU_APP_NAME',
+        'AWS_EXECUTION_ENV',
+        'K_SERVICE',           # Google Cloud Run
+        'ECS_CONTAINER_METADATA_URI',
+    )
+    return any(os.getenv(var) for var in production_indicators)
+
+
 # Load from environment
 LOCAL_DEBUG_MODE = _env_bool('LOCAL_DEBUG_MODE', False)
+
+# Hard override: never allow debug mode in detected production environments
+if LOCAL_DEBUG_MODE and _detect_production_environment():
+    print("CRITICAL: LOCAL_DEBUG_MODE=true in a production environment. Forcing OFF.")
+    LOCAL_DEBUG_MODE = False
 DEV_MODE = _env_bool('DEV_MODE', False)
 
 # Local debug mode balance (unlimited funds for testing)

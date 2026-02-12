@@ -1,14 +1,14 @@
 """Werewolf orchestration service."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Dict
 
-from backend.config.arena_config import WEREWOLF_PRIZE_MULTIPLIER
+from backend.config.arena_config import WEREWOLF_PRIZE_MULTIPLIER, is_local_debug_mode
 from backend.database.persistence_manager import persistence_manager
 from backend.database.redis_manager import redis_manager
-from backend.economy.account import lock_balance, get_balance
+from backend.economy.account import lock_balance, get_available_balance
 from backend.games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
 from backend.services.base import BaseService
 from backend.services.settlement_service import SettlementService
@@ -25,6 +25,8 @@ WEREWOLF_SIGNIFICANT_PHASES = {
     "finished",
     "aborted",
 }
+
+WEREWOLF_INACTIVE_GAME_ABORT_SECONDS = 3600
 
 
 class WerewolfService(BaseService):
@@ -177,60 +179,68 @@ class WerewolfService(BaseService):
             )
             return
 
-        try:
-            current_balance = await get_balance(player_id)
-            if current_balance < game.entry_fee:
+        async with self._get_game_lock(game_id):
+            # Balance check inside lock to eliminate TOCTOU window
+            try:
+                available_balance = await get_available_balance(player_id)
+                if available_balance < game.entry_fee:
+                    await self._sio.emit(
+                        "error",
+                        {
+                            "message": (
+                                f"Insufficient balance. Required: {str(game.entry_fee)} tokens, "
+                                f"Available: {str(available_balance)}"
+                            )
+                        },
+                        room=sid,
+                    )
+                    return
+            except Exception as exc:
                 await self._sio.emit(
                     "error",
-                    {
-                        "message": (
-                            f"Insufficient balance. Required: {str(game.entry_fee)} tokens, "
-                            f"Available: {str(current_balance)}"
-                        )
-                    },
+                    {"message": f"Balance check failed: {str(exc)}"},
                     room=sid,
                 )
                 return
-        except Exception as exc:
-            await self._sio.emit(
-                "error",
-                {"message": f"Balance check failed: {str(exc)}"},
-                room=sid,
+
+            if player_id and game.has_wallet(player_id):
+                await self._sio.emit(
+                    "error",
+                    {"message": "Player already joined this game"},
+                    room=sid,
+                )
+                return
+
+            if not game.add_player(sid, player_id, nickname=nickname):
+                await self._sio.emit("error", {"message": "Could not join game"}, room=sid)
+                return
+
+            try:
+                await lock_balance(player_id, game.entry_fee, game_session_id=game_id)
+            except Exception as exc:
+                await self._sio.emit(
+                    "error",
+                    {"message": f"Failed to lock entry fee: {str(exc)}"},
+                    room=sid,
+                )
+                game.remove_player(sid)
+                return
+
+            self._state.player_sessions[sid]["game_id"] = game_id
+
+            await persistence_manager.on_player_joined(
+                game_id=game_id,
+                player_id=player_id,
+                socket_sid=sid,
+                nickname=nickname,
+                entry_paid=game.entry_fee,
             )
-            return
 
-        async with self._get_game_lock(game_id):
-            async with redis_manager.lock(f"game_state:{game_id}", timeout=10):
-                if not game.add_player(sid, player_id, nickname=nickname):
-                    await self._sio.emit("error", {"message": "Could not join game"}, room=sid)
-                    return
-
-                try:
-                    await lock_balance(player_id, game.entry_fee, game_session_id=game_id)
-                except Exception as exc:
-                    await self._sio.emit(
-                        "error",
-                        {"message": f"Failed to lock entry fee: {str(exc)}"},
-                        room=sid,
-                    )
-                    game.remove_player(sid)
-                    return
-
-                self._state.player_sessions[sid]["game_id"] = game_id
-
-                await persistence_manager.on_player_joined(
-                    game_id=game_id,
-                    player_id=player_id,
-                    socket_sid=sid,
-                    nickname=nickname,
-                    entry_paid=game.entry_fee,
-                )
-
-                await redis_manager.save_game_core(
-                    game_id,
-                    game.get_core_state(),
-                    game_type="werewolf",
-                )
+            await redis_manager.save_game_core(
+                game_id,
+                game.get_core_state(),
+                game_type="werewolf",
+            )
 
         await self._sio.enter_room(sid, game_id)
 
@@ -251,63 +261,62 @@ class WerewolfService(BaseService):
             await self._sio.emit("error", {"message": "Invalid game_id"}, room=sid)
             return
 
-        async with self._get_game_lock(game_id):
-            async with redis_manager.lock(f"game_start:{game_id}", timeout=5):
-                async with redis_manager.lock(f"game_state:{game_id}", timeout=10):
-                    game = self._state.werewolf_games[game_id]
+        async with redis_manager.lock(f"game_start:{game_id}", timeout=5):
+            async with self._get_game_lock(game_id):
+                game = self._state.werewolf_games[game_id]
 
-                    if getattr(game, "started", False):
-                        return
+                if getattr(game, "started", False):
+                    return
 
-                    player_sids = {player.get("sid") for player in game.players}
-                    if sid not in player_sids:
-                        await self._sio.emit(
-                            "error",
-                            {"message": "Only players in this game can start it"},
-                            room=sid,
-                        )
-                        return
-
-                    host_sid = getattr(game, "created_by_sid", None)
-                    if host_sid and sid != host_sid:
-                        await self._sio.emit(
-                            "error",
-                            {"message": "Only game host can start the game"},
-                            room=sid,
-                        )
-                        return
-
-                    if game.phase != WerewolfPhase.WAITING:
-                        await self._sio.emit(
-                            "error",
-                            {"message": "Game already started"},
-                            room=sid,
-                        )
-                        return
-
-                    if not game.start_game():
-                        await self._sio.emit(
-                            "error",
-                            {"message": "Cannot start game (need more players)"},
-                            room=sid,
-                        )
-                        return
-
-                    players_with_roles = []
-                    for player in game.players:
-                        players_with_roles.append(
-                            {
-                                "wallet_address": player["wallet_address"],
-                                "role_type": player["role"].role_type.value if player.get("role") else None,
-                                "team": player["role"].team.value if player.get("role") else None,
-                            }
-                        )
-
-                    await persistence_manager.on_game_started(
-                        game_id=game_id,
-                        players_with_roles=players_with_roles,
-                        initial_state=game.to_dict(),
+                player_sids = {player.get("sid") for player in game.players}
+                if sid not in player_sids:
+                    await self._sio.emit(
+                        "error",
+                        {"message": "Only players in this game can start it"},
+                        room=sid,
                     )
+                    return
+
+                host_sid = getattr(game, "created_by_sid", None)
+                if host_sid and sid != host_sid:
+                    await self._sio.emit(
+                        "error",
+                        {"message": "Only game host can start the game"},
+                        room=sid,
+                    )
+                    return
+
+                if game.phase != WerewolfPhase.WAITING:
+                    await self._sio.emit(
+                        "error",
+                        {"message": "Game already started"},
+                        room=sid,
+                    )
+                    return
+
+                if not game.start_game():
+                    await self._sio.emit(
+                        "error",
+                        {"message": "Cannot start game (need more players)"},
+                        room=sid,
+                    )
+                    return
+
+                players_with_roles = []
+                for player in game.players:
+                    players_with_roles.append(
+                        {
+                            "wallet_address": player["wallet_address"],
+                            "role_type": player["role"].role_type.value if player.get("role") else None,
+                            "team": player["role"].team.value if player.get("role") else None,
+                        }
+                    )
+
+                await persistence_manager.on_game_started(
+                    game_id=game_id,
+                    players_with_roles=players_with_roles,
+                    initial_state=game.to_dict(),
+                )
 
         await self.broadcast_state(game_id)
 
@@ -341,7 +350,7 @@ class WerewolfService(BaseService):
             "actor_sid": sid,
             "actor_nickname": actor_nickname,
             "action": action,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         hide_target = self._is_night_phase(phase) and not reveal
@@ -418,6 +427,73 @@ class WerewolfService(BaseService):
             for target_sid in reveal_sids:
                 await self._sio.emit("werewolf_action_trace", reveal_payload, room=target_sid)
 
+    async def advance_phase(self, sid: str, game_id: str) -> None:
+        """Manually advance the game phase (debug/admin or fallback)."""
+        if not is_local_debug_mode():
+            await self._sio.emit(
+                "error",
+                {
+                    "message": "advance_werewolf_phase is only available in LOCAL_DEBUG_MODE",
+                    "error_code": "DEBUG_ONLY",
+                },
+                room=sid,
+            )
+            return
+        print(f"[Werewolf] Manual phase advance triggered by {sid} for game {game_id}")
+        await self._advance_phase_logic(game_id)
+
+    async def _advance_phase_logic(self, game_id: str) -> None:
+        """Core logic to advance phase and handle side effects."""
+        async with self._get_game_lock(game_id):
+            game = self._state.werewolf_games.get(game_id)
+            if not game:
+                return
+            
+            # If game is already finished, do nothing
+            if game.phase == WerewolfPhase.FINISHED:
+                return
+
+            old_phase = game.phase.value
+            phase_result = game.advance_phase()
+            new_phase = phase_result.get("new_phase")
+            
+            is_significant = (
+                new_phase in WEREWOLF_SIGNIFICANT_PHASES
+                or old_phase in WEREWOLF_SIGNIFICANT_PHASES
+            )
+
+            await persistence_manager.on_phase_changed(
+                game_id=game_id,
+                new_phase=new_phase,
+                day_count=phase_result.get("day_count", game.day_count),
+                game_state=game.to_dict(),
+                deaths=phase_result.get("deaths", []),
+                significant=is_significant,
+            )
+
+            payload = {
+                "phase": new_phase,
+                "day_count": phase_result.get("day_count"),
+                "deaths": phase_result.get("deaths", []),
+                "eliminated": phase_result.get("eliminated"),
+                "game_over": phase_result.get("game_over", False),
+                "winners": phase_result.get("winners", []),
+            }
+            
+            await self._sio.emit("werewolf_phase_change", payload, room=game_id)
+            await self._sio.emit("werewolf_phase_change", payload, room=self._werewolf_spectator_room(game_id))
+            
+            # Broadcast full state update as well
+            await self.broadcast_state(game_id)
+            
+            # Handle game over
+            if phase_result.get("game_over"):
+                winners = phase_result.get("winners", [])
+                print(f"Game {game_id} finished. Winners: {winners}")
+                await self._handle_game_end(game_id, winners)
+                # Remove finished game from memory after settlement
+                self._state.werewolf_games.pop(game_id, None)
+
     async def process_action(self, sid: str, game_id: str, action: str, target_sid: Optional[str] = None, message: Optional[str] = None) -> None:
         async with self._get_game_lock(game_id):
             if not game_id or game_id not in self._state.werewolf_games:
@@ -449,6 +525,22 @@ class WerewolfService(BaseService):
                 kwargs["message"] = message
 
             result = game.process_action(sid, action, **kwargs)
+
+            # Snapshot game state while still holding the lock to avoid
+            # reading data that a concurrent action could modify.
+            phase_value = game.phase.value
+            game_type = game.game_type
+            player_by_sid = {p["sid"]: p for p in game.players}
+            wolf_sids = [
+                p["sid"]
+                for p in game.players
+                if p.get("role")
+                and hasattr(p["role"], "role_type")
+                and p["role"].role_type.value == "wolf"
+            ]
+            core_state = game.get_core_state() if action not in ["chat", "wolf_chat"] else None
+            all_actions_complete = result.get("all_actions_complete")
+
         if not result.get("success"):
             error_payload = {"message": result.get("error", "Action failed")}
             if result.get("error_code"):
@@ -467,16 +559,16 @@ class WerewolfService(BaseService):
         )
 
         if action in ["chat", "wolf_chat"] and message:
-            player = next((p for p in game.players if p["sid"] == sid), None)
+            player = player_by_sid.get(sid)
             if player:
                 metadata = {
-                    "phase": game.phase.value,
+                    "phase": phase_value,
                     "is_wolf_chat": action == "wolf_chat",
                 }
                 self._create_task(
                     persistence_manager.save_chat_message(
                         game_id=game_id,
-                        game_type=game.game_type,
+                        game_type=game_type,
                         player_id=player["wallet_address"],
                         nickname=player["nickname"],
                         message=message,
@@ -487,13 +579,6 @@ class WerewolfService(BaseService):
                 )
 
         if action == "wolf_chat" and result.get("wolf_only"):
-            wolf_sids = [
-                p["sid"]
-                for p in game.players
-                if p.get("role")
-                and hasattr(p["role"], "role_type")
-                and p["role"].role_type.value == "wolf"
-            ]
             for wolf_sid in wolf_sids:
                 if wolf_sid != sid:
                     await self._sio.emit("wolf_chat_message", result.get("chat"), room=wolf_sid)
@@ -505,8 +590,8 @@ class WerewolfService(BaseService):
                     if bool(session.get("read_only") or session.get("spectator_mode")):
                         reveal_sids.append(s)
 
-            for target_sid in reveal_sids:
-                 await self._sio.emit("wolf_chat_message", result.get("chat"), room=target_sid)
+            for rsid in reveal_sids:
+                 await self._sio.emit("wolf_chat_message", result.get("chat"), room=rsid)
 
         elif action == "chat":
              payload = result.get("chat")
@@ -514,7 +599,7 @@ class WerewolfService(BaseService):
              await self._sio.emit("chat_message", payload, room=self._werewolf_spectator_room(game_id))
 
         elif action == "speak":
-            player = next((p for p in game.players if p["sid"] == sid), None)
+            player = player_by_sid.get(sid)
             if player:
                 self._create_task(
                     persistence_manager.save_speech(
@@ -522,54 +607,22 @@ class WerewolfService(BaseService):
                         player_id=player["wallet_address"],
                         nickname=player["nickname"],
                         message=message or "",
-                        phase=game.phase.value,
-                        game_type=game.game_type,
+                        phase=phase_value,
+                        game_type=game_type,
                     ),
                     name=f"save_speech_{game_id}"
                 )
 
-        if action not in ["chat", "wolf_chat"]:
+        if core_state is not None:
             await redis_manager.save_game_core(
                 game_id,
-                game.get_core_state(),
+                core_state,
                 game_type="werewolf",
             )
 
-        if result.get("all_actions_complete"):
-            print(
-                f"[AutoAdvance] All actions complete for game {game_id} phase {game.phase.value}, advancing..."
-            )
-            old_phase = game.phase.value
-            phase_result = game.advance_phase()
-            new_phase = phase_result.get("new_phase", "")
-
-            is_significant = (
-                new_phase in WEREWOLF_SIGNIFICANT_PHASES
-                or old_phase in WEREWOLF_SIGNIFICANT_PHASES
-            )
-
-            await persistence_manager.on_phase_changed(
-                game_id=game_id,
-                new_phase=new_phase,
-                day_count=phase_result.get("day_count", game.day_count),
-                game_state=game.to_dict(),
-                deaths=phase_result.get("deaths", []),
-                significant=is_significant,
-            )
-
-            payload = {
-                "phase": new_phase,
-                "day_count": phase_result.get("day_count"),
-                "deaths": phase_result.get("deaths", []),
-                "eliminated": phase_result.get("eliminated"),
-                "game_over": phase_result.get("game_over", False),
-                "winners": phase_result.get("winners", []),
-            }
-            await self._sio.emit("werewolf_phase_change", payload, room=game_id)
-            await self._sio.emit("werewolf_phase_change", payload, room=self._werewolf_spectator_room(game_id))
-
-            if phase_result.get("game_over"):
-                await self._handle_game_end(game_id, phase_result.get("winners", []))
+        if all_actions_complete:
+            print(f"[AutoAdvance] All actions complete for game {game_id}, advancing...")
+            await self._advance_phase_logic(game_id)
 
         await self.broadcast_state(game_id)
 
@@ -644,6 +697,21 @@ class WerewolfService(BaseService):
 
             try:
                 if game:
+                    if not winners:
+                        # No winners — treat as abort and refund all players
+                        print(f"[WerewolfSettle] Game {game_id} ended without winners, refunding entry fees")
+                        should_refund = await redis_manager.mark_settlement_stage_once(
+                            game_id,
+                            "werewolf_refund",
+                        )
+                        if should_refund:
+                            await self._settlement_service.refund_werewolf_entry_fees(
+                                game.players,
+                                game_id,
+                                description="Werewolf game refund - no winners",
+                            )
+                        return
+
                     should_settle = await redis_manager.mark_settlement_stage_once(
                         game_id,
                         "werewolf_settlement",
@@ -668,8 +736,6 @@ class WerewolfService(BaseService):
                             "werewolf_settlement",
                         )
                         raise
-                elif game and not winners:
-                    print("Werewolf game ended without winners, refunding entry fees")
                 else:
                     print("No game data found for prize distribution")
             except Exception as exc:
@@ -725,6 +791,32 @@ class WerewolfService(BaseService):
                 import traceback
                 traceback.print_exc()
 
+    @staticmethod
+    def _to_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        """Normalize datetime to timezone-aware UTC."""
+        if dt is None:
+            return None
+        if not isinstance(dt, datetime):
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _get_game_last_activity_at(game) -> datetime:
+        """Best-effort real-player activity timestamp for inactivity cleanup."""
+        candidates = [
+            getattr(game, "created_at", None),
+            getattr(game, "started_at", None),
+        ]
+
+        last_action_map = getattr(game, "last_action_time", None)
+        if isinstance(last_action_map, dict):
+            candidates.extend(ts for ts in last_action_map.values() if ts)
+
+        valid = [WerewolfService._to_utc(ts) for ts in candidates if isinstance(ts, datetime)]
+        return max(valid) if valid else datetime.now(timezone.utc)
+
     async def _timeout_loop(self) -> None:
         """Auto-resolve werewolf phases when action timers expire."""
         active_phases = {
@@ -742,6 +834,7 @@ class WerewolfService(BaseService):
         while True:
             try:
                 await asyncio.sleep(self._timeout_interval)
+                now = datetime.now(timezone.utc)
 
                 # Copy keys to avoid modification during iteration
                 game_ids = list(self._state.werewolf_games.keys())
@@ -751,6 +844,45 @@ class WerewolfService(BaseService):
                         if game_id not in self._state.werewolf_games:
                             continue
                         game = self._state.werewolf_games[game_id]
+
+                        # 0. End games with no real player actions for a long time.
+                        # Timeout-driven phase auto-advances are intentionally ignored
+                        # so zombie-only games are eventually aborted+refunded.
+                        if game.phase not in {WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}:
+                            last_activity_at = self._get_game_last_activity_at(game)
+                            if (now - last_activity_at).total_seconds() > WEREWOLF_INACTIVE_GAME_ABORT_SECONDS:
+                                print(f"[Timeout] Aborting inactive game {game_id} (no player actions > 1h)")
+                                await self._handle_game_abort(
+                                    game_id,
+                                    "Game cancelled due to inactivity (> 1h without player actions)",
+                                )
+                                self._state.werewolf_games.pop(game_id, None)
+                                continue
+
+                        # 1. Check for stale waiting games (> 1 hour)
+                        if game.phase == WerewolfPhase.WAITING:
+                            created_at = self._to_utc(getattr(game, 'created_at', None))
+                            if created_at and (now - created_at).total_seconds() > 3600:
+                                print(f"[Timeout] Aborting stale waiting game {game_id}")
+                                await self._handle_game_abort(
+                                    game_id, 
+                                    "Game cancelled due to inactivity (waiting > 1h)"
+                                )
+                                # Ensure removed from memory
+                                self._state.werewolf_games.pop(game_id, None)
+                                continue
+
+                        # 2. Check for stuck active games (> 1 hour in same phase)
+                        if game.phase in active_phases:
+                            phase_start = self._to_utc(getattr(game, '_phase_start_time', None))
+                            if phase_start and (now - phase_start).total_seconds() > 3600:
+                                print(f"[Timeout] Aborting stuck active game {game_id}")
+                                await self._handle_game_abort(
+                                    game_id,
+                                    f"Game cancelled due to stuck phase {game.phase.value} (> 1h)"
+                                )
+                                self._state.werewolf_games.pop(game_id, None)
+                                continue
 
                         if game.phase not in active_phases:
                             continue
@@ -789,25 +921,32 @@ class WerewolfService(BaseService):
                                         {
                                             "message": f"Player {nickname} Timed Out",
                                             "player": nickname,
-                                            "timestamp": datetime.utcnow().isoformat(),
+                                            "timestamp": datetime.now(timezone.utc).isoformat(),
                                         },
                                         room=game_id,
                                     )
 
                             if result.get("aborted"):
+                                abort_payload = {
+                                    "message": result.get("reason", "Game aborted"),
+                                    "refund_players": result.get("refund_players", []),
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                }
                                 await self._sio.emit(
                                     "GAME_ABORTED",
-                                    {
-                                        "message": result.get("reason", "Game aborted"),
-                                        "refund_players": result.get("refund_players", []),
-                                        "timestamp": datetime.utcnow().isoformat(),
-                                    },
+                                    abort_payload,
                                     room=game_id,
+                                )
+                                await self._sio.emit(
+                                    "GAME_ABORTED",
+                                    abort_payload,
+                                    room=self._werewolf_spectator_room(game_id),
                                 )
                                 await self._handle_game_abort(
                                     game_id,
                                     result.get("reason"),
                                 )
+                                self._state.werewolf_games.pop(game_id, None)
                                 continue
 
                             payload = {
@@ -826,6 +965,8 @@ class WerewolfService(BaseService):
                                     game_id,
                                     result.get("winners", []),
                                 )
+                                self._state.werewolf_games.pop(game_id, None)
+                                continue
 
                             await self.broadcast_state(game_id)
 

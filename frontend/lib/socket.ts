@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import getApiBaseUrl from './api';
-import { getBotToken, getStoredFingerprint } from './antiBot';
+import { getBotToken, getStoredFingerprint, getStoredPlayerId, getStoredLoginSecret } from './antiBot';
 
 let socketInstance: Socket | null = null;
 
@@ -31,6 +31,17 @@ export const getSocket = (): Socket | null => {
     timeout: 15000,
     transports: ['websocket', 'polling'],
     auth: buildSocketAuth(),
+  });
+
+  socketInstance.on('connect', () => {
+    const playerId = getStoredPlayerId();
+    const loginSecret = getStoredLoginSecret();
+    if (playerId && loginSecret) {
+      socketInstance?.emit('authenticate', {
+        login_key: playerId,
+        login_secret: loginSecret,
+      });
+    }
   });
 
   // Ensure reconnect attempts always carry the latest token/fingerprint.
@@ -96,4 +107,21 @@ export const refreshSocketAuth = (botToken?: string, fingerprint?: string) => {
   if (socket.disconnected) {
     socket.connect();
   }
+};
+
+export const emitAuthenticate = (playerId?: string, loginSecret?: string) => {
+  const socket = getSocket();
+  if (!socket) return;
+  const resolvedPlayer = playerId ?? getStoredPlayerId();
+  const resolvedSecret = loginSecret ?? getStoredLoginSecret();
+  if (!resolvedPlayer || !resolvedSecret) {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('[Socket] Missing credentials for authenticate');
+    }
+    return;
+  }
+  socket.emit('authenticate', {
+    login_key: resolvedPlayer,
+    login_secret: resolvedSecret,
+  });
 };

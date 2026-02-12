@@ -27,7 +27,15 @@ def register_texas_handlers(sio, state, texas_service) -> None:
             data = data or {}
             table_id = data.get("table_id")
             action = data.get("action")
-            amount = data.get("amount", 0)
+            raw_amount = data.get("amount", 0)
+            try:
+                amount = int(raw_amount)
+            except (TypeError, ValueError):
+                await sio.emit("error", {"message": "Invalid amount: must be an integer"}, room=sid)
+                return
+            if amount < 0:
+                await sio.emit("error", {"message": "Invalid amount: must be non-negative"}, room=sid)
+                return
             chat_message = data.get("message")
 
             await texas_service.player_move(table_id, sid, action, amount, chat_message)

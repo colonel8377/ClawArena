@@ -9,26 +9,45 @@ import PlayerSeat from '@/components/texas/PlayerSeat';
 import CommunityCards from '@/components/texas/CommunityCards';
 import ChipStream from '@/components/texas/ChipStream';
 import ActionTimeline from '@/components/texas/ActionTimeline';
+import getApiBaseUrl from '@/lib/api';
+import { botFetch } from '@/lib/antiBot';
 import { motion } from 'framer-motion';
+import { useAnchoredCenter } from '@/hooks/useAnchoredCenter';
 
 export default function TexasTablePage() {
   const { tableId } = useParams() as { tableId: string };
   const { readingMode } = useUiMode();
   const isAgent = readingMode === 'agent';
+  const { center: tableCenter, stageRef, anchorRef: lobsterAnchorRef } = useAnchoredCenter();
   
   const { 
     gameState, 
     setGameState, 
     addLog,
-    setConnected
+    setConnected,
+    reset
   } = useTexasStore();
+  const [loadStatus, setLoadStatus] = React.useState<'loading' | 'ready' | 'ended' | 'error'>('loading');
+
+  React.useEffect(() => {
+    // Prevent stale cross-table state from rendering while new snapshot loads.
+    reset();
+    setLoadStatus('loading');
+  }, [tableId, reset]);
 
   useSpectatorSocket({
     namespace: 'texas',
     tableId,
     revealMode: readingMode === 'human',
     events: {
-      game_state: (data) => setGameState(data),
+      game_state: (data) => {
+        setGameState(data);
+        setLoadStatus('ready');
+      },
+      TABLE_ABORTED: () => {
+        reset();
+        setLoadStatus('ended');
+      },
       connect: () => setConnected(true),
       disconnect: () => setConnected(false),
       texas_action: (data) => addLog(`${data.nickname} ${data.action} ${data.amount || ''}`),
@@ -36,7 +55,82 @@ export default function TexasTablePage() {
     }
   });
 
+  React.useEffect(() => {
+    let cancelled = false;
+    const fetchSnapshot = async () => {
+      try {
+        const res = await botFetch(`${getApiBaseUrl()}/api/spectate/poker/${tableId}`);
+        if (cancelled) return;
+        if (res.status === 404) {
+          setLoadStatus('ended');
+          return;
+        }
+        if (!res.ok) {
+          setLoadStatus('error');
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        setGameState(data);
+        setLoadStatus('ready');
+      } catch {
+        if (!cancelled) {
+          setLoadStatus('error');
+        }
+      }
+    };
+
+    fetchSnapshot();
+    return () => {
+      cancelled = true;
+    };
+  }, [tableId, setGameState]);
+
+  const isTerminalTable = gameState?.phase === 'finished' || gameState?.phase === 'aborted';
+
+  if (isTerminalTable) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center font-mono ${
+        isAgent ? 'bg-black text-green-500' : 'bg-slate-50 text-slate-500'
+      }`}>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <div className="text-4xl">🏁</div>
+          <div className="text-lg font-semibold">This game has ended.</div>
+          <div className="text-xs opacity-70">Return to the lobby to watch active tables.</div>
+        </div>
+      </div>
+    );
+  }
+
   if (!gameState) {
+    if (loadStatus === 'ended') {
+      return (
+        <div className={`min-h-screen flex items-center justify-center font-mono ${
+          isAgent ? 'bg-black text-green-500' : 'bg-slate-50 text-slate-500'
+        }`}>
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="text-4xl">🏁</div>
+            <div className="text-lg font-semibold">This game has ended.</div>
+            <div className="text-xs opacity-70">Return to the lobby to watch active tables.</div>
+          </div>
+        </div>
+      );
+    }
+
+    if (loadStatus === 'error') {
+      return (
+        <div className={`min-h-screen flex items-center justify-center font-mono ${
+          isAgent ? 'bg-black text-green-500' : 'bg-slate-50 text-slate-500'
+        }`}>
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="text-4xl">⚠️</div>
+            <div className="text-lg font-semibold">Unable to load this game.</div>
+            <div className="text-xs opacity-70">Please try again later.</div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className={`min-h-screen flex items-center justify-center font-mono ${
         isAgent ? 'bg-black text-green-500' : 'bg-slate-50 text-slate-500'
@@ -58,54 +152,67 @@ export default function TexasTablePage() {
     );
   }
 
+  const totalPlayers = gameState.players.length;
+  const dealerIndex = Number.isFinite(gameState.dealer_position) ? Number(gameState.dealer_position) : undefined;
+  const smallBlindIndex = dealerIndex !== undefined && totalPlayers > 0
+    ? (dealerIndex + 1) % totalPlayers
+    : undefined;
+  const bigBlindIndex = dealerIndex !== undefined && totalPlayers > 0
+    ? (dealerIndex + 2) % totalPlayers
+    : undefined;
+
   return (
     <div className={`flex h-screen overflow-hidden font-mono transition-colors duration-500 ${
       isAgent ? 'bg-[#0a0a0a] text-gray-200' : 'bg-slate-50 text-slate-800'
     }`}>
       {/* Main Game Area */}
-      <div className={`flex-1 relative ${
+      <div ref={stageRef} className={`flex-1 relative ${
         isAgent 
           ? 'bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-green-900/20 via-black to-black'
           : 'bg-slate-100'
       }`}>
         {/* Table Felt */}
-        <div className={`absolute inset-4 m-auto w-[80%] h-[70%] border-[20px] rounded-[200px] shadow-2xl ${
+        <div className={`absolute inset-4 m-auto w-[82%] h-[72%] border-[18px] rounded-[220px] shadow-2xl ${
           isAgent
             ? 'border-[#1a1a1a] bg-[#0f2a15] shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]'
             : 'border-[#e2e8f0] bg-[#3b82f6] shadow-[inset_0_0_50px_rgba(0,0,0,0.1)]'
         }`}>
-          <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none select-none z-0 ${
+          <div
+            className={`absolute text-center pointer-events-none select-none z-0 ${
             isAgent ? 'text-green-900/30' : 'text-white/10'
-          }`}>
-            <div className="text-6xl font-black tracking-tighter opacity-50">
+          }`}
+            style={{ left: tableCenter.percent.left, top: tableCenter.percent.top, transform: 'translate(-50%, -50%)' }}
+          >
+            <div className="text-5xl md:text-6xl font-black tracking-tighter opacity-50">
               CLAW<span className={isAgent ? 'text-green-800/40' : 'text-white/20'}>ARENA</span>.IO
             </div>
-            <div className="text-9xl mt-4 opacity-20 filter blur-sm">🦞</div>
+            <div ref={lobsterAnchorRef} className="text-6xl md:text-7xl mt-4 opacity-25 filter blur-[1px] w-fit mx-auto">🦞</div>
           </div>
         </div>
 
         {/* Game Components */}
-        <CommunityCards cards={gameState.community_cards || []} />
+        <CommunityCards cards={gameState.community_cards || []} center={tableCenter} />
         
         {/* Pot Display */}
         <motion.div 
           key={gameState.pot}
           initial={{ scale: 1.1 }}
           animate={{ scale: 1 }}
-          className="absolute top-[35%] left-1/2 -translate-x-1/2 flex flex-col items-center z-10"
+          className="absolute flex flex-col items-center z-10"
+          style={{ left: tableCenter.percent.left, top: '45%', transform: 'translate(-50%, -50%)' }}
         >
-          <div className={`px-4 py-1 rounded-full border font-bold ${
+          <div className={`px-7 py-2.5 rounded-full border text-lg font-bold tracking-wide ${
             isAgent 
-              ? 'bg-black/60 border-green-800 text-green-400' 
-              : 'bg-white/90 border-blue-200 text-blue-600 shadow-lg'
+              ? 'bg-black/75 border-emerald-400/40 text-emerald-100 shadow-[0_10px_30px_rgba(16,185,129,0.2)]' 
+              : 'bg-white/95 border-emerald-200 text-emerald-700 shadow-lg'
           }`}>
-            POT: ${gameState.pot}
+            POT ${gameState.pot}
           </div>
           {(gameState.small_blind && gameState.big_blind) && (
-            <div className={`mt-1 text-[10px] font-mono px-2 py-0.5 rounded ${
+            <div className={`mt-2 text-sm font-semibold tracking-wider px-3.5 py-1 rounded-full ${
               isAgent 
-                ? 'text-gray-400 bg-black/40' 
-                : 'text-slate-500 bg-white/50'
+                ? 'text-emerald-200 bg-black/50 border border-emerald-400/30' 
+                : 'text-emerald-700 bg-white/70 border border-emerald-200'
             }`}>
               Blinds: ${gameState.small_blind}/${gameState.big_blind}
             </div>
@@ -119,6 +226,13 @@ export default function TexasTablePage() {
             player={player} 
             index={idx} 
             totalPlayers={gameState.players.length}
+            center={tableCenter}
+            isAgent={isAgent}
+            isDealer={dealerIndex === idx}
+            isSmallBlind={smallBlindIndex === idx}
+            isBigBlind={bigBlindIndex === idx}
+            pot={gameState.pot}
+            winners={gameState.winners}
           />
         ))}
 
@@ -126,6 +240,7 @@ export default function TexasTablePage() {
         <ChipStream 
           players={gameState.players} 
           pot={gameState.pot} 
+          center={tableCenter}
         />
       </div>
 

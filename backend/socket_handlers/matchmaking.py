@@ -5,7 +5,12 @@ from decimal import Decimal
 
 from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
 from backend.database.persistence_manager import persistence_manager
-from backend.economy.account import get_balance, lock_balance, unlock_balance
+from backend.economy.account import (
+    get_available_balance,
+    lock_balance,
+    unlock_balance,
+    validate_account_balance,
+)
 from backend.games.texas import create_texas_game
 from backend.games.texas.matchmaker import TexasMatchmaker
 from backend.games.werewolf.matchmaker import WerewolfMatchmaker
@@ -35,35 +40,6 @@ async def on_texas_game_matched(sio, state, players, game_size: int, texas_servi
 
     # Lock to prevent concurrent table creation race conditions
     async with redis_manager.lock("matchmaking:texas:create_table", timeout=10):
-        eligible_players = []
-        for queued_player in players:
-            try:
-                current_balance = await get_balance(queued_player.wallet_address)
-                if current_balance < queued_player.buy_in_tokens:
-                    await sio.emit(
-                        "error",
-                        {
-                            "message": (
-                                "Insufficient balance for matchmaking buy-in. "
-                                f"Required: {str(queued_player.buy_in_tokens)} tokens, "
-                                f"Available: {str(current_balance)}"
-                            )
-                        },
-                        room=queued_player.sid,
-                    )
-                    continue
-
-                eligible_players.append(queued_player)
-            except Exception as exc:
-                await sio.emit(
-                    "error",
-                    {"message": f"Matchmaking buy-in lock failed: {str(exc)}"},
-                    room=queued_player.sid,
-                )
-
-        if len(eligible_players) < 2:
-            return
-
         table_id = f"poker_auto_{uuid.uuid4().hex[:8]}"
         table = create_texas_game(table_id)
         state.poker_tables[table_id] = table
@@ -78,21 +54,9 @@ async def on_texas_game_matched(sio, state, players, game_size: int, texas_servi
             print(f"[TexasMatchmaking] Persist game create failed: {exc}")
 
         seated_players = []
-        for player in eligible_players:
-            add_ok = table.add_player(
-                player.sid,
-                player.wallet_address,
-                nickname=player.nickname,
-                buy_in_tokens=player.buy_in_tokens,
-            )
-            if not add_ok:
-                await sio.emit(
-                    "error",
-                    {"message": "Could not join auto-matched poker table"},
-                    room=player.sid,
-                )
-                continue
-
+        for player in players:
+            # Atomic gate: lock_balance uses SQL WHERE (balance - locked) >= amount
+            # so it is the single source of truth for affordability.
             try:
                 await lock_balance(
                     player.wallet_address,
@@ -100,10 +64,33 @@ async def on_texas_game_matched(sio, state, players, game_size: int, texas_servi
                     game_session_id=table_id,
                 )
             except Exception as exc:
-                table.remove_player(player.sid)
                 await sio.emit(
                     "error",
-                    {"message": f"Failed to finalize matchmaking seat lock: {str(exc)}"},
+                    {"message": f"Insufficient balance or lock failed: {str(exc)}"},
+                    room=player.sid,
+                )
+                continue
+
+            add_ok = table.add_player(
+                player.sid,
+                player.wallet_address,
+                nickname=player.nickname,
+                buy_in_tokens=player.buy_in_tokens,
+            )
+            if not add_ok:
+                # Rollback the lock we just acquired
+                try:
+                    await unlock_balance(
+                        player.wallet_address,
+                        player.buy_in_tokens,
+                        game_session_id=table_id,
+                        description="Texas matchmaking seat allocation failed",
+                    )
+                except Exception:
+                    pass
+                await sio.emit(
+                    "error",
+                    {"message": "Could not join auto-matched poker table"},
                     room=player.sid,
                 )
                 continue
@@ -217,15 +204,15 @@ async def on_game_matched(sio, state, players, game_size: int, werewolf_service)
                 continue
 
             try:
-                current_balance = await get_balance(player.wallet_address)
-                if current_balance < entry_fee:
+                available_balance = await get_available_balance(player.wallet_address)
+                if available_balance < entry_fee:
                     await sio.emit(
                         "error",
                         {
                             "message": (
                                 "Insufficient balance for werewolf matchmaking entry fee. "
                                 f"Required: {str(entry_fee)} tokens, "
-                                f"Available: {str(current_balance)}"
+                                f"Available: {str(available_balance)}"
                             )
                         },
                         room=player.sid,
@@ -363,13 +350,44 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
             nickname = requested_name[:32] if requested_name else player_name
 
             if "tokens" in payload:
-                buy_in_tokens = Decimal(str(payload["tokens"]))
+                try:
+                    buy_in_tokens = Decimal(str(payload["tokens"]))
+                except Exception:
+                    await sio.emit("error", {"message": "Invalid tokens value"}, room=sid)
+                    return
+                if not buy_in_tokens.is_finite():
+                    await sio.emit("error", {"message": "Invalid tokens value"}, room=sid)
+                    return
             else:
                 buy_in_chips = int(payload.get("chips", 1000))
                 buy_in_tokens = Decimal(str(buy_in_chips)) * TEXAS_CHIP_TO_TOKEN_RATIO
 
             if buy_in_tokens <= 0:
                 await sio.emit("error", {"message": "Invalid buy-in amount"}, room=sid)
+                return
+
+            try:
+                account_status = await validate_account_balance(player_id)
+            except Exception as exc:
+                await sio.emit(
+                    "error",
+                    {"message": f"Failed to verify balance: {str(exc)}"},
+                    room=sid,
+                )
+                return
+
+            available_tokens = Decimal(str(account_status.get("available_balance", 0)))
+            if available_tokens < buy_in_tokens:
+                await sio.emit(
+                    "error",
+                    {
+                        "message": (
+                            f"Insufficient available balance for buy-in. Required: {str(buy_in_tokens)} tokens, "
+                            f"Available: {str(available_tokens)}"
+                        )
+                    },
+                    room=sid,
+                )
                 return
 
             if state.texas_matchmaker is None:
@@ -385,7 +403,7 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                 )
                 state.texas_matchmaker.start()
 
-            if state.texas_matchmaker.add_player(sid, player_id, nickname, buy_in_tokens):
+            if await state.texas_matchmaker.add_player(sid, player_id, nickname, buy_in_tokens):
                 queue_info = state.texas_matchmaker.get_queue_info()
                 await sio.emit(
                     "texas_matchmaking_joined",
@@ -421,7 +439,7 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                 )
                 return
 
-            if state.texas_matchmaker.remove_player(sid):
+            if await state.texas_matchmaker.remove_player(sid):
                 await sio.emit(
                     "texas_matchmaking_left",
                     {"message": "Left Texas matchmaking queue"},
@@ -472,9 +490,9 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
             )
 
     @sio.event
-    async def join_matchmaking(sid, data):
+    async def join_werewolf_matchmaking(sid, data):
         try:
-            if await _reject_if_read_only(sio, state, sid, "join_matchmaking"):
+            if await _reject_if_read_only(sio, state, sid, "join_werewolf_matchmaking，，"):
                 return
 
             if sid not in state.player_sessions or not state.player_sessions[sid]["authenticated"]:
@@ -487,7 +505,14 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
             player_name = state.player_sessions[sid]["player_name"] or "Player"
             nickname = requested_name[:32] if requested_name else player_name
 
-            entry_fee = Decimal(str(payload.get("entry_fee", 0)))
+            try:
+                entry_fee = Decimal(str(payload.get("entry_fee", 0)))
+            except Exception:
+                await sio.emit("error", {"message": "Invalid entry_fee value"}, room=sid)
+                return
+            if not entry_fee.is_finite():
+                await sio.emit("error", {"message": "Invalid entry_fee value"}, room=sid)
+                return
             if entry_fee <= 0:
                 await sio.emit(
                     "error",
@@ -510,8 +535,8 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                 state.werewolf_matchmaker.start()
 
             if state.werewolf_matchmaker.get_queue_size() > 0:
-                queued_fee = state.werewolf_matchmaker.queue[0].entry_fee
-                if queued_fee != entry_fee:
+                queued_fee = await state.werewolf_matchmaker.get_queued_entry_fee()
+                if queued_fee is not None and queued_fee != entry_fee:
                     await sio.emit(
                         "error",
                         {
@@ -524,15 +549,15 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                     return
 
             try:
-                current_balance = await get_balance(player_id)
-                if current_balance < entry_fee:
+                available_tokens = await get_available_balance(player_id)
+                if available_tokens < entry_fee:
                     await sio.emit(
                         "error",
                         {
                             "message": (
                                 "Insufficient balance for werewolf matchmaking entry fee. "
                                 f"Required: {str(entry_fee)} tokens, "
-                                f"Available: {str(current_balance)}"
+                                f"Available: {str(available_tokens)}"
                             )
                         },
                         room=sid,
@@ -546,7 +571,7 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                 )
                 return
 
-            if state.werewolf_matchmaker.add_player(sid, player_id, nickname, entry_fee):
+            if await state.werewolf_matchmaker.add_player(sid, player_id, nickname, entry_fee):
                 queue_info = state.werewolf_matchmaker.get_queue_info()
                 await sio.emit(
                     "matchmaking_joined",
@@ -581,7 +606,7 @@ def register_matchmaking_handlers(sio, state, texas_service, werewolf_service) -
                 )
                 return
 
-            if state.werewolf_matchmaker.remove_player(sid):
+            if await state.werewolf_matchmaker.remove_player(sid):
                 await sio.emit(
                     "matchmaking_left",
                     {"message": "Left matchmaking queue"},

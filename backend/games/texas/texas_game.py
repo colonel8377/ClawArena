@@ -99,6 +99,13 @@ class TexasGame(BaseGame):
             # 默认买入
             buy_in_chips = Decimal(str(TEXAS_DEFAULT_BUY_IN_CHIPS))
             buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
+
+        # Guard against silent truncation when converting Decimal -> int chips.
+        if buy_in_chips != int(buy_in_chips):
+            raise ValueError(
+                f"buy_in_chips must be a whole number, got {buy_in_chips}. "
+                f"Check TEXAS_CHIP_TO_TOKEN_RATIO."
+            )
         
         # Add to poker engine
         success = self.engine.add_player(

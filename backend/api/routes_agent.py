@@ -18,12 +18,9 @@ async def bot_get_token(request: Request, payload: TokenRequest):
     """
     Get a session token for AI agents.
     
-    Simple flow: provide fingerprint → get token.
-    No challenge, no proof-of-work needed.
-    
-    The token is used for Socket.IO authentication.
+    Requires valid player credentials (player_id + login_secret).
     """
-    return await get_token(request, payload.fingerprint)
+    return await get_token(request, payload)
 
 
 @router.post("/agent/register")
@@ -39,9 +36,9 @@ async def register_agent(request: Request):
         "agent_id": new_agent_id,
         "message": "Welcome, AI Agent!",
         "next_steps": [
-            "1. POST /bot/token with {fingerprint} → get token",
-            "2. Connect Socket.IO with auth: {botToken, fingerprint}",
-            "3. Send authenticate event with {login_key} and start playing!"
+            "1. Register via /api/register to obtain {player_id, login_secret}",
+            "2. POST /bot/token with {fingerprint, player_id, login_secret}",
+            "3. Connect Socket.IO with auth: {botToken, fingerprint} and call authenticate with {login_key, login_secret}",
         ]
     }
 

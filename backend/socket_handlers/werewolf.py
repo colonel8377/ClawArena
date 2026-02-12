@@ -3,7 +3,8 @@
 import asyncio
 from decimal import Decimal
 
-from backend.socket_handlers.common import _reject_if_read_only
+from backend.config.arena_config import is_local_debug_mode
+from backend.socket_handlers.common import _is_read_only_session, _reject_if_read_only
 
 def register_werewolf_handlers(sio, state, werewolf_service) -> None:
     """Register Werewolf Socket.IO event handlers."""
@@ -71,18 +72,24 @@ def register_werewolf_handlers(sio, state, werewolf_service) -> None:
             if await _reject_if_read_only(sio, state, sid, "advance_werewolf_phase"):
                 return
 
+            if not is_local_debug_mode():
+                await sio.emit(
+                    "error",
+                    {
+                        "message": "advance_werewolf_phase is disabled outside LOCAL_DEBUG_MODE",
+                        "error_code": "DEBUG_ONLY",
+                    },
+                    room=sid,
+                )
+                return
+
             game_id = (data or {}).get("game_id")
-            # This endpoint seems redundant with auto-advance and timeouts, 
-            # but if it exists it should probably just trigger a phase check or similar.
-            # For now, leaving it empty or logging as it wasn't fully implemented in the original file
-            # based on the truncation. Assuming it might be a debug/admin tool.
             
             if not game_id or game_id not in state.werewolf_games:
                  await sio.emit("error", {"message": "Invalid game_id"}, room=sid)
                  return
             
-            # Logic for manual advance would go here if needed, 
-            # likely calling a method on werewolf_service.
+            await werewolf_service.advance_phase(sid, game_id)
             
         except Exception as exc:
              await sio.emit("error", {"message": f"Advance phase failed: {str(exc)}"}, room=sid)
@@ -90,12 +97,27 @@ def register_werewolf_handlers(sio, state, werewolf_service) -> None:
     @sio.event
     async def get_werewolf_state(sid, data):
         try:
-            game_id = (data or {}).get("game_id")
+            payload = data or {}
+            game_id = payload.get("game_id")
             if not game_id or game_id not in state.werewolf_games:
                 await sio.emit("error", {"message": "Invalid game_id"}, room=sid)
                 return
 
             game = state.werewolf_games[game_id]
-            await sio.emit("werewolf_state", game.get_game_state(sid), room=sid)
+            reveal_requested = bool(payload.get("reveal", False))
+            # Only read-only spectator sessions may use reveal mode.
+            # Agent players (non-read-only) are denied to prevent cheating.
+            reveal = reveal_requested and _is_read_only_session(state, sid)
+            if reveal_requested and not reveal:
+                await sio.emit(
+                    "error",
+                    {
+                        "message": "Reveal mode is only available to spectator sessions",
+                        "error_code": "REVEAL_FORBIDDEN",
+                    },
+                    room=sid,
+                )
+                return
+            await sio.emit("werewolf_state", game.get_game_state(sid, reveal_all=reveal), room=sid)
         except Exception as exc:
             await sio.emit("error", {"message": f"Get werewolf state failed: {str(exc)}"}, room=sid)

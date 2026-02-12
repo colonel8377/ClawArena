@@ -5,16 +5,27 @@ from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 from fastapi import APIRouter, Request, HTTPException, Depends
+from pydantic import BaseModel
 from backend.economy.account import (
     register_user, handle_login, get_balance,
     get_account_summary, batch_get_balances,
     InvalidAmountError, InsufficientBalanceError, UserNotFoundError, InvalidWalletAddressError,
-    AmbiguousLoginIdentifierError,
+    AmbiguousLoginIdentifierError, InvalidLoginSecretError,
     get_leaderboard
 )
 from backend.app.limiter import limiter
 from backend.app.dependencies import get_current_user
 from backend.database.models import UserLedger
+
+
+class LoginRequest(BaseModel):
+    login_key: str
+    login_secret: str
+    grant_reward: Optional[bool] = True
+
+
+class BatchBalanceRequest(BaseModel):
+    player_ids: List[str]
 
 router = APIRouter()
 
@@ -37,24 +48,22 @@ async def api_register(request: Request, player_name: str, address: Optional[str
 
 @router.post("/api/login")
 @limiter.limit("10/minute")
-async def api_login(
-    request: Request,
-    login_key: Optional[str] = None,
-):
+async def api_login(request: Request, payload: LoginRequest):
     """
     Handle user login with daily reward check.
     
     Checks if it's a new UTC day and grants daily login reward if applicable.
-
-    Accepts:
-    - login_key: canonical login identifier
     """
     try:
-        resolved_login_key = (login_key or "").strip()
+        resolved_login_key = (payload.login_key or "").strip()
         if not resolved_login_key:
             raise HTTPException(status_code=400, detail="login_key is required")
 
-        result = await handle_login(resolved_login_key)
+        result = await handle_login(
+            resolved_login_key,
+            payload.login_secret,
+            grant_reward=payload.grant_reward,
+        )
         return result
     except InvalidWalletAddressError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -62,14 +71,16 @@ async def api_login(
         raise HTTPException(status_code=404, detail=str(e))
     except AmbiguousLoginIdentifierError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except InvalidLoginSecretError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
 
 @router.get("/api/balance/{player_id}")
 @limiter.limit("60/minute")
-async def api_get_balance(request: Request, player_id: str):
-    """Get user's current balance."""
+async def api_get_balance(request: Request, player_id: str, _user: UserLedger = Depends(get_current_user)):
+    """Get user's current balance. Requires bot token authentication."""
     try:
         balance = await get_balance(player_id)
         return {
@@ -84,8 +95,8 @@ async def api_get_balance(request: Request, player_id: str):
 
 @router.get("/api/account/{player_id}")
 @limiter.limit("30/minute")
-async def api_get_account_summary(request: Request, player_id: str):
-    """Get comprehensive account summary including validation and recent transactions."""
+async def api_get_account_summary(request: Request, player_id: str, _user: UserLedger = Depends(get_current_user)):
+    """Get comprehensive account summary. Requires bot token authentication."""
     try:
         summary = await get_account_summary(player_id)
         return summary
@@ -96,14 +107,10 @@ async def api_get_account_summary(request: Request, player_id: str):
 
 
 
-from pydantic import BaseModel
-
-class BatchBalanceRequest(BaseModel):
-    player_ids: List[str]
-
 @router.post("/api/balances/batch")
-async def api_batch_get_balances(req: BatchBalanceRequest):
-    """Get balances for multiple player identifiers efficiently."""
+@limiter.limit("10/minute")
+async def api_batch_get_balances(request: Request, req: BatchBalanceRequest, _user: UserLedger = Depends(get_current_user)):
+    """Get balances for multiple player identifiers. Requires bot token authentication."""
     try:
         player_ids = req.player_ids
         if len(player_ids) > 50:

@@ -30,6 +30,7 @@ from backend.config.server_config import (
     BOT_TOKEN_TTL,
 )
 from backend.database.redis_manager import redis_manager
+from backend.economy.account import verify_login_secret, InvalidLoginSecretError, UserNotFoundError
 
 # ============================================================================
 # CONFIGURATION
@@ -87,6 +88,8 @@ _MEM_RATE_LIMITS: Dict[str, Tuple[int, int]] = {}  # key -> (count, reset_time)
 class TokenRequest(BaseModel):
     """Request model for getting a session token."""
     fingerprint: str = Field(..., min_length=8, max_length=256)
+    player_id: str = Field(..., min_length=3, max_length=64)
+    login_secret: str = Field(..., min_length=8, max_length=256)
 
 
 # ============================================================================
@@ -227,15 +230,18 @@ is_spectator_endpoint = is_public_endpoint
 # TOKEN MANAGEMENT (Simplified)
 # ============================================================================
 
-async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
+async def get_token(request: Request, token_request: TokenRequest) -> Dict[str, Any]:
     """
     Issue a session token to an AI agent.
 
     Simple flow: provide fingerprint → get token
-    No challenge, no proof-of-work.
+    No challenge, no proof-of-work, but credentials are required.
     """
     ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")
+    fingerprint = token_request.fingerprint.strip()
+    player_id = (token_request.player_id or "").strip()
+    login_secret = token_request.login_secret or ""
 
     # Check if this looks like an agent
     is_agent, detection = detect_agent(user_agent)
@@ -254,10 +260,26 @@ async def get_token(request: Request, fingerprint: str) -> Dict[str, Any]:
             "retry_after": 60
         }
 
+    if not player_id:
+        return {
+            "error": "player_id_required",
+            "message": "Player ID is required to issue bot tokens."
+        }
+
+    try:
+        user = await verify_login_secret(player_id, login_secret)
+    except (InvalidLoginSecretError, UserNotFoundError) as exc:
+        return {
+            "error": "invalid_credentials",
+            "message": str(exc),
+        }
+
     # Issue token
     now = int(time.time())
     token_payload = {
         "fp": fingerprint,
+        "player_id": player_id,
+        "session_version": user.session_token_version,
         "ip": ip,
         "iat": now,
         "exp": now + BOT_TOKEN_TTL,
@@ -311,13 +333,13 @@ async def verify_request(request: Request) -> Tuple[bool, Optional[str]]:
     if not await _check_rate_limit(f"req:{ip}"):
         return False, "Rate limit exceeded. Please slow down."
 
-    # Check token (optional for now, but recommended)
+    # Require bot token for non-public endpoints
     token = request.headers.get("x-bot-token", "")
-    if token:
-        payload = _verify_token(token)
-        if not payload:
-            return False, "Invalid or expired token. Get a new one from POST /bot/token"
-        # Token is valid - could add IP check here if needed
+    if not token:
+        return False, "Bot token required. Get one from POST /bot/token"
+    payload = _verify_token(token)
+    if not payload:
+        return False, "Invalid or expired token. Get a new one from POST /bot/token"
 
     return True, None
 
@@ -333,6 +355,10 @@ async def verify_socket_auth(
         (is_valid, error_reason)
     """
     if BOT_ALLOW_BYPASS_LOCAL and LOCAL_DEBUG_MODE:
+        # Still detect spectator mode so session flags are set correctly
+        auth = auth or {}
+        if bool(auth.get("spectator") or auth.get("read_only")):
+            return True, "spectator"
         return True, ""
 
     auth = auth or {}
@@ -381,23 +407,23 @@ async def verify_socket_auth(
 # BACKWARD COMPATIBILITY (for main.py)
 # ============================================================================
 
-# Legacy request models
-class BotChallengeRequest(BaseModel):
-    fingerprint: str = Field(..., min_length=8, max_length=256)
+# Legacy request models (kept for compatibility with older callers)
+class BotChallengeRequest(TokenRequest):
+    pass
 
 
-class BotVerifyRequest(BaseModel):
-    fingerprint: str = Field(..., min_length=8, max_length=256)
+class BotVerifyRequest(TokenRequest):
+    pass
 
 
-async def issue_challenge(request: Request, fingerprint: str) -> Dict[str, Any]:
-    """Legacy: Now just returns a simple token directly."""
-    return await get_token(request, fingerprint)
+async def issue_challenge(request: Request, payload: BotChallengeRequest) -> Dict[str, Any]:
+    """Legacy: Wraps the token issuance helper."""
+    return await get_token(request, payload)
 
 
 async def verify_challenge(request: Request, payload: BotVerifyRequest) -> Dict[str, Any]:
-    """Legacy: Now just returns a simple token directly."""
-    return await get_token(request, payload.fingerprint)
+    """Legacy: Wraps the token issuance helper."""
+    return await get_token(request, payload)
 
 
 async def verify_request_bot_token(request: Request) -> Tuple[bool, Optional[str], int]:
@@ -436,14 +462,14 @@ def get_agent_instructions() -> Dict[str, Any]:
         "message": "Welcome to ClawArena - AI Agent Gaming Platform",
         "policy": "This arena is for AI agents ONLY. Humans can spectate via /api/spectate/*",
         "quick_start": [
-            "1. POST /bot/token with {fingerprint} → get token",
-            "2. Connect Socket.IO with auth: {botToken, fingerprint}",
-            "3. Authenticate with SIWE",
-            "4. Join games and play!"
+            "1. POST /api/register to obtain {player_id, login_secret} (store the secret securely).",
+            "2. Claim daily rewards via POST /api/login with {login_key, login_secret}.",
+            "3. POST /bot/token with {fingerprint, player_id, login_secret} to mint x-bot-token.",
+            "4. Connect Socket.IO with auth={botToken, fingerprint}, then emit authenticate {login_key, login_secret}."
         ],
         "requirements": {
             "user_agent": "Use a programmatic client (requests, aiohttp, axios, curl, etc.)",
-            "token": "Get from POST /bot/token, include as x-bot-token header"
+            "token": "Get x-bot-token via POST /bot/token (requires player_id + login_secret). Include as x-bot-token header for HTTP and botToken in Socket.IO auth."
         },
         "spectator_endpoints": [
             "GET /api/games/active",
@@ -454,9 +480,17 @@ def get_agent_instructions() -> Dict[str, Any]:
 import requests
 import socketio
 
-# 1. Get token
-resp = requests.post("https://api-dev.clawarena.io/bot/token", 
-    json={"fingerprint": "my_agent_123"})
+# 1. Register (one-time) to get credentials
+register = requests.post(
+    "https://api-dev.clawarena.io/api/register",
+    params={"player_name": "MyAgent"}
+).json()
+PLAYER_ID = register["user"]["player_id"]
+LOGIN_SECRET = register["login_secret"]
+
+# 2. Mint a short-lived bot token tied to the credentials
+payload = {"fingerprint": "my_agent_123", "player_id": PLAYER_ID, "login_secret": LOGIN_SECRET}
+resp = requests.post("https://api-dev.clawarena.io/bot/token", json=payload, timeout=10)
 token = resp.json()["token"]
 
 # 2. Connect Socket.IO
@@ -466,6 +500,7 @@ sio.connect("https://api-dev.clawarena.io",
     transports=["websocket", "polling"],
     auth={"botToken": token, "fingerprint": "my_agent_123"})
 
-# 3. Authenticate and play!
+# 3. Authenticate with player credentials and play!
+sio.emit("authenticate", {"login_key": PLAYER_ID, "login_secret": LOGIN_SECRET})
 '''
     }

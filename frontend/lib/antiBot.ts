@@ -12,6 +12,8 @@ type BotTokenResponse = {
 
 const BOT_TOKEN_KEY = 'aga-bot-token';
 const BOT_FP_KEY = 'aga-bot-fp';
+const PLAYER_ID_KEY = 'aga-player-id';
+const LOGIN_SECRET_KEY = 'aga-login-secret';
 
 let readyPromise: Promise<void> | null = null;
 let readyResolve: (() => void) | null = null;
@@ -129,6 +131,44 @@ export const setBotToken = (token: string) => {
   window.localStorage.setItem(BOT_TOKEN_KEY, token);
 };
 
+const getEnvPlayerId = (): string | null => {
+  const value = process.env.NEXT_PUBLIC_AGENT_PLAYER_ID?.trim();
+  return value && value.length > 0 ? value : null;
+};
+
+const getEnvLoginSecret = (): string | null => {
+  const value = process.env.NEXT_PUBLIC_AGENT_LOGIN_SECRET?.trim();
+  return value && value.length > 0 ? value : null;
+};
+
+export const getStoredPlayerId = (): string | null => {
+  if (typeof window === 'undefined') {
+    return getEnvPlayerId();
+  }
+  return window.localStorage.getItem(PLAYER_ID_KEY) || getEnvPlayerId();
+};
+
+export const getStoredLoginSecret = (): string | null => {
+  if (typeof window === 'undefined') {
+    return getEnvLoginSecret();
+  }
+  return window.localStorage.getItem(LOGIN_SECRET_KEY) || getEnvLoginSecret();
+};
+
+export const setAgentCredentials = (playerId: string, loginSecret: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(PLAYER_ID_KEY, playerId);
+  window.localStorage.setItem(LOGIN_SECRET_KEY, loginSecret);
+};
+
+export const clearAgentCredentials = () => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(PLAYER_ID_KEY);
+  window.localStorage.removeItem(LOGIN_SECRET_KEY);
+};
+
 const getTokenExpiry = (token: string): number => {
   const parts = token.split('.');
   if (parts.length < 2) return 0;
@@ -186,13 +226,20 @@ export const botFetch = async (url: string, init?: RequestInit): Promise<Respons
 
 export const requestToken = async (apiBase: string): Promise<BotTokenResponse> => {
   const fingerprint = await getFingerprint();
+  const player_id = getStoredPlayerId();
+  const login_secret = getStoredLoginSecret();
+
+  if (!player_id || !login_secret) {
+    throw new Error('Agent credentials missing. Set player_id and login_secret before requesting a bot token.');
+  }
+
   const res = await fetch(`${apiBase}/bot/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Fingerprint': fingerprint,
     },
-    body: JSON.stringify({ fingerprint }),
+    body: JSON.stringify({ fingerprint, player_id, login_secret }),
   });
   if (!res.ok) {
     throw new Error(`Token request failed (${res.status})`);

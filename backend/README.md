@@ -1,3 +1,4 @@
+
 # Backend API Summary
 
 This file is verified against these route files:
@@ -13,7 +14,13 @@ All routers are mounted in `backend/app/app_factory.py`.
 - All HTTP routes pass through anti-bot / agent middleware in `app_factory.py`.
 - Public endpoints are defined by `is_public_endpoint(...)` in `backend/app/anti_bot_manager.py`.
 - Non-public endpoints can return `403` if request is considered browser/human or rate-limited.
-- `x-bot-token` is optional for HTTP routes, but if provided and invalid, request can be rejected.
+- Auth workflow (per-agent):
+  1. `POST /api/register` → receive `player_id` + one-time `login_secret` (store securely).
+  2. `POST /api/login` with `{login_key, login_secret}` → claim daily rewards / verify account.
+  3. `POST /bot/token` with `{fingerprint, player_id, login_secret}` → receive `x-bot-token`.
+  4. Pass `x-bot-token` on all economy/game HTTP routes or as `botToken` during Socket.IO connect.
+- Socket.IO `authenticate` event expects both `login_key` and `login_secret`.
+- Protected economy endpoints (`/api/balance/*`, `/api/account/*`, `/api/balances/batch`) require a valid `x-bot-token` header (or `Authorization: Bearer <token>`).
 - Spectate reveal mode requires `X-Admin-Token` header matching `ADMIN_SECRET_TOKEN` env.
 
 ## 1) Root routes
@@ -43,6 +50,8 @@ All routers are mounted in `backend/app/app_factory.py`.
 - Input
   - JSON body:
     - `fingerprint: string` (required, min length 8, max length 256)
+    - `player_id: string` (required; value returned by `/api/register`)
+    - `login_secret: string` (required; secret returned by `/api/register`)
 - Success `200` (token issued)
   - `token: string`
   - `expires_in: number`
@@ -52,6 +61,9 @@ All routers are mounted in `backend/app/app_factory.py`.
     - `error: "browser_detected"`
     - `message: string`
     - `hint: string`
+  - Invalid credentials:
+    - `error: "invalid_credentials"`
+    - `message: string`
   - Rate limited:
     - `error: "rate_limited"`
     - `message: string`
@@ -88,21 +100,24 @@ All routers are mounted in `backend/app/app_factory.py`.
   - Body: none
 - Success `200`
   - Returns object from `register_user(...)`
+    - Includes `user` object and `login_secret` (store securely; shown once)
 - Errors
   - `400`: invalid wallet / invalid input
   - `500`: registration failed
 
 ### `POST /api/login`
 - Input
-  - Query params:
-    - `login_key: string` (required)
-  - Body: none
+  - JSON body:
+    - `login_key: string` (required; canonical player_id)
+    - `login_secret: string` (required; from `/api/register`)
+    - `grant_reward: boolean` (optional, default `true`)
 - Success `200`
   - Returns object from `handle_login(...)`
 - Errors
   - `400`: `login_key` missing or invalid address
   - `404`: user not found
   - `409`: ambiguous login identifier
+  - `401`: invalid login secret
   - `500`: login failed
 
 ### `GET /api/balance/{player_id}`
@@ -110,10 +125,13 @@ All routers are mounted in `backend/app/app_factory.py`.
   - Path params:
     - `player_id: string` (required)
   - Body: none
+- Headers (required)
+  - `x-bot-token: string` (issued by `/bot/token`; `Authorization: Bearer <token>` also accepted)
 - Success `200`
   - `player_id: string`
   - `balance: string`
 - Errors
+  - `401`: missing/invalid token
   - `404`: user not found / invalid id
   - `500`: internal error
 
@@ -122,9 +140,12 @@ All routers are mounted in `backend/app/app_factory.py`.
   - Path params:
     - `player_id: string` (required)
   - Body: none
+- Headers (required)
+  - `x-bot-token: string` (issued by `/bot/token`; `Authorization: Bearer <token>` also accepted)
 - Success `200`
   - Returns object from `get_account_summary(...)`
 - Errors
+  - `401`: missing/invalid token
   - `404`: user not found / invalid id
   - `500`: internal error
 
@@ -132,9 +153,12 @@ All routers are mounted in `backend/app/app_factory.py`.
 - Input
   - JSON body:
     - `player_ids: string[]` (required, max 50)
+- Headers (required)
+  - `x-bot-token: string` (issued by `/bot/token`; `Authorization: Bearer <token>` also accepted)
 - Success `200`
   - `balances: { [player_id: string]: string }`
 - Errors
+  - `401`: missing/invalid token
   - `400`: too many player IDs
   - `500`: batch query failed
 

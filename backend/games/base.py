@@ -161,6 +161,8 @@ class BaseGame(ABC):
         self.game_id = game_id
         self.game_type = game_type
         self.phase = GamePhase.WAITING
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
         self.players: List[Dict] = []
         
         # Enhanced communication channel with event bus

@@ -1,7 +1,7 @@
 """Texas orchestration service."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional, Any
 
@@ -19,6 +19,7 @@ POKER_ACTIVE_PHASES = {
 }
 
 POKER_DISCONNECT_AUTO_LEAVE_SECONDS = 120
+POKER_INACTIVE_TABLE_ABORT_SECONDS = 3600
 
 
 class TexasService(BaseService):
@@ -184,16 +185,35 @@ class TexasService(BaseService):
         self._create_task(table.save_state_to_redis(), name=f"save_state_{table_id}")
 
     async def start_hand(self, table_id: str, sid: str) -> None:
-        if not table_id or table_id not in self._state.poker_tables:
-            await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
-            return
+        async with self._get_table_lock(table_id):
+            if not table_id or table_id not in self._state.poker_tables:
+                await self._sio.emit("error", {"message": "Invalid table_id"}, room=sid)
+                return
 
-        table = self._state.poker_tables[table_id]
-        if not table.start_game():
-            await self._sio.emit("error", {"message": "Not enough players to start"}, room=sid)
-            return
+            table = self._state.poker_tables[table_id]
 
-        await self._create_task(table.save_checkpoint("hand_start"), name=f"checkpoint_hand_start_{table_id}")
+            if sid not in table.engine.players:
+                await self._sio.emit(
+                    "error",
+                    {"message": "Only seated players can start a hand"},
+                    room=sid,
+                )
+                return
+
+            if table.engine.phase in POKER_ACTIVE_PHASES:
+                await self._sio.emit(
+                    "error",
+                    {"message": "A hand is already in progress"},
+                    room=sid,
+                )
+                return
+
+            if not table.start_game():
+                await self._sio.emit("error", {"message": "Not enough players to start"}, room=sid)
+                return
+
+            await self._create_task(table.save_checkpoint("hand_start"), name=f"checkpoint_hand_start_{table_id}")
+
         await self.broadcast_state(table_id)
 
     async def player_move(self, table_id: str, sid: str, action: str, amount: Any = 0, chat_message: Optional[str] = None) -> None:
@@ -206,6 +226,11 @@ class TexasService(BaseService):
                 return
 
             table = self._state.poker_tables[table_id]
+
+            # Authorization: verify the caller is actually seated at this table
+            if sid not in table.engine.players:
+                await self._sio.emit("error", {"message": "You are not seated at this table"}, room=sid)
+                return
             action_kwargs = {}
             if action == "raise":
                 try:
@@ -456,11 +481,120 @@ class TexasService(BaseService):
             self._state.poker_tables.pop(table_id, None)
             self._state.poker_disconnected_since.pop(table_id, None)
 
+    @staticmethod
+    def _to_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        """Normalize datetime to timezone-aware UTC."""
+        if dt is None:
+            return None
+        if not isinstance(dt, datetime):
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _get_table_last_activity_at(table) -> datetime:
+        """Best-effort table activity timestamp for stale-table cleanup."""
+        candidates = [getattr(table, "created_at", None)]
+
+        # Wrapper-level action timestamps (sid -> datetime)
+        last_action_map = getattr(table, "last_action_time", None)
+        if isinstance(last_action_map, dict):
+            candidates.extend(ts for ts in last_action_map.values() if ts)
+
+        engine = getattr(table, "engine", None)
+        if engine is not None:
+            # Current turn heartbeat
+            turn_started_at = getattr(engine, "turn_started_at", None)
+            if turn_started_at:
+                candidates.append(turn_started_at)
+
+            # Per-player action timestamps
+            engine_players = getattr(engine, "players", {}) or {}
+            for player in engine_players.values():
+                player_last_action = getattr(player, "last_action_time", None)
+                if player_last_action:
+                    candidates.append(player_last_action)
+
+        valid = [TexasService._to_utc(ts) for ts in candidates if isinstance(ts, datetime)]
+        return max(valid) if valid else datetime.now(timezone.utc)
+
+    @staticmethod
+    def _is_terminal_table_ready_for_settlement(table) -> bool:
+        """Return True when a table has ended and is safe to finalize now."""
+        is_game_over = getattr(table, "is_game_over", None)
+        if not callable(is_game_over) or not is_game_over():
+            return False
+
+        engine = getattr(table, "engine", None)
+        phase = getattr(engine, "phase", None)
+        # Do not finalize in the middle of an active hand.
+        return phase not in POKER_ACTIVE_PHASES
+
+    async def _abort_inactive_table(self, table_id: str, table, reason: str) -> None:
+        """End a long-inactive poker table and settle all seated players."""
+        print(f"[PokerTimeout] Aborting inactive table {table_id}: {reason}")
+
+        settle_tasks = []
+        for player_dict in list(table.players):
+            sid = player_dict.get("sid")
+            wallet_address = player_dict.get("wallet_address")
+            if not wallet_address:
+                continue
+
+            engine_player = table.engine.players.get(sid) if sid else None
+            chips = engine_player.chips if engine_player else 0
+
+            buy_in_tokens = Decimal(str(player_dict.get("buy_in_tokens", 0) or 0))
+            chips_tokens = Decimal(str(chips * TEXAS_CHIP_TO_TOKEN_RATIO))
+
+            settle_tasks.append(
+                self._settlement_service.settle_texas_player(
+                    wallet_address,
+                    buy_in_tokens,
+                    chips_tokens,
+                    table_id,
+                    principal_description="Texas Hold'em buy-in principal unlock (inactive table)",
+                    win_description="Texas Hold'em settlement profit (inactive table)",
+                    loss_description="Texas Hold'em settlement loss (inactive table)",
+                    seat_session_id=sid,
+                )
+            )
+
+            if sid and sid in self._state.player_sessions:
+                self._state.player_sessions[sid]["table_id"] = None
+
+        if settle_tasks:
+            await asyncio.gather(*settle_tasks, return_exceptions=True)
+
+        abort_payload = {
+            "table_id": table_id,
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        # Emit to players before removing them from the room
+        await self._sio.emit("TABLE_ABORTED", abort_payload, room=table_id)
+        await self._sio.emit(
+            "TABLE_ABORTED", abort_payload,
+            room=self._poker_spectator_room(table_id),
+        )
+
+        for player_dict in list(table.players):
+            sid = player_dict.get("sid")
+            if sid:
+                await self._sio.leave_room(sid, table_id)
+
+        self._state.poker_tables.pop(table_id, None)
+        self._state.poker_disconnected_since.pop(table_id, None)
+        if self._state.texas_matchmaker:
+            self._state.texas_matchmaker.remove_table(table_id)
+
     async def _timeout_loop(self) -> None:
         """Auto-resolve poker turns when action timers expire."""
         while True:
             try:
                 await asyncio.sleep(self._timeout_interval)
+                now = datetime.now(timezone.utc)
 
                 # Copy keys to avoid modification during iteration
                 table_ids = list(self._state.poker_tables.keys())
@@ -471,8 +605,52 @@ class TexasService(BaseService):
                             continue
                         table = self._state.poker_tables[table_id]
 
+                        # Ended tables should be settled/closed promptly so funds are
+                        # unlocked and stale sessions disappear from runtime state.
+                        if self._is_terminal_table_ready_for_settlement(table):
+                            await self._abort_inactive_table(
+                                table_id,
+                                table,
+                                "Table ended (insufficient active players)",
+                            )
+                            continue
+
+                        # 0. End long-inactive tables and settle everyone.
+                        last_activity_at = self._get_table_last_activity_at(table)
+                        if (now - last_activity_at).total_seconds() > POKER_INACTIVE_TABLE_ABORT_SECONDS:
+                            await self._abort_inactive_table(
+                                table_id,
+                                table,
+                                "Table closed due to inactivity (> 1h without actions)",
+                            )
+                            continue
+                        
+                        # 1. Check for stale empty tables (> 1 hour)
+                        if not table.players:
+                            created_at = self._to_utc(getattr(table, 'created_at', None))
+                            if created_at and (now - created_at).total_seconds() > 3600:
+                                print(f"[PokerTimeout] Removing stale empty table {table_id}")
+                                self._state.poker_tables.pop(table_id, None)
+                                # Clean up from matchmaker if exists
+                                if self._state.texas_matchmaker:
+                                    self._state.texas_matchmaker.remove_table(table_id)
+                                continue
+
                         await self._check_disconnected_players(table_id, table)
                         engine = table.engine
+                        
+                        # 2. Check for stuck active tables (> 30 mins since turn start)
+                        if engine.phase in POKER_ACTIVE_PHASES:
+                            turn_started_at = self._to_utc(engine.turn_started_at)
+                            if turn_started_at and (now - turn_started_at).total_seconds() > 1800:
+                                print(f"[PokerTimeout] Force-folding stuck turn on table {table_id}")
+                                # Force fold current player to unstick
+                                if engine.current_player_sid:
+                                    await engine.handle_timeout(engine.current_player_sid)
+                                else:
+                                    # If no current player but stuck in active phase, force reset/check
+                                    pass
+                        
                         if engine.phase not in POKER_ACTIVE_PHASES:
                             continue
 
@@ -500,7 +678,7 @@ class TexasService(BaseService):
                                 "table_id": table_id,
                                 "player_sid": current_sid,
                                 "action": result.get("action", "fold"),
-                                "timestamp": datetime.utcnow().isoformat(),
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
                             },
                             room=table_id,
                         )

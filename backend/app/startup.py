@@ -16,6 +16,12 @@ async def on_startup(app, sio, texas_service, werewolf_service):
     """
     Initialize services and restore persisted game states on server startup.
     """
+    # Safety gate: refuse to start with debug mode in production
+    from backend.config.arena_config import LOCAL_DEBUG_MODE, _detect_production_environment
+    if LOCAL_DEBUG_MODE and _detect_production_environment():
+        print("FATAL: LOCAL_DEBUG_MODE is active in a production environment. Aborting.")
+        sys.exit(1)
+
     # Configure logging for Redis to print full logs
     # Ensure root logger is set to at least INFO so we see output
     logging.basicConfig(level=logging.INFO)

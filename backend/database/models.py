@@ -66,6 +66,9 @@ class UserLedger(Base):
     # Canonical agent identity fields (wallet_address kept as legacy identifier storage)
     player_name = Column(String(50), nullable=False, default="Player")
     address = Column(String(128), nullable=True, index=True)
+    auth_secret_hash = Column(String(256), nullable=True)
+    auth_secret_salt = Column(String(64), nullable=True)
+    session_token_version = Column(Integer, nullable=False, default=1)
     offchain_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     locked_balance = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))  # For in-game funds
     nonce = Column(Integer, nullable=False, default=0)  # For withdrawal signatures

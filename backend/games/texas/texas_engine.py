@@ -1179,7 +1179,14 @@ class TexasEngine:
             
             best_rank = min(player_hands.get(sid, 9999) for sid in eligible)
             pot_winners = [sid for sid in eligible if player_hands.get(sid, 9999) == best_rank]
-            
+
+            # Sort pot_winners by proximity to dealer (clockwise from dealer+1)
+            # so remainder chips follow standard poker rules.
+            if len(pot_winners) > 1 and self.dealer_sid and self.dealer_sid in self.player_order:
+                dealer_pos = self.player_order.index(self.dealer_sid)
+                n = len(self.player_order)
+                pot_winners.sort(key=lambda s: (self.player_order.index(s) - dealer_pos - 1) % n)
+
             # Split pot among winners
             share = pot.amount // len(pot_winners)
             remainder = pot.amount % len(pot_winners)

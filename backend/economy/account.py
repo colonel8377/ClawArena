@@ -13,6 +13,9 @@ This module handles:
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
+import base64
+import hashlib
+import secrets
 import uuid
 from sqlalchemy import text, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,9 +57,98 @@ class AmbiguousLoginIdentifierError(AccountError):
     pass
 
 
+class InvalidLoginSecretError(AccountError):
+    """Raised when login secret verification fails."""
+    pass
+
+
 # Configuration
 DAILY_LOGIN_REWARD = Decimal("1000.0")  # 1000 tokens per day
 LEADERBOARD_LIMIT = 10
+LOGIN_SECRET_BYTES = 24  # token_urlsafe -> ~32 chars
+LOGIN_SECRET_ITERATIONS = 200_000
+
+
+def _generate_login_secret() -> str:
+    """Generate a new login secret string for agents."""
+    return secrets.token_urlsafe(LOGIN_SECRET_BYTES)
+
+
+def _generate_secret_salt() -> str:
+    """Generate per-user salt stored as URL-safe base64."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(16)).decode("utf-8")
+
+
+def _hash_login_secret(secret: str, salt_b64: str) -> str:
+    """Derive PBKDF2 hash for the provided secret."""
+    if not secret or not salt_b64:
+        raise InvalidLoginSecretError("Login secret missing")
+    salt = base64.urlsafe_b64decode(salt_b64.encode("utf-8"))
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        secret.encode("utf-8"),
+        salt,
+        LOGIN_SECRET_ITERATIONS,
+    )
+    return base64.urlsafe_b64encode(digest).decode("utf-8")
+
+
+def _set_auth_secret(user: UserLedger, *, rotate: bool = False) -> str:
+    """Assign a fresh login secret to the user and return the plaintext value."""
+    secret = _generate_login_secret()
+    salt = _generate_secret_salt()
+    user.auth_secret_salt = salt
+    user.auth_secret_hash = _hash_login_secret(secret, salt)
+    if rotate or not getattr(user, "session_token_version", None):
+        current = user.session_token_version or 0
+        user.session_token_version = current + 1 if current else 1
+    return secret
+
+
+def _ensure_secret_fields(user: UserLedger) -> None:
+    if not user.auth_secret_hash or not user.auth_secret_salt:
+        raise InvalidLoginSecretError(
+            "Account is missing login secret. Please re-register to obtain new credentials."
+        )
+
+
+def _verify_auth_secret(user: UserLedger, provided_secret: str) -> None:
+    _ensure_secret_fields(user)
+    if not provided_secret:
+        raise InvalidLoginSecretError("login_secret is required")
+    expected = user.auth_secret_hash
+    computed = _hash_login_secret(provided_secret, user.auth_secret_salt)
+    if not secrets.compare_digest(expected, computed):
+        raise InvalidLoginSecretError("Invalid login secret")
+
+
+async def verify_login_secret(
+    player_id: str,
+    login_secret: str,
+    db_session: Optional[AsyncSession] = None,
+) -> UserLedger:
+    """
+    Verify login secret for a player and return their ledger row.
+
+    Args:
+        player_id: canonical player identifier
+        login_secret: shared-secret issued at registration
+        db_session: optional DB session for composition
+    """
+    if not login_secret:
+        raise InvalidLoginSecretError("login_secret is required")
+
+    normalized_id = _validate_player_id(player_id)
+
+    if db_session:
+        user = await get_user_with_validation(normalized_id, db_session)
+        _verify_auth_secret(user, login_secret)
+        return user
+
+    async with get_async_db_session() as db:
+        user = await get_user_with_validation(normalized_id, db)
+        _verify_auth_secret(user, login_secret)
+        return user
 
 
 def _validate_player_id(player_id: str) -> str:
@@ -594,6 +686,7 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
             db.add(new_user)
             await db.flush()  # Generate ID for transaction logging
             await db.refresh(new_user)
+            login_secret = _set_auth_secret(new_user)
 
             # Log initial balance transaction
             if not is_local_debug_mode():
@@ -619,17 +712,18 @@ async def register_user(player_name: str, address: Optional[str] = None) -> Dict
             return {
                 'status': 'registered',
                 'user': _serialize_user(new_user),
+                'login_secret': login_secret,
                 'local_debug_mode': is_local_debug_mode()
             }
 
     # Apply distributed lock for concurrency control (address or name).
-    lock_key = address or f"name:{player_name.lower()}"
+    lock_key = f"addr:{address}" if address else f"name:{player_name.lower()}"
     async with redis_manager.lock(f"register:{lock_key}", timeout=5):
         return await _perform_registration()
 
 
-@redis_manager.distributed_lock("lock:account:{login_key}", timeout=5)
-async def handle_login(login_key: str, grant_reward: bool = True) -> Dict:
+@redis_manager.distributed_lock("lock:account:{login_key}", timeout=15)
+async def handle_login(login_key: str, login_secret: str, grant_reward: bool = True) -> Dict:
     """
     Handle user login with daily reward check using UserLedger.
     
@@ -651,6 +745,7 @@ async def handle_login(login_key: str, grant_reward: bool = True) -> Dict:
     async with get_async_db_session() as db:
         player_id = await resolve_player_id(login_key, db)
         user = await get_user_with_validation(player_id, db)
+        _verify_auth_secret(user, login_secret)
 
         if not grant_reward:
             return {
@@ -760,7 +855,6 @@ async def handle_login(login_key: str, grant_reward: bool = True) -> Dict:
         }
 
 
-@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
 async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_ENTRY, description: str = "Balance deduction", db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Deduct balance from user account using atomic SQL operation.
@@ -784,102 +878,97 @@ async def deduct_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    # Use provided session or create a new one
-    db = db_session if db_session else get_async_db_session()
-    # If we created the session, we need to manage it (enter context)
-    # If session was provided, we just use it (and don't close/commit it here unless we own it)
-    
-    # Helper to handle session context
-    class SessionContext:
-        def __init__(self, session, is_owned):
-            self.session = session
-            self.is_owned = is_owned
-            self.ctx = None
-            
-        async def __aenter__(self):
-            if self.is_owned:
-                self.ctx = self.session
-                return await self.ctx.__aenter__()
-            return self.session
-            
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            if self.is_owned:
-                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
-                
-    session_ctx = SessionContext(db, db_session is None)
+    async def _do_deduct():
+        # Use provided session or create a new one
+        db = db_session if db_session else get_async_db_session()
 
-    async with session_ctx as db:
-        try:
-            user = await get_user_with_validation(wallet_address, db)
-        except (UserNotFoundError, InvalidWalletAddressError) as e:
-            raise ValueError(str(e)) from e
+        class SessionContext:
+            def __init__(self, session, is_owned):
+                self.session = session
+                self.is_owned = is_owned
+                self.ctx = None
 
-        # In local debug mode, skip balance check and keep balance high
-        if is_local_debug_mode():
-            # Don't actually deduct, keep unlimited funds
+            async def __aenter__(self):
+                if self.is_owned:
+                    self.ctx = self.session
+                    return await self.ctx.__aenter__()
+                return self.session
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                if self.is_owned:
+                    await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+
+        session_ctx = SessionContext(db, db_session is None)
+
+        async with session_ctx as db:
+            try:
+                user = await get_user_with_validation(wallet_address, db)
+            except (UserNotFoundError, InvalidWalletAddressError) as e:
+                raise ValueError(str(e)) from e
+
+            # In local debug mode, skip balance check and keep balance high
+            if is_local_debug_mode():
+                return {
+                    'status': 'success',
+                    'deducted': str(amount),
+                    'new_balance': str(user.offchain_balance),
+                    'locked_balance': str(user.locked_balance),
+                    'local_debug_mode': True
+                }
+
+            balance_before = user.offchain_balance
+
+            result = await db.execute(
+                text("""
+                    UPDATE user_ledger
+                    SET offchain_balance = offchain_balance - :amount
+                    WHERE wallet_address = :wallet
+                    AND (offchain_balance - locked_balance) >= :amount
+                """),
+                {"amount": str(amount), "wallet": wallet_address}
+            )
+
+            if result.rowcount == 0:
+                await db.refresh(user)
+                available = user.offchain_balance - user.locked_balance
+                raise InsufficientBalanceError(
+                    f"Insufficient available balance. Required: {amount}, Available: {available}"
+                )
+
+            await db.refresh(user)
+
+            await log_transaction(
+                wallet_address=user.wallet_address,
+                tx_type=tx_type,
+                amount=-amount,
+                balance_before=balance_before,
+                balance_after=user.offchain_balance,
+                user_id=user.id,
+                description=description,
+                db_session=db
+            )
+
+            if db_session is None:
+                await db.commit()
+
+            await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+            await invalidate_leaderboard_cache()
+
             return {
                 'status': 'success',
                 'deducted': str(amount),
                 'new_balance': str(user.offchain_balance),
-                'locked_balance': str(user.locked_balance),
-                'local_debug_mode': True
+                'locked_balance': str(user.locked_balance)
             }
 
-        balance_before = user.offchain_balance
-        
-        # Atomic balance deduction using SQL UPDATE
-        # This prevents race conditions by doing check and update in single query
-        result = await db.execute(
-            text("""
-                UPDATE user_ledger 
-                SET offchain_balance = offchain_balance - :amount 
-                WHERE wallet_address = :wallet 
-                AND (offchain_balance - locked_balance) >= :amount
-            """),
-            {"amount": str(amount), "wallet": wallet_address}
-        )
-        
-        # Check if update succeeded (row was updated)
-        if result.rowcount == 0:
-            # Refresh user to get current balance
-            await db.refresh(user)
-            available = user.offchain_balance - user.locked_balance
-            raise InsufficientBalanceError(
-                f"Insufficient available balance. Required: {amount}, Available: {available}"
-            )
-        
-        # Refresh to get updated balance (needed for logging)
-        await db.refresh(user)
-
-        # Log deduction transaction (within the same transaction)
-        await log_transaction(
-            wallet_address=user.wallet_address,
-            tx_type=tx_type,
-            amount=-amount,  # Negative for deduction
-            balance_before=balance_before,
-            balance_after=user.offchain_balance,
-            user_id=user.id,
-            description=description,
-            db_session=db
-        )
-
-        # Only commit if we own the session
-        if db_session is None:
-            await db.commit()
-        
-        # Update cache (fire and forget / after commit)
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
-
-        return {
-            'status': 'success',
-            'deducted': str(amount),
-            'new_balance': str(user.offchain_balance),
-            'locked_balance': str(user.locked_balance)
-        }
+    # When db_session is provided, the caller owns the transaction boundary.
+    # Skip the distributed lock to avoid premature release before commit.
+    if db_session is not None:
+        return await _do_deduct()
+    async with redis_manager.lock(f"lock:account:{wallet_address}", timeout=5):
+        return await _do_deduct()
 
 
-@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
 async def add_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_WIN, description: str = "Balance addition", db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Add balance to user account using atomic SQL operation.
@@ -898,72 +987,70 @@ async def add_balance(wallet_address: str, amount: Decimal, tx_type: Transaction
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    # Use provided session or create a new one
-    db = db_session if db_session else get_async_db_session()
-    
-    # Helper to handle session context (duplicated for clarity in each function)
-    class SessionContext:
-        def __init__(self, session, is_owned):
-            self.session = session
-            self.is_owned = is_owned
-            self.ctx = None
-            
-        async def __aenter__(self):
-            if self.is_owned:
-                self.ctx = self.session
-                return await self.ctx.__aenter__()
-            return self.session
-            
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            if self.is_owned:
-                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
-                
-    session_ctx = SessionContext(db, db_session is None)
+    async def _do_add():
+        db = db_session if db_session else get_async_db_session()
 
-    async with session_ctx as db:
-        try:
-            user = await get_user_with_validation(wallet_address, db)
-        except (UserNotFoundError, InvalidWalletAddressError) as e:
-            raise ValueError(str(e)) from e
+        class SessionContext:
+            def __init__(self, session, is_owned):
+                self.session = session
+                self.is_owned = is_owned
+                self.ctx = None
 
-        # Record balance before addition
-        balance_before = user.offchain_balance
+            async def __aenter__(self):
+                if self.is_owned:
+                    self.ctx = self.session
+                    return await self.ctx.__aenter__()
+                return self.session
 
-        # Atomic balance addition using SQL UPDATE
-        await db.execute(
-            text("UPDATE user_ledger SET offchain_balance = offchain_balance + :amount WHERE wallet_address = :wallet"),
-            {"amount": str(amount), "wallet": wallet_address}
-        )
-        
-        # Refresh to get updated balance
-        await db.refresh(user)
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                if self.is_owned:
+                    await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
 
-        # Log addition transaction
-        await log_transaction(
-            wallet_address=user.wallet_address,
-            tx_type=tx_type,
-            amount=amount,
-            balance_before=balance_before,
-            balance_after=user.offchain_balance,
-            user_id=user.id,
-            description=description,
-            db_session=db
-        )
-        
-        # Only commit if we own the session
-        if db_session is None:
-            await db.commit()
+        session_ctx = SessionContext(db, db_session is None)
 
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
+        async with session_ctx as db:
+            try:
+                user = await get_user_with_validation(wallet_address, db)
+            except (UserNotFoundError, InvalidWalletAddressError) as e:
+                raise ValueError(str(e)) from e
 
-        return {
-            'status': 'success',
-            'added': str(amount),
-            'new_balance': str(user.offchain_balance),
-            'locked_balance': str(user.locked_balance)
-        }
+            balance_before = user.offchain_balance
+
+            await db.execute(
+                text("UPDATE user_ledger SET offchain_balance = offchain_balance + :amount WHERE wallet_address = :wallet"),
+                {"amount": str(amount), "wallet": wallet_address}
+            )
+
+            await db.refresh(user)
+
+            await log_transaction(
+                wallet_address=user.wallet_address,
+                tx_type=tx_type,
+                amount=amount,
+                balance_before=balance_before,
+                balance_after=user.offchain_balance,
+                user_id=user.id,
+                description=description,
+                db_session=db
+            )
+
+            if db_session is None:
+                await db.commit()
+
+            await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+            await invalidate_leaderboard_cache()
+
+            return {
+                'status': 'success',
+                'added': str(amount),
+                'new_balance': str(user.offchain_balance),
+                'locked_balance': str(user.locked_balance)
+            }
+
+    if db_session is not None:
+        return await _do_add()
+    async with redis_manager.lock(f"lock:account:{wallet_address}", timeout=5):
+        return await _do_add()
 
 
 async def get_balance(wallet_address: str) -> Decimal:
@@ -1003,7 +1090,19 @@ async def get_balance(wallet_address: str) -> Decimal:
         return user.offchain_balance
 
 
-@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
+async def get_available_balance(wallet_address: str) -> Decimal:
+    """
+    Return the spendable balance (offchain - locked) for a user.
+
+    Uses validate_account_balance to ensure cache/DB consistency checks run once.
+    """
+    status = await validate_account_balance(wallet_address)
+    available = status.get("available_balance", Decimal("0"))
+    if isinstance(available, Decimal):
+        return available
+    return Decimal(str(available))
+
+
 async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Optional[str] = None, db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Lock balance for in-game use (prevents double-spending).
@@ -1025,94 +1124,92 @@ async def lock_balance(wallet_address: str, amount: Decimal, game_session_id: Op
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    # Use provided session or create a new one
-    db = db_session if db_session else get_async_db_session()
+    async def _do_lock():
+        db = db_session if db_session else get_async_db_session()
 
-    class SessionContext:
-        def __init__(self, session, is_owned):
-            self.session = session
-            self.is_owned = is_owned
-            self.ctx = None
+        class SessionContext:
+            def __init__(self, session, is_owned):
+                self.session = session
+                self.is_owned = is_owned
+                self.ctx = None
 
-        async def __aenter__(self):
-            if self.is_owned:
-                self.ctx = self.session
-                return await self.ctx.__aenter__()
-            return self.session
+            async def __aenter__(self):
+                if self.is_owned:
+                    self.ctx = self.session
+                    return await self.ctx.__aenter__()
+                return self.session
 
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            if self.is_owned:
-                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                if self.is_owned:
+                    await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
 
-    session_ctx = SessionContext(db, db_session is None)
+        session_ctx = SessionContext(db, db_session is None)
 
-    async with session_ctx as db:
-        try:
-            user = await get_user_with_validation(wallet_address, db)
-        except (UserNotFoundError, InvalidWalletAddressError) as e:
-            raise ValueError(str(e)) from e
+        async with session_ctx as db:
+            try:
+                user = await get_user_with_validation(wallet_address, db)
+            except (UserNotFoundError, InvalidWalletAddressError) as e:
+                raise ValueError(str(e)) from e
 
-        # In local debug mode, skip balance check
-        if is_local_debug_mode():
+            if is_local_debug_mode():
+                return {
+                    'status': 'success',
+                    'locked': str(amount),
+                    'new_balance': str(user.offchain_balance),
+                    'new_locked_balance': str(user.locked_balance),
+                    'local_debug_mode': True
+                }
+
+            balance_before = user.offchain_balance
+            result = await db.execute(
+                text("""
+                    UPDATE user_ledger
+                    SET locked_balance = locked_balance + :amount
+                    WHERE wallet_address = :wallet
+                    AND (offchain_balance - locked_balance) >= :amount
+                """),
+                {"amount": str(amount), "wallet": wallet_address}
+            )
+            if result.rowcount == 0:
+                await db.refresh(user)
+                available = user.offchain_balance - user.locked_balance
+                raise InsufficientBalanceError(
+                    f"Insufficient available balance to lock. Required: {amount}, Available: {available}"
+                )
+
+            await log_transaction(
+                wallet_address=user.wallet_address,
+                tx_type=TransactionType.GAME_ENTRY,
+                amount=-amount,
+                balance_before=balance_before,
+                balance_after=user.offchain_balance,
+                user_id=user.id,
+                game_session_id=game_session_id,
+                description="Balance locked for game entry",
+                db_session=db
+            )
+
+            if db_session is None:
+                await db.commit()
+
+            await db.refresh(user)
+
+            await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+            await invalidate_leaderboard_cache()
+
             return {
                 'status': 'success',
                 'locked': str(amount),
                 'new_balance': str(user.offchain_balance),
-                'new_locked_balance': str(user.locked_balance),
-                'local_debug_mode': True
+                'new_locked_balance': str(user.locked_balance)
             }
-        
-        # Record balances before lock operation
-        balance_before = user.offchain_balance
-        # Atomic lock operation: increase locked_balance only.
-        result = await db.execute(
-            text("""
-                UPDATE user_ledger
-                SET locked_balance = locked_balance + :amount
-                WHERE wallet_address = :wallet
-                AND (offchain_balance - locked_balance) >= :amount
-            """),
-            {"amount": str(amount), "wallet": wallet_address}
-        )
-        if result.rowcount == 0:
-            await db.refresh(user)
-            available = user.offchain_balance - user.locked_balance
-            raise InsufficientBalanceError(
-                f"Insufficient available balance to lock. Required: {amount}, Available: {available}"
-            )
 
-        # Log lock transaction (funds moved to locked state; total balance unchanged)
-        await log_transaction(
-            wallet_address=user.wallet_address,
-            tx_type=TransactionType.GAME_ENTRY,
-            amount=-amount,  # Negative because funds are moved to locked state
-            balance_before=balance_before,
-            balance_after=user.offchain_balance,
-            user_id=user.id,
-            game_session_id=game_session_id,
-            description="Balance locked for game entry",
-            db_session=db
-        )
-        
-        # Only commit if we own the session
-        if db_session is None:
-            await db.commit()
-
-        await db.refresh(user)
-
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
-
-        return {
-            'status': 'success',
-            'locked': str(amount),
-            'new_balance': str(user.offchain_balance),
-            'new_locked_balance': str(user.locked_balance)
-        }
+    if db_session is not None:
+        return await _do_lock()
+    async with redis_manager.lock(f"lock:account:{wallet_address}", timeout=5):
+        return await _do_lock()
 
 
-@redis_manager.distributed_lock("lock:account:{wallet_address}", timeout=5)
 async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: TransactionType = TransactionType.GAME_REFUND, game_session_id: Optional[str] = None, description: str = "Balance unlocked", db_session: Optional[AsyncSession] = None) -> Dict:
     """
     Unlock balance after game completion.
@@ -1133,91 +1230,89 @@ async def unlock_balance(wallet_address: str, amount: Decimal, tx_type: Transact
     if amount <= 0:
         raise InvalidAmountError("Amount must be positive")
 
-    # Use provided session or create a new one
-    db = db_session if db_session else get_async_db_session()
-    
-    # Helper to handle session context
-    class SessionContext:
-        def __init__(self, session, is_owned):
-            self.session = session
-            self.is_owned = is_owned
-            self.ctx = None
-            
-        async def __aenter__(self):
-            if self.is_owned:
-                self.ctx = self.session
-                return await self.ctx.__aenter__()
-            return self.session
-            
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            if self.is_owned:
-                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
-                
-    session_ctx = SessionContext(db, db_session is None)
+    async def _do_unlock():
+        db = db_session if db_session else get_async_db_session()
 
-    async with session_ctx as db:
-        try:
-            user = await get_user_with_validation(wallet_address, db)
-        except (UserNotFoundError, InvalidWalletAddressError) as e:
-            raise ValueError(str(e)) from e
+        class SessionContext:
+            def __init__(self, session, is_owned):
+                self.session = session
+                self.is_owned = is_owned
+                self.ctx = None
 
-        # In local debug mode, skip checks
-        if is_local_debug_mode():
+            async def __aenter__(self):
+                if self.is_owned:
+                    self.ctx = self.session
+                    return await self.ctx.__aenter__()
+                return self.session
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                if self.is_owned:
+                    await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
+
+        session_ctx = SessionContext(db, db_session is None)
+
+        async with session_ctx as db:
+            try:
+                user = await get_user_with_validation(wallet_address, db)
+            except (UserNotFoundError, InvalidWalletAddressError) as e:
+                raise ValueError(str(e)) from e
+
+            if is_local_debug_mode():
+                return {
+                    'status': 'success',
+                    'unlocked': str(amount),
+                    'new_balance': str(user.offchain_balance),
+                    'new_locked_balance': str(user.locked_balance),
+                    'local_debug_mode': True
+                }
+
+            balance_before = user.offchain_balance
+            locked_before = user.locked_balance
+
+            result = await db.execute(
+                text("""
+                    UPDATE user_ledger
+                    SET locked_balance = locked_balance - :amount
+                    WHERE wallet_address = :wallet
+                    AND locked_balance >= :amount
+                """),
+                {"amount": str(amount), "wallet": wallet_address}
+            )
+
+            if result.rowcount == 0:
+                await db.refresh(user)
+                raise InsufficientBalanceError(
+                    f"Insufficient locked balance to unlock. Required: {amount}, Available: {user.locked_balance}"
+                )
+
+            await db.refresh(user)
+
+            await log_transaction(
+                wallet_address=user.wallet_address,
+                tx_type=tx_type,
+                amount=amount,
+                balance_before=balance_before,
+                balance_after=user.offchain_balance,
+                user_id=user.id,
+                game_session_id=game_session_id,
+                description=description,
+                db_session=db
+            )
+
+            if db_session is None:
+                await db.commit()
+
+            await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
+            await invalidate_leaderboard_cache()
+
             return {
                 'status': 'success',
                 'unlocked': str(amount),
                 'new_balance': str(user.offchain_balance),
-                'new_locked_balance': str(user.locked_balance),
-                'local_debug_mode': True
+                'new_locked_balance': str(user.locked_balance)
             }
-        
-        # Record balances before unlock operation
-        balance_before = user.offchain_balance
-        locked_before = user.locked_balance
 
-        # Atomic unlock operation: decrease locked_balance only.
-        result = await db.execute(
-            text("""
-                UPDATE user_ledger
-                SET locked_balance = locked_balance - :amount
-                WHERE wallet_address = :wallet
-                AND locked_balance >= :amount
-            """),
-            {"amount": str(amount), "wallet": wallet_address}
-        )
-        
-        if result.rowcount == 0:
-            await db.refresh(user)
-            raise InsufficientBalanceError(
-                f"Insufficient locked balance to unlock. Required: {amount}, Available: {user.locked_balance}"
-            )
-
-        await db.refresh(user)
-
-        # Log unlock transaction (this returns funds from locked state)
-        await log_transaction(
-            wallet_address=user.wallet_address,
-            tx_type=tx_type,
-            amount=amount,  # Positive because funds are returned
-            balance_before=balance_before,
-            balance_after=user.offchain_balance,
-            user_id=user.id,
-            game_session_id=game_session_id,
-            description=description,
-            db_session=db
-        )
-        
-        # Only commit if we own the session
-        if db_session is None:
-            await db.commit()
-
-        # Update cache
-        await set_cached_balance(user.wallet_address, user.offchain_balance, user.locked_balance)
-        await invalidate_leaderboard_cache()
-
-        return {
-            'status': 'success',
-            'unlocked': str(amount),
-            'new_balance': str(user.offchain_balance),
-            'new_locked_balance': str(user.locked_balance)
-        }
+    if db_session is not None:
+        return await _do_unlock()
+    async with redis_manager.lock(f"lock:account:{wallet_address}", timeout=5):
+        return await _do_unlock()

@@ -7,6 +7,8 @@ from typing import Optional
 from .event_bus import GameEvent
 
 
+from backend.utils import log
+
 class EventHandler(ABC):
     """
     Abstract base class for event handlers.
@@ -57,4 +59,4 @@ class LoggingEventHandler(EventHandler):
     
     def handle(self, event: GameEvent):
         """Log the event."""
-        print(f"[{event.timestamp}] {event.event_type.value}: {event.data}")
+        log.info(f"[{event.timestamp}] {event.event_type.value}: {event.data}")

@@ -6,20 +6,19 @@ import logging
 from datetime import datetime
 
 from backend.database.connection import init_db
-from backend.database.persistence_manager import persistence_manager
 from backend.database.redis_manager import redis_manager
 from backend.app.state import runtime_state
-from backend.games.texas import TexasGame
-from backend.games.werewolf.werewolf_game import WerewolfGame
 
-async def on_startup(app, sio, texas_service, werewolf_service):
+from backend.utils import log
+
+async def on_startup(app, sio, texas_service, werewolf_service, state_coordinator):
     """
     Initialize services and restore persisted game states on server startup.
     """
     # Safety gate: refuse to start with debug mode in production
     from backend.config.arena_config import LOCAL_DEBUG_MODE, _detect_production_environment
     if LOCAL_DEBUG_MODE and _detect_production_environment():
-        print("FATAL: LOCAL_DEBUG_MODE is active in a production environment. Aborting.")
+        log.error("FATAL: LOCAL_DEBUG_MODE is active in a production environment. Aborting.")
         sys.exit(1)
 
     # Configure logging for Redis to print full logs
@@ -30,91 +29,36 @@ async def on_startup(app, sio, texas_service, werewolf_service):
     logging.getLogger("backend.database.redis_manager").setLevel(logging.DEBUG)
 
     # Initialize database with retry logic (waits for MySQL to be ready)
-    print("Initializing database...")
+    log.info("Initializing database...")
     db_success = init_db(retry=True)
     if db_success:
-        print("✓ Database initialized and tables created")
+        log.info("✓ Database initialized and tables created")
     else:
-        print("CRITICAL: Database initialization failed. Stopping service.")
+        log.error("CRITICAL: Database initialization failed. Stopping service.")
         sys.exit(1)
     
     # Connect to Redis
     if not await redis_manager.connect():
-        print("CRITICAL: Redis connection failed. Stopping service.")
+        log.error("CRITICAL: Redis connection failed. Stopping service.")
         sys.exit(1)
-    print("✓ RedisManager connected")
+    log.info("✓ RedisManager connected")
     
-    # Restore persisted games from Redis
-    try:
-        active_game_ids = await redis_manager.list_active_games()
-
-        if active_game_ids:
-            print(f"Found {len(active_game_ids)} persisted games")
-            restored_count = 0
-            
-            for game_id in active_game_ids:
-                try:
-                    state_data = await persistence_manager.restore_game_state(game_id)
-                    
-                    if state_data and state_data.get('state'):
-                        state = state_data['state']
-                        game_type = state_data.get('game_type', 'unknown')
-                        
-                        phase = state.get('phase', 'unknown')
-                        
-                        if game_type == 'werewolf':
-                            # Only restore active werewolf games.
-                            if phase in ['waiting', 'finished', 'aborted']:
-                                print(f"  ⚠ Skipping inactive werewolf game: {game_id} (phase: {phase})")
-                                await redis_manager.delete_game_data(game_id)
-                                continue
-
-                            # Restore werewolf game using from_dict
-                            game = WerewolfGame.from_dict(state)
-                            runtime_state.werewolf_games[game_id] = game
-                            restored_count += 1
-                            print(f"  ✓ Restored werewolf game: {game_id} (phase: {phase}, day: {game.day_count})")
-                        elif game_type == 'texas':
-                            # Restore poker tables even when waiting so players can
-                            # reconnect to lobby state after restart.
-                            if phase in ['finished', 'aborted']:
-                                print(f"  ⚠ Skipping inactive poker table: {game_id} (phase: {phase})")
-                                await redis_manager.delete_game_data(game_id)
-                                continue
-
-                            table = TexasGame.from_dict(state)
-                            runtime_state.poker_tables[game_id] = table
-                            restored_count += 1
-                            print(f"  ✓ Restored poker table: {game_id} (phase: {phase})")
-                        else:
-                            print(f"  ⚠ Unknown game type: {game_type} for {game_id}")
-                            
-                except Exception as e:
-                    print(f"  ⚠ Error restoring game {game_id}: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            print(f"✓ Restored {restored_count} active games")
-        else:
-            print("No persisted games found")
-    except Exception as e:
-        print(f"⚠ Game restoration check failed: {e}")
-        import traceback
-        traceback.print_exc()
+    # Restore persisted runtime state through coordinator.
+    await state_coordinator.recover_on_startup()
     
     # Start services
     await werewolf_service.start()
-    print("✓ Werewolf game timeout checker started")
+    log.info("✓ Werewolf game timeout checker started")
 
     await texas_service.start()
-    print("✓ Poker game timeout checker started")
+    log.info("✓ Poker game timeout checker started")
 
 
 async def on_shutdown(app, sio, texas_service, werewolf_service):
     """
     Handle graceful shutdown to prevent game state loss.
     """
-    print("\nGraceful shutdown initiated...")
+    log.info("\nGraceful shutdown initiated...")
     
     # Stop matchmaker
     if runtime_state.werewolf_matchmaker:
@@ -133,7 +77,7 @@ async def on_shutdown(app, sio, texas_service, werewolf_service):
     })
     
     # Save active game states to Redis for persistence
-    print("Saving game states to Redis...")
+    log.info("Saving game states to Redis...")
     save_tasks = []
     
     # Save poker game states

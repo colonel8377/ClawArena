@@ -12,12 +12,11 @@ from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
 from backend.config.texas_config import (
-    TEXAS_MATCHMAKING_ADAPTIVE_WAIT_TIME,
-    TEXAS_MATCHMAKING_CHECK_INTERVAL,
-    TEXAS_MATCHMAKING_FULL_RING_SIZE,
-    TEXAS_MATCHMAKING_MIN_PLAYERS,
-    TEXAS_MATCHMAKING_PREFERRED_GAME_SIZE,
+    TEXAS_MATCHMAKING_MIN_PLAYERS, TEXAS_MATCHMAKING_PREFERRED_GAME_SIZE,
+    TEXAS_MATCHMAKING_FULL_RING_SIZE, TEXAS_MATCHMAKING_ADAPTIVE_WAIT_TIME,
+    TEXAS_MATCHMAKING_CHECK_INTERVAL
 )
+from backend.utils import log
 
 
 @dataclass
@@ -25,8 +24,8 @@ class QueuedPokerPlayer:
     """Represents a player waiting for auto-seat matchmaking."""
 
     sid: str
-    wallet_address: str
-    nickname: str
+    player_id: str
+    player_name: str
     buy_in_tokens: Decimal
     join_time: float = field(default_factory=time.time)
 
@@ -56,8 +55,8 @@ class TexasMatchmaker:
     async def add_player(
         self,
         sid: str,
-        wallet_address: str,
-        nickname: str,
+        player_id: str,
+        player_name: str,
         buy_in_tokens: Decimal,
     ) -> bool:
         """Add a player to queue; returns False if already queued."""
@@ -68,8 +67,8 @@ class TexasMatchmaker:
             self.queue.append(
                 QueuedPokerPlayer(
                     sid=sid,
-                    wallet_address=wallet_address,
-                    nickname=nickname,
+                    player_id=player_id,
+                    player_name=player_name,
                     buy_in_tokens=buy_in_tokens,
                 )
             )
@@ -109,7 +108,7 @@ class TexasMatchmaker:
             try:
                 await self._process_queue()
             except Exception as e:
-                print(f"Error in texas matchmaker check_queue: {e}")
+                log.error(f"Error in texas matchmaker check_queue: {e}")
             await asyncio.sleep(self.CHECK_INTERVAL)
 
     async def _process_queue(self):
@@ -146,7 +145,7 @@ class TexasMatchmaker:
                     try:
                         await self.fallback_warning_callback(self.queue[:target_size], target_size)
                     except Exception as e:
-                        print(f"Error in texas fallback warning callback: {e}")
+                        log.error(f"Error in texas fallback warning callback: {e}")
 
                 players = self.queue[:target_size]
                 self.queue = self.queue[target_size:]
@@ -165,7 +164,7 @@ class TexasMatchmaker:
         try:
             await self.game_start_callback(players, game_size)
         except Exception as e:
-            print(f"Error starting texas game: {e}")
+            log.error(f"Error starting texas game: {e}")
             self.queue.extend(players)
             for p in players:
                 self.queue_sids.add(p.sid)

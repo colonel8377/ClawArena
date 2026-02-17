@@ -12,12 +12,14 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Callable
 
 
+from backend.utils import log
+
 @dataclass
 class QueuedPlayer:
     """Represents a player in the matchmaking queue."""
     sid: str
-    wallet_address: str
-    nickname: str
+    player_id: str
+    player_name: str
     entry_fee: Decimal = Decimal("0")
     join_time: float = field(default_factory=time.time)
 
@@ -25,27 +27,27 @@ class QueuedPlayer:
 class WerewolfMatchmaker:
     """
     Matchmaker for Werewolf games with dynamic player counts.
-    
+
     Logic:
     - If queue_size >= 9: Pop 9 players -> Start Standard Game
     - If queue_size >= 6 AND wait_time > 30s: Pop queue_size (6-8) -> Start Adaptive Game
     - If queue_size < 6: Keep waiting
     """
-    
+
     # Constants
     MIN_PLAYERS = 6
     STANDARD_GAME_SIZE = 9
     ADAPTIVE_WAIT_TIME = 30.0  # seconds
     CHECK_INTERVAL = 2.0  # seconds
-    
+
     def __init__(
-        self, 
+        self,
         game_start_callback: Optional[Callable] = None,
         fallback_warning_callback: Optional[Callable] = None
     ):
         """
         Initialize the matchmaker.
-        
+
         Args:
             game_start_callback: Async function to call when starting a game.
                                  Should accept (players: List[QueuedPlayer], game_size: int)
@@ -54,8 +56,6 @@ class WerewolfMatchmaker:
         """
         self.queue: List[QueuedPlayer] = []
         self.queue_sids: set = set()  # For O(1) lookup by sid
-        self.wallet_to_sid: Dict[str, str] = {}
-        self.sid_to_wallet: Dict[str, str] = {}
         self.game_start_callback = game_start_callback
         self.fallback_warning_callback = fallback_warning_callback
         self._task: Optional[asyncio.Task] = None
@@ -65,46 +65,23 @@ class WerewolfMatchmaker:
     async def add_player(
         self,
         sid: str,
-        wallet_address: str,
-        nickname: str = "Player",
+        player_id: str,
+        player_name: str = "Player",
         entry_fee: Decimal = Decimal("0"),
     ) -> bool:
         """Add a player to the matchmaking queue."""
         async with self._queue_lock:
             if sid in self.queue_sids:
                 return False
-            has_wallet = bool(wallet_address)
-            if has_wallet and wallet_address in self.wallet_to_sid:
-                # Replace the existing queue entry with the new sid (reconnect / duplicate prevention)
-                existing_sid = self.wallet_to_sid[wallet_address]
-                for idx, queued in enumerate(self.queue):
-                    if queued.wallet_address == wallet_address:
-                        updated = QueuedPlayer(
-                            sid=sid,
-                            wallet_address=wallet_address,
-                            nickname=nickname,
-                            entry_fee=entry_fee,
-                            join_time=queued.join_time,
-                        )
-                        self.queue[idx] = updated
-                        self.queue_sids.discard(existing_sid)
-                        self.queue_sids.add(sid)
-                        self.wallet_to_sid[wallet_address] = sid
-                        self.sid_to_wallet.pop(existing_sid, None)
-                        self.sid_to_wallet[sid] = wallet_address
-                        return True
 
             player = QueuedPlayer(
                 sid=sid,
-                wallet_address=wallet_address,
-                nickname=nickname,
+                player_id=player_id,
+                player_name=player_name,
                 entry_fee=entry_fee,
             )
             self.queue.append(player)
             self.queue_sids.add(sid)
-            if has_wallet:
-                self.wallet_to_sid[wallet_address] = sid
-                self.sid_to_wallet[sid] = wallet_address
             return True
 
     async def remove_player(self, sid: str) -> bool:
@@ -114,11 +91,8 @@ class WerewolfMatchmaker:
                 return False
             self.queue = [p for p in self.queue if p.sid != sid]
             self.queue_sids.discard(sid)
-            wallet_address = self.sid_to_wallet.pop(sid, None)
-            if wallet_address:
-                self.wallet_to_sid.pop(wallet_address, None)
             return True
-    
+
     def get_queue_size(self) -> int:
         """Get current queue size."""
         return len(self.queue)
@@ -129,11 +103,11 @@ class WerewolfMatchmaker:
             if self.queue:
                 return self.queue[0].entry_fee
             return None
-    
+
     def get_queue_info(self) -> Dict:
         """
         Get information about the current queue state.
-        
+
         Returns:
             Dictionary with queue statistics
         """
@@ -143,20 +117,20 @@ class WerewolfMatchmaker:
                 'oldest_wait_time': 0,
                 'average_wait_time': 0
             }
-        
+
         current_time = time.time()
         wait_times = [current_time - p.join_time for p in self.queue]
-        
+
         return {
             'size': len(self.queue),
             'oldest_wait_time': max(wait_times),
             'average_wait_time': sum(wait_times) / len(wait_times)
         }
-    
+
     async def _check_queue(self):
         """
         Periodic task to check queue and start games.
-        
+
         This runs every CHECK_INTERVAL seconds and applies the matchmaking logic.
         """
         while self._running:
@@ -164,11 +138,11 @@ class WerewolfMatchmaker:
                 await self._process_queue()
             except Exception as e:
                 # Log error but continue running
-                print(f"Error in matchmaker check_queue: {e}")
-            
+                log.error(f"Error in matchmaker check_queue: {e}")
+
             # Wait before next check
             await asyncio.sleep(self.CHECK_INTERVAL)
-    
+
     async def _process_queue(self):
         """Process the queue and start games if conditions are met."""
         async with self._queue_lock:
@@ -196,7 +170,7 @@ class WerewolfMatchmaker:
                         try:
                             await self.fallback_warning_callback(self.queue[:queue_size], queue_size)
                         except Exception as e:
-                            print(f"Error in fallback warning callback: {e}")
+                            log.error(f"Error in fallback warning callback: {e}")
 
                     players = self.queue[:queue_size]
                     self.queue = []
@@ -210,51 +184,46 @@ class WerewolfMatchmaker:
             try:
                 await self.game_start_callback(players, game_size)
             except Exception as e:
-                print(f"Error starting game: {e}")
+                log.error(f"Error starting game: {e}")
                 self.queue.extend(players)
                 for p in players:
                     self.queue_sids.add(p.sid)
-    
+
     def start(self):
         """Start the matchmaker background task."""
         if self._running:
             return
-        
+
         self._running = True
         self._task = asyncio.create_task(self._check_queue())
-    
+
     def stop(self):
         """Stop the matchmaker background task."""
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
-    
+
     def is_running(self) -> bool:
         """Check if matchmaker is running."""
         return self._running
-    
+
     def is_player_in_queue(self, sid: str) -> bool:
         """
         Check if a player is in the queue (O(1) lookup).
-        
+
         Args:
             sid: Socket.IO session ID
-            
+
         Returns:
             True if player is in queue, False otherwise
         """
         return sid in self.queue_sids
-    
+
     def clear_queue(self):
         """Clear all players from the queue."""
         self.queue.clear()
         self.queue_sids.clear()
-        self.wallet_to_sid.clear()
-        self.sid_to_wallet.clear()
 
     def _drop_queue_tracking(self, player: QueuedPlayer) -> None:
         """Cleanup helper when a player leaves the queue."""
         self.queue_sids.discard(player.sid)
-        wallet_address = self.sid_to_wallet.pop(player.sid, None)
-        if wallet_address:
-            self.wallet_to_sid.pop(wallet_address, None)

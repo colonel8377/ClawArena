@@ -7,19 +7,18 @@ from typing import Optional, Any
 
 from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO
 from backend.database.persistence_manager import persistence_manager
-from backend.games.texas.texas_engine import PokerPhase
+from backend.games.texas.phases import (
+    POKER_ACTIVE_PHASE_VALUES,
+    POKER_SHOWDOWN_PHASE,
+    phase_value,
+)
 from backend.services.base import BaseService
 from backend.services.settlement_service import SettlementService
 
-POKER_ACTIVE_PHASES = {
-    PokerPhase.PRE_FLOP,
-    PokerPhase.FLOP,
-    PokerPhase.TURN,
-    PokerPhase.RIVER,
-}
+from backend.utils import log
 
 POKER_DISCONNECT_AUTO_LEAVE_SECONDS = 120
-POKER_INACTIVE_TABLE_ABORT_SECONDS = 3600
+POKER_INACTIVE_TABLE_ABORT_SECONDS = 900
 
 
 class TexasService(BaseService):
@@ -44,7 +43,7 @@ class TexasService(BaseService):
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                print(f"Task {name or 'unknown'} failed: {e}")
+                log.error(f"Task {name or 'unknown'} failed: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -95,7 +94,7 @@ class TexasService(BaseService):
             return
 
         engine = table.engine
-        is_showdown = engine.phase.value == "showdown"
+        is_showdown = phase_value(engine.phase) == POKER_SHOWDOWN_PHASE
 
         public_players = []
         for player_sid in engine.player_order:
@@ -123,7 +122,7 @@ class TexasService(BaseService):
 
         public_state = {
             "game_id": table_id,
-            "phase": engine.phase.value,
+            "phase": phase_value(engine.phase),
             "hand_number": engine.hand_number,
             "community_cards": engine.cards_to_strings(engine.community_cards),
             "pot": engine.get_total_pot(),
@@ -150,10 +149,8 @@ class TexasService(BaseService):
         # Using a helper method or accessing state directly
         reveal_sids = []
         for sid, sid_subs in self._state.spectator_subscriptions.items():
-            if sid_subs.get("poker", {}).get(table_id):
-                 # Check read only session
-                 session = self._state.player_sessions.get(sid) or {}
-                 if bool(session.get("read_only") or session.get("spectator_mode")):
+            if sid_subs.is_reveal_enabled("poker", table_id):
+                 if self._state.player_sessions.is_read_only(sid):
                      reveal_sids.append(sid)
 
         if reveal_sids:
@@ -200,7 +197,7 @@ class TexasService(BaseService):
                 )
                 return
 
-            if table.engine.phase in POKER_ACTIVE_PHASES:
+            if phase_value(table.engine.phase) in POKER_ACTIVE_PHASE_VALUES:
                 await self._sio.emit(
                     "error",
                     {"message": "A hand is already in progress"},
@@ -255,7 +252,7 @@ class TexasService(BaseService):
                         persistence_manager.save_chat_message(
                             game_id=table_id,
                             game_type=table.game_type,
-                            player_id=player.get("wallet_address", ""),
+                            player_id=player.get("player_id", ""),
                             nickname=player.get("nickname", "Player"),
                             message=delivered_chat,
                             message_type=message_type,
@@ -301,7 +298,7 @@ class TexasService(BaseService):
                     persistence_manager.save_chat_message(
                         game_id=table_id,
                         game_type=table.game_type,
-                        player_id=player.get("wallet_address", ""),
+                        player_id=player.get("player_id", ""),
                         nickname=player.get("nickname", "Player"),
                         message=chat_message,
                         message_type=message_type,
@@ -329,7 +326,7 @@ class TexasService(BaseService):
             await self.broadcast_state(table_id)
             await asyncio.create_task(table.save_checkpoint("phase_change"))
 
-            if table.engine.phase.value == "showdown":
+            if phase_value(table.engine.phase) == POKER_SHOWDOWN_PHASE:
                 showdown_result = phase_result if isinstance(phase_result, dict) else {}
                 payload = {
                     "player_hands": showdown_result.get(
@@ -353,7 +350,7 @@ class TexasService(BaseService):
                 return
 
             table = self._state.poker_tables[table_id]
-            if table.engine.phase in POKER_ACTIVE_PHASES:
+            if phase_value(table.engine.phase) in POKER_ACTIVE_PHASE_VALUES:
                 await self._sio.emit(
                     "error",
                     {
@@ -378,23 +375,22 @@ class TexasService(BaseService):
             await self._sio.leave_room(sid, table_id)
 
             if sid in self._state.player_sessions:
-                self._state.player_sessions[sid]["table_id"] = None
+                self._state.player_sessions.set_table_id(sid, None)
             
             if player_dict:
-                 # Clean up disconnected tracking if exists
-                table_map = self._state.poker_disconnected_since.get(table_id)
-                if table_map:
-                    table_map.pop(player_dict.get("wallet_address", ""), None)
-                    if not table_map:
-                        self._state.poker_disconnected_since.pop(table_id, None)
+                # Clean up disconnected tracking if exists
+                self._state.poker_disconnected_since.clear(
+                    table_id,
+                    player_dict.get("player_id", ""),
+                )
 
             if player_dict and engine_player:
-                wallet_address = player_dict["wallet_address"]
+                player_id = player_dict["player_id"]
                 buy_in_tokens = Decimal(str(player_dict.get("buy_in_tokens", 0) or 0))
                 chips_tokens = Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
 
                 await self._settlement_service.settle_texas_player(
-                    wallet_address,
+                    player_id,
                     buy_in_tokens,
                     chips_tokens,
                     table_id,
@@ -408,7 +404,7 @@ class TexasService(BaseService):
 
     async def _check_disconnected_players(self, table_id: str, table) -> None:
         """Auto-settle disconnected poker players after a grace period."""
-        disconnected_map = self._state.poker_disconnected_since.get(table_id)
+        disconnected_map = self._state.poker_disconnected_since.get_table(table_id)
         if not disconnected_map:
             return
 
@@ -416,39 +412,29 @@ class TexasService(BaseService):
         to_remove = []
         for player_id, disconnected_at in list(disconnected_map.items()):
             player_dict = next(
-                (p for p in table.players if p.get("wallet_address") == player_id),
+                (p for p in table.players if p.get("player_id") == player_id),
                 None,
             )
             if not player_dict:
-                # _clear_poker_disconnected
-                table_map = self._state.poker_disconnected_since.get(table_id)
-                if table_map:
-                    table_map.pop(player_id, None)
-                    if not table_map:
-                        self._state.poker_disconnected_since.pop(table_id, None)
+                self._state.poker_disconnected_since.clear(table_id, player_id)
                 continue
 
             player_sid = player_dict.get("sid")
             if player_sid in self._state.player_sessions:
-                # Reconnected
-                table_map = self._state.poker_disconnected_since.get(table_id)
-                if table_map:
-                    table_map.pop(player_id, None)
-                    if not table_map:
-                        self._state.poker_disconnected_since.pop(table_id, None)
+                self._state.poker_disconnected_since.clear(table_id, player_id)
                 continue
 
             if now - disconnected_at >= timedelta(seconds=POKER_DISCONNECT_AUTO_LEAVE_SECONDS):
                 to_remove.append((player_sid, player_dict))
 
         for player_sid, player_dict in to_remove:
-            if table.engine.phase in POKER_ACTIVE_PHASES:
+            if phase_value(table.engine.phase) in POKER_ACTIVE_PHASE_VALUES:
                 continue
 
             engine_player = table.engine.players.get(player_sid)
             table.remove_player(player_sid)
 
-            wallet_address = player_dict.get("wallet_address")
+            disconnected_player_id = player_dict.get("player_id")
             buy_in_tokens = Decimal(str(player_dict.get("buy_in_tokens", 0) or 0))
             chips_tokens = (
                 Decimal(str(engine_player.chips * TEXAS_CHIP_TO_TOKEN_RATIO))
@@ -457,7 +443,7 @@ class TexasService(BaseService):
             )
 
             await self._settlement_service.settle_texas_player(
-                wallet_address,
+                disconnected_player_id,
                 buy_in_tokens,
                 chips_tokens,
                 table_id,
@@ -468,18 +454,14 @@ class TexasService(BaseService):
             )
 
             # Clear disconnected
-            table_map = self._state.poker_disconnected_since.get(table_id)
-            if table_map:
-                table_map.pop(wallet_address or "", None)
-                if not table_map:
-                    self._state.poker_disconnected_since.pop(table_id, None)
+            self._state.poker_disconnected_since.clear(table_id, disconnected_player_id or "")
 
             await self._sio.leave_room(player_sid, table_id)
             await self.broadcast_state(table_id)
 
         if not table.players:
             self._state.poker_tables.pop(table_id, None)
-            self._state.poker_disconnected_since.pop(table_id, None)
+            self._state.poker_disconnected_since.clear_table(table_id)
 
     @staticmethod
     def _to_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -494,27 +476,11 @@ class TexasService(BaseService):
 
     @staticmethod
     def _get_table_last_activity_at(table) -> datetime:
-        """Best-effort table activity timestamp for stale-table cleanup."""
-        candidates = [getattr(table, "created_at", None)]
-
-        # Wrapper-level action timestamps (sid -> datetime)
-        last_action_map = getattr(table, "last_action_time", None)
-        if isinstance(last_action_map, dict):
-            candidates.extend(ts for ts in last_action_map.values() if ts)
-
-        engine = getattr(table, "engine", None)
-        if engine is not None:
-            # Current turn heartbeat
-            turn_started_at = getattr(engine, "turn_started_at", None)
-            if turn_started_at:
-                candidates.append(turn_started_at)
-
-            # Per-player action timestamps
-            engine_players = getattr(engine, "players", {}) or {}
-            for player in engine_players.values():
-                player_last_action = getattr(player, "last_action_time", None)
-                if player_last_action:
-                    candidates.append(player_last_action)
+        """Best-effort table activity timestamp based on real player actions only."""
+        candidates = [
+            getattr(table, "created_at", None),
+            getattr(table, "last_human_action_time", None),
+        ]
 
         valid = [TexasService._to_utc(ts) for ts in candidates if isinstance(ts, datetime)]
         return max(valid) if valid else datetime.now(timezone.utc)
@@ -529,17 +495,17 @@ class TexasService(BaseService):
         engine = getattr(table, "engine", None)
         phase = getattr(engine, "phase", None)
         # Do not finalize in the middle of an active hand.
-        return phase not in POKER_ACTIVE_PHASES
+        return phase_value(phase) not in POKER_ACTIVE_PHASE_VALUES
 
     async def _abort_inactive_table(self, table_id: str, table, reason: str) -> None:
         """End a long-inactive poker table and settle all seated players."""
-        print(f"[PokerTimeout] Aborting inactive table {table_id}: {reason}")
+        log.info(f"[PokerTimeout] Aborting inactive table {table_id}: {reason}")
 
         settle_tasks = []
         for player_dict in list(table.players):
             sid = player_dict.get("sid")
-            wallet_address = player_dict.get("wallet_address")
-            if not wallet_address:
+            player_id = player_dict.get("player_id")
+            if not player_id:
                 continue
 
             engine_player = table.engine.players.get(sid) if sid else None
@@ -550,7 +516,7 @@ class TexasService(BaseService):
 
             settle_tasks.append(
                 self._settlement_service.settle_texas_player(
-                    wallet_address,
+                    player_id,
                     buy_in_tokens,
                     chips_tokens,
                     table_id,
@@ -562,7 +528,7 @@ class TexasService(BaseService):
             )
 
             if sid and sid in self._state.player_sessions:
-                self._state.player_sessions[sid]["table_id"] = None
+                self._state.player_sessions.set_table_id(sid, None)
 
         if settle_tasks:
             await asyncio.gather(*settle_tasks, return_exceptions=True)
@@ -585,7 +551,7 @@ class TexasService(BaseService):
                 await self._sio.leave_room(sid, table_id)
 
         self._state.poker_tables.pop(table_id, None)
-        self._state.poker_disconnected_since.pop(table_id, None)
+        self._state.poker_disconnected_since.clear_table(table_id)
         if self._state.texas_matchmaker:
             self._state.texas_matchmaker.remove_table(table_id)
 
@@ -629,7 +595,7 @@ class TexasService(BaseService):
                         if not table.players:
                             created_at = self._to_utc(getattr(table, 'created_at', None))
                             if created_at and (now - created_at).total_seconds() > 3600:
-                                print(f"[PokerTimeout] Removing stale empty table {table_id}")
+                                log.info(f"[PokerTimeout] Removing stale empty table {table_id}")
                                 self._state.poker_tables.pop(table_id, None)
                                 # Clean up from matchmaker if exists
                                 if self._state.texas_matchmaker:
@@ -640,10 +606,10 @@ class TexasService(BaseService):
                         engine = table.engine
                         
                         # 2. Check for stuck active tables (> 30 mins since turn start)
-                        if engine.phase in POKER_ACTIVE_PHASES:
+                        if phase_value(engine.phase) in POKER_ACTIVE_PHASE_VALUES:
                             turn_started_at = self._to_utc(engine.turn_started_at)
                             if turn_started_at and (now - turn_started_at).total_seconds() > 1800:
-                                print(f"[PokerTimeout] Force-folding stuck turn on table {table_id}")
+                                log.info(f"[PokerTimeout] Force-folding stuck turn on table {table_id}")
                                 # Force fold current player to unstick
                                 if engine.current_player_sid:
                                     await engine.handle_timeout(engine.current_player_sid)
@@ -651,7 +617,7 @@ class TexasService(BaseService):
                                     # If no current player but stuck in active phase, force reset/check
                                     pass
                         
-                        if engine.phase not in POKER_ACTIVE_PHASES:
+                        if phase_value(engine.phase) not in POKER_ACTIVE_PHASE_VALUES:
                             continue
 
                         current_sid = engine.current_player_sid
@@ -661,11 +627,11 @@ class TexasService(BaseService):
                         if engine.get_turn_time_remaining() > 0:
                             continue
 
-                        print(f"[PokerTimeout] Table {table_id} player {current_sid} timed out")
+                        log.info(f"[PokerTimeout] Table {table_id} player {current_sid} timed out")
                         result = engine.handle_timeout(current_sid)
 
                         if not result.get("success"):
-                            print(
+                            log.info(
                                 f"[PokerTimeout] Failed to auto-act on {table_id}: {result.get('error')}"
                             )
                             continue
@@ -704,7 +670,7 @@ class TexasService(BaseService):
                             await self.broadcast_state(table_id)
                             await asyncio.create_task(table.save_checkpoint("phase_change"))
 
-                            if engine.phase == PokerPhase.SHOWDOWN:
+                            if phase_value(engine.phase) == POKER_SHOWDOWN_PHASE:
                                 showdown_result = (
                                     phase_result if isinstance(phase_result, dict) else {}
                                 )
@@ -722,7 +688,7 @@ class TexasService(BaseService):
                                 await asyncio.create_task(table.save_checkpoint("showdown"))
 
             except asyncio.CancelledError:
-                print("Poker timeout checker stopped")
+                log.info("Poker timeout checker stopped")
                 break
             except Exception as exc:
-                print(f"[PokerTimeout] Error in poker timeout checker: {exc}")
+                log.error(f"[PokerTimeout] Error in poker timeout checker: {exc}")

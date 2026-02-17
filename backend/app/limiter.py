@@ -2,9 +2,9 @@
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from fastapi import Request
 
-
-limiter = Limiter(key_func=get_remote_address)
+from backend.constant.api_error import InvalidPlayerIDError
 
 
 # ============================================================================
@@ -69,3 +69,12 @@ def rate_limit(limit: str, key_func=None):
         
         return wrapper
     return decorator
+
+def get_player_id(request: Request)->str:
+    player_id = getattr(request.state, "player_id", None)
+    if not player_id:
+        raise InvalidPlayerIDError("Missing token player_id")
+    return request.state.player_id
+
+ip_limiter = Limiter(key_func=get_remote_address)
+player_id_limiter = Limiter(key_func=get_player_id)

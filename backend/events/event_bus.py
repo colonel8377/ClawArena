@@ -13,6 +13,8 @@ import asyncio
 from collections import defaultdict
 
 
+from backend.utils import log
+
 class EventType(Enum):
     """Types of game events."""
     # Chat events
@@ -117,7 +119,7 @@ class EventBus:
             try:
                 handler(event)
             except Exception as e:
-                print(f"Error in event handler: {e}")
+                log.error(f"Error in event handler: {e}")
     
     async def publish_async(self, event: GameEvent):
         """
@@ -140,7 +142,7 @@ class EventBus:
                 try:
                     handler(event)
                 except Exception as e:
-                    print(f"Error in event handler: {e}")
+                    log.error(f"Error in event handler: {e}")
         
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)

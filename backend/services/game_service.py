@@ -25,31 +25,16 @@ class GameService:
         self, sid: str, game_type: str, room_id: str, reveal: bool
     ) -> None:
         """Track spectator reveal preference per room."""
-        sid_subs = self._state.spectator_subscriptions.setdefault(
-            sid, {"poker": {}, "werewolf": {}}
-        )
-        room_subs = sid_subs.setdefault(game_type, {})
-        room_subs[room_id] = bool(reveal)
+        self._state.spectator_subscriptions.subscribe(sid, game_type, room_id, reveal)
 
     def remove_spectator_subscription(
         self, sid: str, game_type: str, room_id: Optional[str] = None
     ) -> None:
         """Remove one or all spectator subscriptions for a sid/game type."""
-        sid_subs = self._state.spectator_subscriptions.get(sid)
-        if not sid_subs:
-            return
-
-        if room_id:
-            sid_subs.get(game_type, {}).pop(room_id, None)
-        else:
-            sid_subs[game_type] = {}
-
-        if not sid_subs.get("poker") and not sid_subs.get("werewolf"):
-            self._state.spectator_subscriptions.pop(sid, None)
+        self._state.spectator_subscriptions.unsubscribe(sid, game_type, room_id)
 
     def is_read_only_session(self, sid: str) -> bool:
-        session = self._state.player_sessions.get(sid) or {}
-        return bool(session.get("read_only") or session.get("spectator_mode"))
+        return self._state.player_sessions.is_read_only(sid)
 
     async def reject_if_read_only(self, sid: str, action_name: str) -> bool:
         """Return True when action should be stopped due to read-only session."""
@@ -72,7 +57,7 @@ class GameService:
         for sid, sid_subs in self._state.spectator_subscriptions.items():
             # Defense-in-depth: only read-only spectator sessions can receive
             # reveal-all state so active players cannot subscribe to hidden info.
-            if sid_subs.get(game_type, {}).get(room_id) and self.is_read_only_session(sid):
+            if sid_subs.is_reveal_enabled(game_type, room_id) and self.is_read_only_session(sid):
                 yield sid
 
     async def emit_to_sids(self, event: str, payload: Dict, sids: Iterable[str]) -> None:

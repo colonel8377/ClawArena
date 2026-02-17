@@ -2,11 +2,13 @@ import sys
 import os
 import re
 
+from backend.utils import log
+
 def main():
-    print(f"Current Working Directory: {os.getcwd()}")
+    log.info(f"Current Working Directory: {os.getcwd()}")
     
     if len(sys.argv) < 2:
-        print("Error: Missing target_backend_domain argument")
+        log.error("Error: Missing target_backend_domain argument")
         sys.exit(1)
     
     target_backend_domain = sys.argv[1]
@@ -27,8 +29,8 @@ def main():
             # Fallback: just use the backend domain (unlikely to be correct for frontend links but better than crashing)
             target_frontend_domain = target_backend_domain
 
-    print(f"Target Backend Domain: {target_backend_domain}")
-    print(f"Target Frontend Domain: {target_frontend_domain}")
+    log.info(f"Target Backend Domain: {target_backend_domain}")
+    log.info(f"Target Frontend Domain: {target_frontend_domain}")
     
     # Files to update
     files = [
@@ -56,10 +58,10 @@ def main():
     
     for relative_path in files:
         file_path = os.path.join(base_dir, relative_path)
-        print(f"Processing: {file_path}")
+        log.info(f"Processing: {file_path}")
         
         if not os.path.exists(file_path):
-            print(f"ERROR: File not found: {file_path}")
+            log.error(f"ERROR: File not found: {file_path}")
             continue
             
         try:
@@ -76,7 +78,7 @@ def main():
                 target = f"wss://{target_backend_domain}"
                 if pattern in new_content:
                     new_content = new_content.replace(pattern, target)
-                    print(f"  Replaced {pattern} -> {target}")
+                    log.info(f"  Replaced {pattern} -> {target}")
 
             # Replace https://<backend_domain>
             for domain in known_backend_domains:
@@ -84,7 +86,7 @@ def main():
                 target = f"https://{target_backend_domain}"
                 if pattern in new_content:
                     new_content = new_content.replace(pattern, target)
-                    print(f"  Replaced {pattern} -> {target}")
+                    log.info(f"  Replaced {pattern} -> {target}")
             
             # Replace bare backend domains in text if strictly matching known backend domains
             # (Be careful not to replace frontend domains here)
@@ -96,7 +98,7 @@ def main():
                     # Actually, if we already replaced the URL, the domain string won't be there anymore (it's now target_domain).
                     # So this handles text occurrences like "Connect to api-dev.clawarena.io..."
                     new_content = new_content.replace(domain, target_backend_domain)
-                    print(f"  Replaced text {domain} -> {target_backend_domain}")
+                    log.info(f"  Replaced text {domain} -> {target_backend_domain}")
 
             # --- 2. Frontend Domain Replacement ---
             
@@ -117,7 +119,7 @@ def main():
                 
                 if pattern in new_content and pattern != target:
                      new_content = new_content.replace(pattern, target)
-                     print(f"  Replaced {pattern} -> {target}")
+                     log.info(f"  Replaced {pattern} -> {target}")
 
             # --- 3. Relative API Path Replacement (Markdown only) ---
             
@@ -167,24 +169,24 @@ def main():
                     # We only want to replace if we are sure it is intended as an API path.
                     # But /api/ is pretty specific in our context.
                     new_content = re.sub(pattern_rel, f"https://{target_backend_domain}/api/", new_content)
-                    print(f"  Replaced relative paths /api/ -> https://{target_backend_domain}/api/")
+                    log.info(f"  Replaced relative paths /api/ -> https://{target_backend_domain}/api/")
 
             if new_content != content:
                 with open(file_path, 'w') as f:
                     f.write(new_content)
-                print(f"  Updated successfully.")
+                log.info(f"  Updated successfully.")
                 success_count += 1
             else:
-                print(f"  No changes needed.")
+                log.info(f"  No changes needed.")
                 
         except Exception as e:
-            print(f"ERROR updating {file_path}: {e}")
+            log.error(f"ERROR updating {file_path}: {e}")
             # We don't exit here to allow other files to be processed, 
             # but usually we might want to fail the build. 
             # For now, let's just print error.
             sys.exit(1)
 
-    print(f"Done. Updated {success_count} files.")
+    log.info(f"Done. Updated {success_count} files.")
 
 if __name__ == "__main__":
     main()

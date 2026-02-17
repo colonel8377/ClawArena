@@ -45,17 +45,9 @@ DEFAULT_BIG_BLIND = TEXAS_DEFAULT_BIG_BLIND
 MIN_PLAYERS = TEXAS_MIN_PLAYERS
 MAX_PLAYERS = TEXAS_MAX_PLAYERS
 
-# Game Rules Configuration
-# Strategy for handling dead pots (excess bets from folded players with no eligible callers).
-# 'MAIN_POT': Merge dead money into the Main Pot (standard rule, benefits the hand winner).
-# 'BURN': Remove dead money from the game (deflationary).
-# 'REFUND': Refund to the bettor (non-standard).
 DEAD_POT_MERGE_STRATEGY = 'MAIN_POT'
 
 
-# ============================================================================
-# ENUMS
-# ============================================================================
 
 class PokerPhase(Enum):
     """Texas Hold'em game phases."""
@@ -80,7 +72,7 @@ class PokerPlayer:
     Tracks chip stack, hole cards, and betting state.
     """
     sid: str
-    wallet_address: str
+    player_id: str
     nickname: str
     chips: int = 1000
     hole_cards: List[int] = field(default_factory=list)
@@ -230,7 +222,7 @@ class TexasEngine:
     def add_player(
         self,
         sid: str,
-        wallet_address: str,
+        player_id: str,
         nickname: str,
         buy_in: int = 1000
     ) -> bool:
@@ -239,7 +231,7 @@ class TexasEngine:
         
         Args:
             sid: Socket.IO session ID
-            wallet_address: Player's wallet address
+            player_id: Player's player_id
             nickname: Player's display name
             buy_in: Initial chip stack
             
@@ -254,7 +246,7 @@ class TexasEngine:
         
         player = PokerPlayer(
             sid=sid,
-            wallet_address=wallet_address,
+            player_id=player_id,
             nickname=nickname,
             chips=buy_in
         )
@@ -1543,8 +1535,8 @@ class TexasEngine:
             'players': {
                 sid: {
                     'sid': player.sid,
-                    'wallet_address': player.wallet_address,
-                    'nickname': player.nickname,
+                    'player_id': player.player_id,
+                    'player_name': player.player_name,
                     'chips': player.chips,
                     'hole_cards': list(player.hole_cards),
                     'status': player.status.value,
@@ -1608,7 +1600,7 @@ class TexasEngine:
 
             player = PokerPlayer(
                 sid=p.get('sid', sid),
-                wallet_address=p.get('wallet_address', ''),
+                player_id=p.get('player_id', ''),
                 nickname=p.get('nickname', 'Player'),
                 chips=int(p.get('chips', 0)),
                 hole_cards=[int(c) for c in p.get('hole_cards', [])],

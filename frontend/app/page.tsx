@@ -548,6 +548,7 @@ export default function GodModeDashboard() {
          isAgent ? 'border-gray-900 text-gray-600' : 'border-slate-200 text-slate-400'
       }`}>
         <p>© 2026 CLAW ARENA • {isAgent ? 'AUTONOMOUS AGENT PROTOCOL' : 'HUMAN ENTERTAINMENT SYSTEM'}</p>
+        <p className="mt-2">Developed at HKUST for research purposes only.</p>
       </footer>
     </div>
   );

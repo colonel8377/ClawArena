@@ -8,10 +8,12 @@ from typing import Optional, Dict
 from backend.config.arena_config import WEREWOLF_PRIZE_MULTIPLIER, is_local_debug_mode
 from backend.database.persistence_manager import persistence_manager
 from backend.database.redis_manager import redis_manager
-from backend.economy.account import lock_balance, get_available_balance
+from backend.economy.account_service import lock_balance, get_available_balance
 from backend.games.werewolf.werewolf_game import WerewolfGame, WerewolfPhase
 from backend.services.base import BaseService
 from backend.services.settlement_service import SettlementService
+
+from backend.utils import log
 
 WEREWOLF_SIGNIFICANT_PHASES = {
     "waiting",
@@ -51,7 +53,7 @@ class WerewolfService(BaseService):
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                print(f"Task {name or 'unknown'} failed: {e}")
+                log.error(f"Task {name or 'unknown'} failed: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -103,10 +105,8 @@ class WerewolfService(BaseService):
         # Handle reveal spectators
         reveal_sids = []
         for sid, sid_subs in self._state.spectator_subscriptions.items():
-            if sid_subs.get("werewolf", {}).get(game_id):
-                 # Check read only session
-                 session = self._state.player_sessions.get(sid) or {}
-                 if bool(session.get("read_only") or session.get("spectator_mode")):
+            if sid_subs.is_reveal_enabled("werewolf", game_id):
+                 if self._state.player_sessions.is_read_only(sid):
                      reveal_sids.append(sid)
 
         if reveal_sids:
@@ -118,7 +118,7 @@ class WerewolfService(BaseService):
         self._create_task(redis_manager.refresh_game_ttl(game_id), name=f"refresh_ttl_{game_id}")
 
     async def create_game(self, sid: str, game_id: str, entry_fee: Decimal) -> None:
-        if sid not in self._state.player_sessions or not self._state.player_sessions[sid]["authenticated"]:
+        if not self._state.player_sessions.is_authenticated(sid):
             await self._sio.emit("error", {"message": "Not authenticated"}, room=sid)
             return
 
@@ -158,17 +158,18 @@ class WerewolfService(BaseService):
         await self._sio.emit("werewolf_game_created", {"game_id": game_id}, room=sid)
 
     async def join_game(self, sid: str, game_id: str) -> None:
-        if sid not in self._state.player_sessions or not self._state.player_sessions[sid]["authenticated"]:
+        session = self._state.player_sessions.get(sid)
+        if not session or not session.authenticated:
             await self._sio.emit("error", {"message": "Not authenticated"}, room=sid)
             return
 
-        nickname = self._state.player_sessions[sid]["player_name"] or "Player"
+        nickname = session.player_name or "Player"
 
         if not game_id or game_id not in self._state.werewolf_games:
             await self._sio.emit("error", {"message": "Invalid game_id"}, room=sid)
             return
 
-        player_id = self._state.player_sessions[sid]["player_id"]
+        player_id = session.player_id
         game = self._state.werewolf_games[game_id]
 
         if game.entry_fee <= 0:
@@ -216,7 +217,7 @@ class WerewolfService(BaseService):
                 return
 
             try:
-                await lock_balance(player_id, game.entry_fee, game_session_id=game_id)
+                await lock_balance(player_id, game.entry_fee)
             except Exception as exc:
                 await self._sio.emit(
                     "error",
@@ -226,7 +227,7 @@ class WerewolfService(BaseService):
                 game.remove_player(sid)
                 return
 
-            self._state.player_sessions[sid]["game_id"] = game_id
+            self._state.player_sessions.set_game_id(sid, game_id)
 
             await persistence_manager.on_player_joined(
                 game_id=game_id,
@@ -415,9 +416,8 @@ class WerewolfService(BaseService):
 
         reveal_sids = []
         for s, sid_subs in self._state.spectator_subscriptions.items():
-            if sid_subs.get("werewolf", {}).get(game_id):
-                 session = self._state.player_sessions.get(s) or {}
-                 if bool(session.get("read_only") or session.get("spectator_mode")):
+            if sid_subs.is_reveal_enabled("werewolf", game_id):
+                 if self._state.player_sessions.is_read_only(s):
                      reveal_sids.append(s)
 
         if reveal_sids:
@@ -439,7 +439,7 @@ class WerewolfService(BaseService):
                 room=sid,
             )
             return
-        print(f"[Werewolf] Manual phase advance triggered by {sid} for game {game_id}")
+        log.info(f"[Werewolf] Manual phase advance triggered by {sid} for game {game_id}")
         await self._advance_phase_logic(game_id)
 
     async def _advance_phase_logic(self, game_id: str) -> None:
@@ -489,7 +489,7 @@ class WerewolfService(BaseService):
             # Handle game over
             if phase_result.get("game_over"):
                 winners = phase_result.get("winners", [])
-                print(f"Game {game_id} finished. Winners: {winners}")
+                log.info(f"Game {game_id} finished. Winners: {winners}")
                 await self._handle_game_end(game_id, winners)
                 # Remove finished game from memory after settlement
                 self._state.werewolf_games.pop(game_id, None)
@@ -537,6 +537,7 @@ class WerewolfService(BaseService):
                 if p.get("role")
                 and hasattr(p["role"], "role_type")
                 and p["role"].role_type.value == "wolf"
+                and p["is_alive"]
             ]
             core_state = game.get_core_state() if action not in ["chat", "wolf_chat"] else None
             all_actions_complete = result.get("all_actions_complete")
@@ -585,9 +586,8 @@ class WerewolfService(BaseService):
 
             reveal_sids = []
             for s, sid_subs in self._state.spectator_subscriptions.items():
-                if sid_subs.get("werewolf", {}).get(game_id):
-                    session = self._state.player_sessions.get(s) or {}
-                    if bool(session.get("read_only") or session.get("spectator_mode")):
+                if sid_subs.is_reveal_enabled("werewolf", game_id):
+                    if self._state.player_sessions.is_read_only(s):
                         reveal_sids.append(s)
 
             for rsid in reveal_sids:
@@ -621,7 +621,7 @@ class WerewolfService(BaseService):
             )
 
         if all_actions_complete:
-            print(f"[AutoAdvance] All actions complete for game {game_id}, advancing...")
+            log.info(f"[AutoAdvance] All actions complete for game {game_id}, advancing...")
             await self._advance_phase_logic(game_id)
 
         await self.broadcast_state(game_id)
@@ -660,10 +660,10 @@ class WerewolfService(BaseService):
     async def _handle_game_end(self, game_id: str, winners: list) -> None:
         lock = self._get_settlement_lock(game_id)
         async with lock:
-            if game_id in self._state.werewolf_finalized_games:
-                print(f"[WerewolfSettle] Game {game_id} already finalized")
+            if self._state.werewolf_finalized_games.is_finalized(game_id):
+                log.info(f"[WerewolfSettle] Game {game_id} already finalized")
                 return
-            self._state.werewolf_finalized_games[game_id] = "ended"
+            self._state.werewolf_finalized_games.mark_ended(game_id)
 
             game = self._state.werewolf_games.get(game_id)
 
@@ -691,7 +691,7 @@ class WerewolfService(BaseService):
                     prize_pool=prize_pool,
                 )
             except Exception as exc:
-                print(f"Failed to persist game end: {exc}")
+                log.error(f"Failed to persist game end: {exc}")
                 import traceback
                 traceback.print_exc()
 
@@ -699,7 +699,7 @@ class WerewolfService(BaseService):
                 if game:
                     if not winners:
                         # No winners — treat as abort and refund all players
-                        print(f"[WerewolfSettle] Game {game_id} ended without winners, refunding entry fees")
+                        log.info(f"[WerewolfSettle] Game {game_id} ended without winners, refunding entry fees")
                         should_refund = await redis_manager.mark_settlement_stage_once(
                             game_id,
                             "werewolf_refund",
@@ -717,11 +717,11 @@ class WerewolfService(BaseService):
                         "werewolf_settlement",
                     )
                     if not should_settle:
-                        print(f"[WerewolfSettle] Skip duplicate settlement for game {game_id}")
+                        log.warning(f"[WerewolfSettle] Skip duplicate settlement for game {game_id}")
                         return
 
                     try:
-                        print(
+                        log.info(
                             f"Werewolf game prize pool: {str(prize_pool)} tokens from {len(winners)} winners"
                         )
                         await self._settlement_service.process_werewolf_settlement(
@@ -737,19 +737,19 @@ class WerewolfService(BaseService):
                         )
                         raise
                 else:
-                    print("No game data found for prize distribution")
+                    log.info("No game data found for prize distribution")
             except Exception as exc:
-                print(f"Failed to handle prize distribution: {exc}")
+                log.error(f"Failed to handle prize distribution: {exc}")
                 import traceback
                 traceback.print_exc()
 
     async def _handle_game_abort(self, game_id: str, reason: Optional[str] = None) -> None:
         lock = self._get_settlement_lock(game_id)
         async with lock:
-            if game_id in self._state.werewolf_finalized_games:
-                print(f"[WerewolfSettle] Abort skipped; game {game_id} already finalized")
+            if self._state.werewolf_finalized_games.is_finalized(game_id):
+                log.warning(f"[WerewolfSettle] Abort skipped; game {game_id} already finalized")
                 return
-            self._state.werewolf_finalized_games[game_id] = "aborted"
+            self._state.werewolf_finalized_games.mark_aborted(game_id)
 
             game = self._state.werewolf_games.get(game_id)
 
@@ -763,7 +763,7 @@ class WerewolfService(BaseService):
                     prize_pool=Decimal("0"),
                 )
             except Exception as exc:
-                print(f"Failed to persist aborted game end: {exc}")
+                log.error(f"Failed to persist aborted game end: {exc}")
                 import traceback
                 traceback.print_exc()
 
@@ -779,15 +779,15 @@ class WerewolfService(BaseService):
                             game_id,
                             description="Werewolf game refund - aborted",
                         )
-                        print(
+                        log.info(
                             f"Werewolf game aborted: refunded entry fees ({reason or 'no reason'})"
                         )
                     else:
-                        print(f"[WerewolfSettle] Skip duplicate abort refund stage for game {game_id}")
+                        log.warning(f"[WerewolfSettle] Skip duplicate abort refund stage for game {game_id}")
                 else:
-                    print("No game data found for aborted refund")
+                    log.info("No game data found for aborted refund")
             except Exception as exc:
-                print(f"Failed to refund aborted werewolf game: {exc}")
+                log.error(f"Failed to refund aborted werewolf game: {exc}")
                 import traceback
                 traceback.print_exc()
 
@@ -851,7 +851,7 @@ class WerewolfService(BaseService):
                         if game.phase not in {WerewolfPhase.FINISHED, WerewolfPhase.ABORTED}:
                             last_activity_at = self._get_game_last_activity_at(game)
                             if (now - last_activity_at).total_seconds() > WEREWOLF_INACTIVE_GAME_ABORT_SECONDS:
-                                print(f"[Timeout] Aborting inactive game {game_id} (no player actions > 1h)")
+                                log.info(f"[Timeout] Aborting inactive game {game_id} (no player actions > 1h)")
                                 await self._handle_game_abort(
                                     game_id,
                                     "Game cancelled due to inactivity (> 1h without player actions)",
@@ -863,7 +863,7 @@ class WerewolfService(BaseService):
                         if game.phase == WerewolfPhase.WAITING:
                             created_at = self._to_utc(getattr(game, 'created_at', None))
                             if created_at and (now - created_at).total_seconds() > 3600:
-                                print(f"[Timeout] Aborting stale waiting game {game_id}")
+                                log.info(f"[Timeout] Aborting stale waiting game {game_id}")
                                 await self._handle_game_abort(
                                     game_id, 
                                     "Game cancelled due to inactivity (waiting > 1h)"
@@ -876,7 +876,7 @@ class WerewolfService(BaseService):
                         if game.phase in active_phases:
                             phase_start = self._to_utc(getattr(game, '_phase_start_time', None))
                             if phase_start and (now - phase_start).total_seconds() > 3600:
-                                print(f"[Timeout] Aborting stuck active game {game_id}")
+                                log.info(f"[Timeout] Aborting stuck active game {game_id}")
                                 await self._handle_game_abort(
                                     game_id,
                                     f"Game cancelled due to stuck phase {game.phase.value} (> 1h)"
@@ -890,7 +890,7 @@ class WerewolfService(BaseService):
                         if game.get_time_remaining() > 0:
                             continue
 
-                        print(f"[Timeout] Game {game_id} phase {game.phase.value} timed out")
+                        log.info(f"[Timeout] Game {game_id} phase {game.phase.value} timed out")
 
                         try:
                             old_phase = game.phase.value
@@ -971,12 +971,12 @@ class WerewolfService(BaseService):
                             await self.broadcast_state(game_id)
 
                         except Exception as exc:
-                            print(f"[Timeout] Error handling timeout for game {game_id}: {exc}")
+                            log.error(f"[Timeout] Error handling timeout for game {game_id}: {exc}")
                             import traceback
                             traceback.print_exc()
 
             except asyncio.CancelledError:
-                print("Werewolf timeout checker stopped")
+                log.info("Werewolf timeout checker stopped")
                 break
             except Exception as exc:
-                print(f"[Timeout] Error in werewolf timeout checker: {exc}")
+                log.error(f"[Timeout] Error in werewolf timeout checker: {exc}")

@@ -32,6 +32,8 @@ import logging
 
 import redis.asyncio as redis
 
+from backend.utils import log
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +54,7 @@ REDIS_GAME_CORE_PREFIX = 'arena:core:'       # Core game state (frequent updates
 REDIS_INDEXER_PREFIX = 'arena:indexer:'      # Indexer state and dedup
 REDIS_BALANCE_PREFIX = 'arena:balance:'      # User balance cache
 REDIS_SETTLEMENT_PREFIX = 'arena:settlement:'  # Settlement idempotency keys
+REDIS_BOT_TOKEN_PREFIX = 'arena:bot_token:'  # Bot token -> metadata
 
 # Timeouts and TTLs (seconds)
 SESSION_EXPIRY = 3600           # 1 hour
@@ -109,7 +112,7 @@ class RedisManager:
             safe_url = f"*****@{parts[-1]}"
             
         # Use print to ensure visibility even if logging isn't configured yet (Import time)
-        print(f"DEBUG: Initializing RedisManager with URL: {safe_url}")
+        log.info(f"DEBUG: Initializing RedisManager with URL: {safe_url}")
         logger.info(f"Initializing RedisManager with URL: {safe_url}")
         
         self.redis_url = redis_url
@@ -161,27 +164,27 @@ class RedisManager:
                     parsed = urlparse(self.redis_url)
                     hostname = parsed.hostname
                     port = parsed.port or 6379
-                    print(f"DEBUG: Diagnosing connection to host: '{hostname}' on port {port}...")
+                    log.info(f"DEBUG: Diagnosing connection to host: '{hostname}' on port {port}...")
                     
                     # Try to resolve IP
                     ip_address = socket.gethostbyname(hostname)
-                    print(f"DEBUG: ✓ DNS Resolution successful: {hostname} -> {ip_address}")
+                    log.info(f"DEBUG: ✓ DNS Resolution successful: {hostname} -> {ip_address}")
                     
                     # Optional: Try simple TCP handshake
                     s = socket.create_connection((hostname, port), timeout=2)
                     s.close()
-                    print(f"DEBUG: ✓ TCP Handshake successful to {hostname}:{port}")
+                    log.info(f"DEBUG: ✓ TCP Handshake successful to {hostname}:{port}")
                     
                 except socket.gaierror as e:
-                    print(f"CRITICAL: ❌ DNS Resolution FAILED for '{hostname}'.")
-                    print(f"  Reason: {e}")
-                    print(f"  Diagnosis: The service name '{hostname}' cannot be found in this private network.")
-                    print(f"  Fix: Check if your Railway Service Name is exactly '{hostname.split('.')[0]}'.")
+                    log.error(f"CRITICAL: ❌ DNS Resolution FAILED for '{hostname}'.")
+                    log.info(f"  Reason: {e}")
+                    log.info(f"  Diagnosis: The service name '{hostname}' cannot be found in this private network.")
+                    log.info(f"  Fix: Check if your Railway Service Name is exactly '{hostname.split('.')[0]}'.")
                 except socket.timeout:
-                    print(f"CRITICAL: ❌ TCP Connection TIMED OUT to {hostname}:{port}.")
-                    print(f"  Diagnosis: Host resolved but port is not reachable.")
+                    log.error(f"CRITICAL: ❌ TCP Connection TIMED OUT to {hostname}:{port}.")
+                    log.info(f"  Diagnosis: Host resolved but port is not reachable.")
                 except Exception as e:
-                    print(f"DEBUG: Network diagnosis warning: {e}")
+                    log.warning(f"DEBUG: Network diagnosis warning: {e}")
 
                 self._redis = redis.from_url(
                     self.redis_url,
@@ -786,6 +789,61 @@ class RedisManager:
         except Exception as e:
             logger.error(f"Error deleting session {key}: {e}")
             return False
+
+    # ========================================================================
+    # BOT TOKEN MANAGEMENT
+    # ========================================================================
+
+    def _bot_token_key(self, token: str) -> str:
+        return f"{REDIS_BOT_TOKEN_PREFIX}{token}"
+
+    async def save_bot_token(
+        self,
+        token: str,
+        data: Dict[str, Any],
+        expiry: int,
+    ) -> bool:
+        """
+        Save bot token metadata to Redis with TTL.
+
+        Args:
+            token: Bot token string
+            data: Metadata dict (must include player_id)
+            expiry: TTL in seconds
+        """
+        if not await self.ping():
+            return False
+
+        try:
+            key = self._bot_token_key(token)
+            await self._redis.setex(key, expiry, json.dumps(data))
+            return True
+        except Exception as e:
+            logger.error(f"Error saving bot token {token}: {e}")
+            return False
+
+    async def get_bot_token_data(self, token: str) -> Optional[Dict[str, Any]]:
+        """
+        Get bot token metadata from Redis.
+
+        Args:
+            token: Bot token string
+
+        Returns:
+            Metadata dict if found, None otherwise
+        """
+        if not await self.ping():
+            return None
+
+        try:
+            key = self._bot_token_key(token)
+            data = await self._redis.get(key)
+            if not data:
+                return None
+            return json.loads(data)
+        except Exception as e:
+            logger.error(f"Error getting bot token {token}: {e}")
+            return None
     
     # ========================================================================
     # INDEXER STATE (Deposit Deduplication + Progress Tracking)
@@ -1009,12 +1067,12 @@ class RedisManager:
     # BALANCE CACHING
     # ========================================================================
 
-    async def set_cached_balance(self, wallet_address: str, balance: str, locked_balance: str) -> None:
+    async def set_cached_balance(self, player_id: str, balance: str, locked_balance: str) -> None:
         """
         Cache balance and locked balance in Redis as JSON.
 
         Args:
-            wallet_address: Canonical player identifier
+            player_id: Canonical player identifier
             balance: Current balance as string
             locked_balance: Current locked balance as string
         """
@@ -1022,11 +1080,11 @@ class RedisManager:
             return
 
         try:
-            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
+            key = f"{REDIS_BALANCE_PREFIX}{player_id}"
             value = json.dumps({"balance": balance, "locked_balance": locked_balance})
             await self._redis.setex(key, BALANCE_CACHE_EXPIRY, value)
         except Exception as e:
-            logger.error(f"Error setting cached balance for {wallet_address}: {e}")
+            logger.error(f"Error setting cached balance for {player_id}: {e}")
 
     async def get_cached_balance(self, wallet_address: str) -> Optional[str]:
         """
@@ -1050,12 +1108,12 @@ class RedisManager:
             logger.error(f"Error getting cached balance for {wallet_address}: {e}")
             return None
 
-    async def get_cached_balance_data(self, wallet_address: str) -> Optional[Dict[str, str]]:
+    async def get_cached_balance_data(self, player_id: str) -> Optional[Dict[str, str]]:
         """
         Get cached balance data from Redis.
 
         Args:
-            wallet_address: Canonical player identifier
+            player_id: Canonical player_id
 
         Returns:
             Dict with balance and locked_balance as strings or None
@@ -1064,13 +1122,13 @@ class RedisManager:
             return None
 
         try:
-            key = f"{REDIS_BALANCE_PREFIX}{wallet_address}"
+            key = f"{REDIS_BALANCE_PREFIX}{player_id}"
             value = await self._redis.get(key)
             if value:
                 return json.loads(value)
             return None
         except Exception as e:
-            logger.error(f"Error getting cached balance data for {wallet_address}: {e}")
+            logger.error(f"Error getting cached balance data for {player_id}: {e}")
             return None
 
     async def get_cached_balances_data(self, wallet_addresses: List[str]) -> Dict[str, Dict[str, str]]:

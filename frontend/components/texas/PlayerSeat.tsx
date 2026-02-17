@@ -18,6 +18,8 @@ interface PlayerSeatProps {
   isDealer?: boolean;
   isSmallBlind?: boolean;
   isBigBlind?: boolean;
+  isCurrentTurn?: boolean;
+  isSpeaking?: boolean;
   pot?: number;
   winners?: string[];
 }
@@ -44,6 +46,8 @@ export default function PlayerSeat({
   isDealer = false,
   isSmallBlind = false,
   isBigBlind = false,
+  isCurrentTurn = false,
+  isSpeaking = false,
   pot,
   winners
 }: PlayerSeatProps) {
@@ -90,43 +94,58 @@ export default function PlayerSeat({
 
       {/* Avatar + Blinds/Dealer */}
       <div className="relative flex items-center justify-center">
+        {isCurrentTurn && (
+          <div className={`absolute -inset-4 rounded-full blur-xl animate-pulse ${
+            isAgent ? 'bg-emerald-400/22' : 'bg-emerald-300/32'
+          }`} />
+        )}
         {(isSmallBlind || isBigBlind) && (
           <div className={`absolute -inset-2 rounded-full blur-lg animate-pulse ${
             isSmallBlind
-              ? (isAgent ? 'bg-amber-400/18' : 'bg-amber-300/25')
-              : (isAgent ? 'bg-orange-400/18' : 'bg-orange-300/25')
+              ? (isAgent ? 'bg-cyan-400/25' : 'bg-amber-300/25')
+              : (isAgent ? 'bg-fuchsia-400/25' : 'bg-orange-300/25')
           }`} />
         )}
         <div className={`relative w-16 h-16 rounded-full border-2 ${
           isSmallBlind
-            ? (isAgent ? 'border-amber-300 shadow-[0_0_22px_rgba(251,191,36,0.45)]' : 'border-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.25)]')
+            ? (isAgent ? 'border-cyan-300 shadow-[0_0_24px_rgba(34,211,238,0.55)]' : 'border-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.25)]')
             : isBigBlind
-              ? (isAgent ? 'border-orange-300 shadow-[0_0_22px_rgba(249,115,22,0.45)]' : 'border-orange-400 shadow-[0_0_18px_rgba(249,115,22,0.25)]')
+              ? (isAgent ? 'border-fuchsia-300 shadow-[0_0_24px_rgba(217,70,239,0.55)]' : 'border-orange-400 shadow-[0_0_18px_rgba(249,115,22,0.25)]')
               : (isActive ? 'border-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.35)]' : 'border-slate-500/60')
-        } bg-slate-900/90 flex items-center justify-center overflow-hidden z-10 transition-all duration-300 ${isSmallBlind || isBigBlind ? 'scale-110' : ''}`}>
+        } ${isAgent ? 'bg-[#0b0b14]/90' : 'bg-slate-900/90'} flex items-center justify-center overflow-hidden z-10 transition-all duration-300 ${isSmallBlind || isBigBlind || isCurrentTurn ? 'scale-110' : ''}`}>
           <span className="text-xs font-bold text-emerald-100">{initials}</span>
           <span className="absolute -bottom-2 -right-2 text-lg">{avatar}</span>
         </div>
         {(isDealer || isSmallBlind || isBigBlind) && (
-          <div className="absolute -top-2 -right-3 flex flex-col gap-1 items-end">
+          <div className="absolute -top-6 -right-6 flex flex-col gap-1 items-end z-30">
             {isDealer && (
-              <div className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${isAgent ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/40' : 'bg-emerald-100 text-emerald-700 border border-emerald-200'}`}>
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${isAgent ? 'bg-sky-500/20 text-sky-100 border border-sky-400/60 shadow-[0_0_14px_rgba(56,189,248,0.6)]' : 'bg-emerald-100 text-emerald-700 border border-emerald-200'}`}>
                 D
               </div>
             )}
             {isSmallBlind && (
-              <div className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${isAgent ? 'bg-amber-500/25 text-amber-100 border border-amber-400/50' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${isAgent ? 'bg-cyan-500/20 text-cyan-100 border border-cyan-400/60 shadow-[0_0_14px_rgba(34,211,238,0.6)]' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
                 SB
               </div>
             )}
             {isBigBlind && (
-              <div className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${isAgent ? 'bg-orange-500/30 text-orange-100 border border-orange-400/50' : 'bg-orange-100 text-orange-700 border border-orange-200'}`}>
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${isAgent ? 'bg-fuchsia-500/20 text-fuchsia-100 border border-fuchsia-400/60 shadow-[0_0_14px_rgba(217,70,239,0.6)]' : 'bg-orange-100 text-orange-700 border border-orange-200'}`}>
                 BB
               </div>
             )}
           </div>
         )}
       </div>
+
+      {(isCurrentTurn || isSpeaking) && (
+        <div className={`-mt-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest shadow-lg border ${
+          isSpeaking
+            ? (isAgent ? 'bg-sky-500/25 text-sky-100 border-sky-400/40' : 'bg-sky-100 text-sky-700 border-sky-200')
+            : (isAgent ? 'bg-emerald-500/20 text-emerald-100 border-emerald-400/40' : 'bg-emerald-100 text-emerald-700 border-emerald-200')
+        }`}>
+          {isSpeaking ? 'SPEAKING' : 'TURN'}
+        </div>
+      )}
 
       {/* Info Box */}
       <div className={`w-full rounded-2xl border px-3.5 py-2.5 text-center backdrop-blur-md ${

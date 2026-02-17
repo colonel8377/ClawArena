@@ -20,6 +20,8 @@ import os
 from backend.events.game_channel import GameChannel
 
 
+from backend.utils import log
+
 class GamePhase(Enum):
     """Base game phases that games can extend."""
     WAITING = "waiting"
@@ -241,7 +243,7 @@ class BaseGame(ABC):
                             (player_id, message, message_type, metadata, attempts + 1, broadcasted)
                         )
                     else:
-                        print(f"Error processing chat message: {e}")
+                        log.error(f"Error processing chat message: {e}")
                 finally:
                     self._chat_queue.task_done()
                     task_done = True
@@ -250,7 +252,7 @@ class BaseGame(ABC):
             except Exception as e:
                 if not task_done and self._chat_queue is not None:
                     self._chat_queue.task_done()
-                print(f"Error processing chat message: {e}")
+                log.error(f"Error processing chat message: {e}")
                 await asyncio.sleep(retry_delay_seconds)  # Prevent tight loop on error
 
     def get_channel_id(self) -> str:
@@ -536,7 +538,7 @@ class BaseGame(ABC):
                 )
                 await self._redis_client.ping()
             except Exception as e:
-                print(f"⚠ Redis init failed for game {self.game_id}: {e}")
+                log.warning(f"⚠ Redis init failed for game {self.game_id}: {e}")
                 self._redis_client = None
     
     async def save_state_to_redis(self, state: Optional[Dict] = None):
@@ -571,7 +573,7 @@ class BaseGame(ABC):
                 ex=3600  # 1 hour expiry
             )
         except Exception as e:
-            print(f"⚠ Failed to save state to Redis for game {self.game_id}: {e}")
+            log.warning(f"⚠ Failed to save state to Redis for game {self.game_id}: {e}")
     
     async def load_state_from_redis(self) -> Optional[Dict]:
         """
@@ -593,7 +595,7 @@ class BaseGame(ABC):
                 return json.loads(data)
             return None
         except Exception as e:
-            print(f"⚠ Failed to load state from Redis for game {self.game_id}: {e}")
+            log.warning(f"⚠ Failed to load state from Redis for game {self.game_id}: {e}")
             return None
     
     async def save_checkpoint(self, event_type: str = "manual"):

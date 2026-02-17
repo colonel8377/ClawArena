@@ -36,7 +36,7 @@ class GameChannel:
         
         Args:
             player_id: Unique player identifier
-            **kwargs: Additional player info (wallet_address, nickname, etc.)
+            **kwargs: Additional player info (player_id, player_name, etc.)
         """
         self.participants[player_id] = {
             'player_id': player_id,
@@ -50,7 +50,7 @@ class GameChannel:
             game_id=self.channel_id,
             data={
                 'player_id': player_id,
-                'nickname': kwargs.get('nickname', 'Unknown')
+                'player_name': kwargs.get('player_name', 'Unknown')
             },
             source=player_id
         ))
@@ -93,11 +93,11 @@ class GameChannel:
             Message data with timestamp
         """
         participant = self.participants.get(player_id, {})
-        nickname = participant.get('nickname', 'Unknown')
+        player_name = participant.get('player_name', 'Unknown')
         
         message_data = {
             'player_id': player_id,
-            'nickname': nickname,
+            'player_name': player_name,
             'message': message,
             'type': message_type,
             'timestamp': datetime.now(timezone.utc).isoformat(),

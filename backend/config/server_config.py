@@ -65,7 +65,7 @@ ALLOWED_HOSTS = _parse_allowed_hosts(
 
 # Anti-bot configuration (simplified - no PoW)
 BOT_TOKEN_SECRET = os.getenv('BOT_TOKEN_SECRET', 'dev-unsafe-secret')
-BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '3600'))  # 1 hour
+BOT_TOKEN_TTL = int(os.getenv('BOT_TOKEN_TTL', '86400'))  # 1 day
 
 if BOT_TOKEN_SECRET == 'dev-unsafe-secret':
     warnings.warn(

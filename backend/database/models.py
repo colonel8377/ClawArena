@@ -15,14 +15,15 @@ Design Principles:
 - Proper indexes for query optimization
 """
 
-from datetime import datetime, timezone
+import enum
 from decimal import Decimal
+from uuid import uuid4
+
 from sqlalchemy import (
-    Column, BigInteger, Integer, String, DECIMAL, DateTime, Boolean, 
-    Text, Index, JSON, func
+    Column, BigInteger, Integer, String, DECIMAL, DateTime, Boolean,
+    Text, Index, JSON, func, desc
 )
 from sqlalchemy.ext.declarative import declarative_base
-import enum
 
 Base = declarative_base()
 
@@ -40,6 +41,17 @@ class GameStatus(enum.Enum):
     ACTIVE = "active"
     FINISHED = "finished"
     ABORTED = "aborted"
+
+class GameType(enum.Enum):
+    """Game session status."""
+    TEXAS = "texas"
+    WEREWOLF = "werewolf"
+
+
+class GameTypeInt(enum.IntEnum):
+    """Integer mapping for game types."""
+    TEXAS = 1
+    WEREWOLF = 2
 
 
 class TransactionType(enum.Enum):
@@ -62,8 +74,8 @@ class UserLedger(Base):
     __tablename__ = 'user_ledger'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    wallet_address = Column(String(42), unique=True, nullable=False, index=True)
-    # Canonical agent identity fields (wallet_address kept as legacy identifier storage)
+    wallet_address = Column(String(42), nullable=False, index=True)
+    player_id = Column(String(50), nullable=False, unique=True, index=True)
     player_name = Column(String(50), nullable=False, default="Player")
     address = Column(String(128), nullable=True, index=True)
     auth_secret_hash = Column(String(256), nullable=True)
@@ -77,7 +89,8 @@ class UserLedger(Base):
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     __table_args__ = (
-        Index('idx_user_ledger_balance_wallet', offchain_balance.desc(), wallet_address),
+        Index('idx_user_ledger_leaderboard', desc(offchain_balance), player_id),
+        Index('idx_user_ledger_auth_secret_hash', auth_secret_hash),
     )
     
     def __repr__(self):
@@ -99,18 +112,20 @@ class GameSession(Base):
     """
     __tablename__ = 'game_sessions'
     
-    id = Column(String(64), primary_key=True)  # UUID or custom game ID
-    game_type = Column(String(50), nullable=False, index=True)  # 'werewolf', 'texas_holdem'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    game_id = Column(String(64), nullable=False, default=uuid4, unique=True, index=True)
+    game_type = Column(String(50), nullable=False, index=True)
+    game_type_id = Column(Integer, nullable=True, index=True)
     status = Column(String(20), nullable=False, default=GameStatus.WAITING.value, index=True)
-    winner_team = Column(String(50), nullable=True)  # 'wolf', 'villager', or NULL
+    winner_team = Column(String(50), nullable=True)
     entry_fee = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     prize_pool = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
     player_count = Column(Integer, nullable=False, default=0)
-    state_snapshot = Column(JSON, nullable=True)  # Full game state for recovery
-    chat_history = Column(JSON, nullable=True)  # Chat messages for reconnection (legacy)
-    current_phase = Column(String(50), nullable=True)  # Current game phase
+    state_snapshot = Column(JSON, nullable=True)
+    chat_history = Column(JSON, nullable=True)
+    current_phase = Column(String(50), nullable=True)
     day_count = Column(Integer, nullable=False, default=0)
-    config = Column(JSON, nullable=True)  # Game configuration
+    config = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
@@ -118,7 +133,8 @@ class GameSession(Base):
     
     # Indexes
     __table_args__ = (
-        Index('idx_game_sessions_status_type', 'status', 'game_type'),
+        Index('idx_game_sessions_status_updated', 'status', 'updated_at'),
+        Index('idx_game_sessions_type_status', 'game_type_id', 'status'),
     )
     
     def __repr__(self):
@@ -135,14 +151,14 @@ class GamePlayer(Base):
     __tablename__ = 'game_players'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    game_session_id = Column(String(64), nullable=False, index=True)  # Reference to game_sessions.id
+    game_session_id = Column(Text(64), nullable=False, index=True)  # Reference to game_sessions.id
     user_id = Column(BigInteger, nullable=False, index=True)  # Reference to user_ledger.id
-    wallet_address = Column(String(42), nullable=False, index=True)
-    socket_sid = Column(String(64), nullable=True)  # Current socket session ID
-    nickname = Column(String(50), nullable=False, default="Player")
-    role = Column(String(30), nullable=True)  # wolf, seer, witch, hunter, villager
-    team = Column(String(20), nullable=True)  # wolf, villager
-    status = Column(String(20), nullable=False, default=PlayerStatus.ALIVE.value)
+    wallet_address = Column(Text(42), nullable=False, index=True)
+    socket_sid = Column(Text(64), nullable=True)  # Current socket session ID
+    nickname = Column(Text(50), nullable=False, default="Player")
+    role = Column(Text(30), nullable=True)  # wolf, seer, witch, hunter, villager
+    team = Column(Text(20), nullable=True)  # wolf, villager
+    status = Column(Text(20), nullable=False, default=PlayerStatus.ALIVE.value)
     is_alive = Column(Boolean, nullable=False, default=True)
     consecutive_timeouts = Column(Integer, nullable=False, default=0)  # For zombie detection
     entry_paid = Column(DECIMAL(36, 18), nullable=False, default=Decimal("0"))
@@ -192,12 +208,12 @@ class ChatMessage(Base):
     __tablename__ = 'chat_messages'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    game_session_id = Column(String(64), nullable=False, index=True)  # Reference to game_sessions.id
-    game_type = Column(String(50), nullable=False, default="unknown", index=True)  # 'werewolf', 'texas', etc.
-    player_wallet = Column(String(42), nullable=False, index=True)  # Player who sent the message
-    nickname = Column(String(50), nullable=False, default="Player")
+    game_session_id = Column(Text(64), nullable=False, index=True)  # Reference to game_sessions.id
+    game_type = Column(Text(50), nullable=False, default="unknown", index=True)  # 'werewolf', 'texas', etc.
+    player_wallet = Column(Text(42), nullable=False, index=True)  # Player who sent the message
+    nickname = Column(Text(50), nullable=False, default="Player")
     message = Column(Text, nullable=False)
-    message_type = Column(String(20), nullable=False, default='chat')  # 'chat', 'action', 'system', 'bluff'
+    message_type = Column(Text(20), nullable=False, default='chat')  # 'chat', 'action', 'system', 'bluff'
     message_metadata = Column(JSON, nullable=True)  # Additional message metadata
     created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
@@ -219,10 +235,10 @@ class GameHistory(Base):
     __tablename__ = 'game_history'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    game_session_id = Column(String(64), nullable=True, index=True)  # Reference to game_sessions.id
-    game_type = Column(String(50), nullable=False, index=True)  # 'werewolf', 'texas_holdem', etc.
-    winner_wallet = Column(String(42), nullable=True, index=True)  # NULL for draws or no winner
-    winner_team = Column(String(20), nullable=True)  # wolf, villager
+    game_session_id = Column(Text(64), nullable=True, index=True)  # Reference to game_sessions.id
+    game_type = Column(Text(50), nullable=False, index=True)  # 'werewolf', 'texas_holdem', etc.
+    winner_wallet = Column(Text(42), nullable=True, index=True)  # NULL for draws or no winner
+    winner_team = Column(Text(20), nullable=True)  # wolf, villager
     prize_amount = Column(DECIMAL(36, 18), nullable=True)
     player_count = Column(Integer, nullable=True)
     duration_seconds = Column(Integer, nullable=True)
@@ -244,14 +260,14 @@ class TransactionLog(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, nullable=False, index=True)  # Reference to user_ledger.id
-    wallet_address = Column(String(42), nullable=False, index=True)
-    tx_type = Column(String(30), nullable=False, index=True)  # Transaction type
+    wallet_address = Column(Text(42), nullable=False, index=True)
+    tx_type = Column(Text(30), nullable=False, index=True)  # Transaction type
     amount = Column(DECIMAL(36, 18), nullable=False)
     balance_before = Column(DECIMAL(36, 18), nullable=False)
     balance_after = Column(DECIMAL(36, 18), nullable=False)
-    game_session_id = Column(String(64), nullable=True, index=True)  # Related game if applicable
-    tx_hash = Column(String(66), nullable=True)  # On-chain tx hash if applicable
-    description = Column(String(255), nullable=True)
+    game_session_id = Column(Text(64), nullable=True, index=True)  # Related game if applicable
+    tx_hash = Column(Text(66), nullable=True)  # On-chain tx hash if applicable
+    description = Column(Text(255), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
     
     __table_args__ = (
@@ -273,7 +289,7 @@ class User(Base):
     __tablename__ = 'users'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    wallet_address = Column(String(42), unique=True, nullable=False, index=True)
+    wallet_address = Column(Text(42), unique=True, nullable=False, index=True)
     balance = Column(DECIMAL(20, 8), nullable=False, default=0)  # Virtual balance
     last_login_date = Column(DateTime, nullable=True)  # UTC timestamp
     created_at = Column(DateTime, nullable=False, server_default=func.now())

@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from backend.database.models import TransactionType
-from backend.economy.account import add_balance, deduct_balance, unlock_balance
+from backend.economy.account_service import add_balance, deduct_balance, unlock_balance
 from backend.database.redis_manager import redis_manager
 
 
@@ -48,7 +48,6 @@ class SettlementService:
                     await unlock_balance(
                         wallet_address,
                         buy_in_tokens,
-                        game_session_id=table_id,
                         description=principal_description,
                         db_session=db
                     )
@@ -113,7 +112,6 @@ class SettlementService:
                     await unlock_balance(
                         wallet,
                         entry_fee,
-                        game_session_id=game_id,
                         description="Werewolf entry fee unlock (settlement)",
                         db_session=db
                     )
@@ -184,7 +182,6 @@ class SettlementService:
                     await unlock_balance(
                         wallet,
                         entry_fee,
-                        game_session_id=game_id,
                         description=description,
                         db_session=db,
                     )

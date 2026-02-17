@@ -9,8 +9,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional, Any, Set
 
-from backend.games.texas.texas_engine import TexasEngine
-from backend.games.texas.utils import censor_card_info
+from backend.games.texas.engine_factory import create_texas_engine, restore_texas_engine
+from backend.games.texas.engine_protocol import TexasEngineProtocol
 from backend.config.texas_config import (
     TEXAS_DEFAULT_BIG_BLIND,
     TEXAS_DEFAULT_SMALL_BLIND,
@@ -19,7 +19,7 @@ from backend.config.texas_config import (
     TEXAS_TURN_TIMEOUT_SECONDS,
 )
 from backend.games.base import BaseGame, GamePhase, check_chat_phase
-from backend.config.arena_config import TEXAS_CHIP_TO_TOKEN_RATIO, TEXAS_DEFAULT_BUY_IN_CHIPS
+from backend.constant.poker import TEXAS_FIXED_BUY_IN_CHIPS, TEXAS_FIXED_ENTRY_FEE_TOKENS
 from backend.database.persistence_manager import persistence_manager
 from backend.database.redis_manager import redis_manager
 
@@ -57,7 +57,7 @@ class TexasGame(BaseGame):
         )
         
         # Use PokerEngine as the game logic engine
-        self.engine = TexasEngine(
+        self.engine: TexasEngineProtocol = create_texas_engine(
             game_id=game_id,
             small_blind=small_blind,
             big_blind=big_blind
@@ -67,13 +67,14 @@ class TexasGame(BaseGame):
         self.small_blind = small_blind
         self.big_blind = big_blind
         self.pending_removals: Set[str] = set()
+        self.last_human_action_time: Optional[datetime] = None
 
     @staticmethod
     def _normalize_tokens(value: Any) -> Decimal:
         """Convert tokens to Decimal without float drift."""
         return Decimal(str(value or 0))
     
-    def add_player(self, sid: str, wallet_address: str, **kwargs) -> bool:
+    def add_player(self, sid: str, player_id: str, **kwargs) -> bool:
         """Add a player to the game."""
         if len(self.players) >= self.MAX_PLAYERS:
             return False
@@ -88,29 +89,21 @@ class TexasGame(BaseGame):
 
         nickname = kwargs.get('nickname', f'Player{len(self.players) + 1}')
 
-        # 处理买入金额：可以传入chips或tokens，默认使用chips
-        if 'buy_in_chips' in kwargs:
-            buy_in_chips = Decimal(str(kwargs['buy_in_chips']))
-            buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
-        elif 'buy_in_tokens' in kwargs:
-            buy_in_tokens = self._normalize_tokens(kwargs['buy_in_tokens'])
-            buy_in_chips = buy_in_tokens / TEXAS_CHIP_TO_TOKEN_RATIO
-        else:
-            # 默认买入
-            buy_in_chips = Decimal(str(TEXAS_DEFAULT_BUY_IN_CHIPS))
-            buy_in_tokens = buy_in_chips * TEXAS_CHIP_TO_TOKEN_RATIO
+        # Texas buy-in is fixed: 1000 chips (=100 tokens)
+        buy_in_chips = Decimal(str(TEXAS_FIXED_BUY_IN_CHIPS))
+        buy_in_tokens = TEXAS_FIXED_ENTRY_FEE_TOKENS
 
         # Guard against silent truncation when converting Decimal -> int chips.
         if buy_in_chips != int(buy_in_chips):
             raise ValueError(
                 f"buy_in_chips must be a whole number, got {buy_in_chips}. "
-                f"Check TEXAS_CHIP_TO_TOKEN_RATIO."
+                "Check fixed buy-in configuration."
             )
         
         # Add to poker engine
         success = self.engine.add_player(
             sid=sid,
-            wallet_address=wallet_address,
+            player_id=player_id,
             nickname=nickname,
             buy_in=int(buy_in_chips)
         )
@@ -120,7 +113,7 @@ class TexasGame(BaseGame):
         # Keep wrapper state in sync only after engine accepts the player.
         player = {
             'sid': sid,
-            'wallet_address': wallet_address,
+            'player_id': player_id,
             'nickname': nickname,
             'buy_in_chips': int(buy_in_chips),
             'buy_in_tokens': str(buy_in_tokens)
@@ -129,11 +122,16 @@ class TexasGame(BaseGame):
 
         self.channel.add_participant(
             player_id=sid,
-            wallet_address=wallet_address,
-            nickname=nickname
+            player_name=nickname,
+            player_id_value=player_id,
+            nickname=nickname,
         )
         
         return True
+
+    def update_human_action_time(self, sid: str) -> None:
+        """Track last real player action (excludes timeout/autoplay)."""
+        self.last_human_action_time = datetime.utcnow()
     
     def remove_player(self, sid: str) -> bool:
         """Remove a player from the game."""
@@ -258,6 +256,7 @@ class TexasGame(BaseGame):
             message = kwargs.get('message', '')
             result = {'success': True, 'chat': self.add_chat_message(sid, message)}
             self.update_player_action_time(sid)
+            self.update_human_action_time(sid)
             self._reset_timeout_tracking(sid)
             return result
         
@@ -276,6 +275,7 @@ class TexasGame(BaseGame):
 
         if result.get('success'):
             self.update_player_action_time(sid)
+            self.update_human_action_time(sid)
             self._reset_timeout_tracking(sid)
 
         return result
@@ -328,7 +328,7 @@ class TexasGame(BaseGame):
         for winner_sid in winners:
             for player in self.players:
                 if player['sid'] == winner_sid:
-                    winner_wallets.append(player['wallet_address'])
+                    winner_wallets.append(player['player_id'])
                     break
         
         return winner_wallets
@@ -419,7 +419,11 @@ class TexasGame(BaseGame):
             'last_action_time': {
                 sid: ts.isoformat() for sid, ts in self.last_action_time.items()
             },
-            'engine': self.engine.to_dict(),
+            'last_human_action_time': self.last_human_action_time.isoformat() if self.last_human_action_time else None,
+            'engine': {
+                **self.engine.to_dict(),
+                'backend': getattr(self.engine, "backend_name", "builtin"),
+            },
         }
 
     @classmethod
@@ -439,7 +443,7 @@ class TexasGame(BaseGame):
 
         engine_data = data.get('engine')
         if isinstance(engine_data, dict):
-            game.engine = TexasEngine.from_dict(engine_data)
+            game.engine = restore_texas_engine(engine_data)
 
         wrapper_players = data.get('players', [])
         game.players = []
@@ -449,10 +453,10 @@ class TexasGame(BaseGame):
                     continue
                 game.players.append({
                     'sid': player.get('sid'),
-                    'wallet_address': player.get('wallet_address', ''),
+                    'player_id': player.get('player_id', ''),
                     'nickname': player.get('nickname', 'Player'),
-                    'buy_in_chips': int(player.get('buy_in_chips', 0) or 0),
-                    'buy_in_tokens': str(game._normalize_tokens(player.get('buy_in_tokens'))),
+                    'buy_in_chips': TEXAS_FIXED_BUY_IN_CHIPS,
+                    'buy_in_tokens': str(TEXAS_FIXED_ENTRY_FEE_TOKENS),
                 })
         else:
             for sid in game.engine.player_order:
@@ -461,10 +465,10 @@ class TexasGame(BaseGame):
                     continue
                 game.players.append({
                     'sid': sid,
-                    'wallet_address': player.wallet_address,
+                    'player_id': player.player_id,
                     'nickname': player.nickname,
-                    'buy_in_chips': int(player.chips),
-                    'buy_in_tokens': str(Decimal(str(player.chips)) * TEXAS_CHIP_TO_TOKEN_RATIO),
+                    'buy_in_chips': TEXAS_FIXED_BUY_IN_CHIPS,
+                    'buy_in_tokens': str(TEXAS_FIXED_ENTRY_FEE_TOKENS),
                 })
 
         for player in game.players:
@@ -472,8 +476,9 @@ class TexasGame(BaseGame):
             if sid:
                 game.channel.add_participant(
                     player_id=sid,
-                    wallet_address=player.get('wallet_address', ''),
-                    nickname=player.get('nickname', 'Player'),
+                    player_name=player.get('nickname') or player.get('player_name'),
+                    player_id_value=player.get('player_id'),
+                    nickname=player.get('nickname'),
                 )
 
         game.last_action_time = {}
@@ -482,6 +487,13 @@ class TexasGame(BaseGame):
                 game.last_action_time[sid] = datetime.fromisoformat(ts)
             except (TypeError, ValueError):
                 continue
+
+        last_human_action = data.get('last_human_action_time')
+        if isinstance(last_human_action, str):
+            try:
+                game.last_human_action_time = datetime.fromisoformat(last_human_action)
+            except (TypeError, ValueError):
+                game.last_human_action_time = None
 
         # Keep table lifecycle aligned with restored hand lifecycle.
         if game.engine.phase.value in {'pre_flop', 'flop', 'turn', 'river', 'showdown'}:

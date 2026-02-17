@@ -31,7 +31,7 @@ from .redis_manager import redis_manager
 from .connection import get_async_db_session, AsyncSessionLocal
 from .models import (
     GameSession, GamePlayer, GameHistory, ChatMessage,
-    UserLedger, GameStatus, PlayerStatus,
+    UserLedger, GameStatus, PlayerStatus, GameTypeInt,
     get_chat_messages_by_session
 )
 
@@ -92,10 +92,20 @@ class PersistenceManager:
                     logger.warning(f"Game session already exists: {game_id}")
                     return True
                 
+                # Determine game type enum
+                game_type_enum_val = None
+                try:
+                    # Try to map string to enum (assuming case-insensitive match to member name)
+                    # game_type is usually lowercase 'texas' or 'werewolf'
+                    game_type_enum_val = GameTypeInt[game_type.upper()].value
+                except (KeyError, AttributeError):
+                    pass
+
                 # Create new game session
                 game_session = GameSession(
                     id=game_id,
                     game_type=game_type,
+                    game_type_id=game_type_enum_val,
                     status=GameStatus.WAITING.value,
                     entry_fee=entry_fee,
                     prize_pool=Decimal("0"),

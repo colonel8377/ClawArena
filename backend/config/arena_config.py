@@ -11,6 +11,8 @@ import warnings
 from decimal import Decimal
 
 
+from backend.utils import log
+
 def _env_bool(name: str, default: bool) -> bool:
     """Parse common boolean env values with a safe fallback."""
     raw = os.getenv(name)
@@ -39,9 +41,8 @@ LOCAL_DEBUG_MODE = _env_bool('LOCAL_DEBUG_MODE', False)
 
 # Hard override: never allow debug mode in detected production environments
 if LOCAL_DEBUG_MODE and _detect_production_environment():
-    print("CRITICAL: LOCAL_DEBUG_MODE=true in a production environment. Forcing OFF.")
+    log.error("CRITICAL: LOCAL_DEBUG_MODE=true in a production environment. Forcing OFF.")
     LOCAL_DEBUG_MODE = False
-DEV_MODE = _env_bool('DEV_MODE', False)
 
 # Local debug mode balance (unlimited funds for testing)
 LOCAL_DEBUG_BALANCE = Decimal(os.getenv('LOCAL_DEBUG_BALANCE', '999999999'))
@@ -56,13 +57,10 @@ SERVER_PRIVATE_KEY = os.getenv(
 
 
 # Game economy configuration
-# 德州扑克筹码/Token比例：1 Token = 10 Chips，让用户感觉更值钱
 TEXAS_CHIP_TO_TOKEN_RATIO = Decimal("0.1")  # 1 Token 换 10 Chips
 TEXAS_DEFAULT_BUY_IN_CHIPS = 1000  # 默认买入1000筹码
 TEXAS_DEFAULT_BUY_IN_TOKENS = TEXAS_DEFAULT_BUY_IN_CHIPS * TEXAS_CHIP_TO_TOKEN_RATIO  # = 100 Tokens
 
-# 狼人杀奖金倍数：奖金池 = 入场费总和 × 奖金倍数
-# 平台不抽成/不抽水：默认按 1.0 全额返还给胜利阵营
 WEREWOLF_PRIZE_MULTIPLIER = Decimal("1.0")
 
 # 提现配置
@@ -75,7 +73,7 @@ GAS_COST_ESTIMATE_LOW = Decimal("0.001")    # 低拥堵Gas费估算
 WITHDRAWAL_PROFITABILITY_RATIO = Decimal("3.0")  # 提现收益至少是Gas费的3倍
 
 # 每日提现额度（单服务器无上限）
-DAILY_WITHDRAWAL_LIMIT = None  # None = 无上限
+DAILY_WITHDRAWAL_LIMIT = None
 
 BOT_ALLOW_BYPASS_LOCAL = os.getenv('BOT_ALLOW_BYPASS_LOCAL', 'true').lower() == 'true'
 
@@ -94,15 +92,6 @@ def is_local_debug_mode() -> bool:
     return LOCAL_DEBUG_MODE
 
 
-def get_debug_balance() -> Decimal:
-    """
-    Get the balance for accounts in local debug mode.
-    
-    Returns:
-        The debug balance (default: 999999999)
-    """
-    return LOCAL_DEBUG_BALANCE
-
 
 # Print warning if local debug mode is enabled
 if LOCAL_DEBUG_MODE:
@@ -110,11 +99,11 @@ if LOCAL_DEBUG_MODE:
         "LOCAL DEBUG MODE ENABLED - Security features DISABLED. DO NOT USE IN PRODUCTION!",
         RuntimeWarning
     )
-    print("=" * 70)
-    print("⚠️  LOCAL DEBUG MODE ENABLED ⚠️")
-    print("=" * 70)
-    print("- Blockchain connections are DISABLED")
-    print("- Authentication is SIMPLIFIED (no signature verification)")
-    print("- All accounts have UNLIMITED funds")
-    print("- DO NOT USE IN PRODUCTION!")
-    print("=" * 70)
+    log.info("=" * 70)
+    log.warning("⚠️  LOCAL DEBUG MODE ENABLED ⚠️")
+    log.info("=" * 70)
+    log.info("- Blockchain connections are DISABLED")
+    log.info("- Authentication is SIMPLIFIED (no signature verification)")
+    log.info("- All accounts have UNLIMITED funds")
+    log.info("- DO NOT USE IN PRODUCTION!")
+    log.info("=" * 70)

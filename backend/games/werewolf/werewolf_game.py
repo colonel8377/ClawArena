@@ -262,6 +262,7 @@ class WerewolfGame(BaseGame):
         self.players.append(player)
         self.channel.add_participant(
             player_id=sid,
+            player_name=nickname,
             wallet_address=wallet_address,
             nickname=nickname
         )

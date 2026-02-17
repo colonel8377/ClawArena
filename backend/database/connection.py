@@ -24,6 +24,8 @@ from contextlib import contextmanager, asynccontextmanager
 from .models import Base
 from backend.config.db_config import SYNC_DATABASE_URL, ASYNC_DATABASE_URL, DB_CONNECT_RETRIES, DB_CONNECT_RETRY_DELAY
 
+from backend.utils import log
+
 # Create sync engine with connection pooling (for backwards compatibility)
 engine = create_engine(
     SYNC_DATABASE_URL,
@@ -80,14 +82,14 @@ def wait_for_db(max_retries: int = DB_CONNECT_RETRIES, retry_delay: int = DB_CON
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            print(f"✓ Database connection established (attempt {attempt})")
+            log.info(f"✓ Database connection established (attempt {attempt})")
             return True
         except OperationalError as e:
             if attempt < max_retries:
-                print(f"⏳ Waiting for database... (attempt {attempt}/{max_retries})")
+                log.info(f"⏳ Waiting for database... (attempt {attempt}/{max_retries})")
                 time.sleep(retry_delay)
             else:
-                print(f"✗ Database connection failed after {max_retries} attempts: {e}")
+                log.error(f"✗ Database connection failed after {max_retries} attempts: {e}")
                 return False
     # This should never be reached, but satisfies type checker
     return False
@@ -111,10 +113,10 @@ def init_db(retry: bool = True) -> bool:
     
     try:
         Base.metadata.create_all(bind=engine)
-        print("✓ Database tables created successfully")
+        log.info("✓ Database tables created successfully")
         return True
     except Exception as e:
-        print(f"✗ Database initialization failed: {e}")
+        log.error(f"✗ Database initialization failed: {e}")
         return False
 
 
@@ -137,14 +139,14 @@ async def async_wait_for_db(max_retries: int = DB_CONNECT_RETRIES, retry_delay: 
         try:
             async with async_engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
-            print(f"✓ Database connection established (attempt {attempt})")
+            log.info(f"✓ Database connection established (attempt {attempt})")
             return True
         except OperationalError as e:
             if attempt < max_retries:
-                print(f"⏳ Waiting for database... (attempt {attempt}/{max_retries})")
+                log.info(f"⏳ Waiting for database... (attempt {attempt}/{max_retries})")
                 await asyncio.sleep(retry_delay)
             else:
-                print(f"✗ Database connection failed after {max_retries} attempts: {e}")
+                log.error(f"✗ Database connection failed after {max_retries} attempts: {e}")
                 return False
     # This should never be reached, but satisfies type checker
     return False
@@ -173,10 +175,10 @@ async def async_init_db(retry: bool = True) -> bool:
     try:
         async with async_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        print("✓ Database tables created successfully (async)")
+        log.info("✓ Database tables created successfully (async)")
         return True
     except Exception as e:
-        print(f"✗ Async database initialization failed: {e}")
+        log.error(f"✗ Async database initialization failed: {e}")
         return False
 
 

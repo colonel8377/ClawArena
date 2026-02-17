@@ -28,7 +28,7 @@ const getPlayerHue = (key: string) => (hashString(key) * 47) % 360;
 const getRoleName = (role?: WerewolfPlayer['role']) => {
   if (!role) return undefined;
   if (typeof role === 'string') return role;
-  return role.role || role.name || role.type;
+  return role.role;
 };
 
 export default function WerewolfGamePage() {

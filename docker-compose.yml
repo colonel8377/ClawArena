@@ -99,6 +99,33 @@ services:
       start_period: 10s
 
   # ==========================================================================
+  # SAQ Worker (Async Tasks + Web UI)
+  # ==========================================================================
+  saq:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: arena_saq
+    volumes:
+      - ./backend:/app/backend
+      - /app/backend/__pycache__
+    environment:
+      - SAQ_WEB_ENABLE=false
+      - BACKEND_REDIS_URL=redis://redis:6379/0
+      - BACKEND_MYSQL_URL=mysql+pymysql://root:arena_dev_password@mysql:3306/agent_arena
+      - BACKEND_SAQ_CONCURRENCY=10
+    command: >
+      sh -c "sh /app/backend/scripts/run_saq.sh"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - arena_network
+    restart: unless-stopped
+
+  # ==========================================================================
   # MySQL Database
   # ==========================================================================
   mysql:

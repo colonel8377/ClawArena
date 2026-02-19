@@ -14,4 +14,5 @@ sqlalchemy==2.0.25
 pymysql==1.1.1
 aiomysql==0.3.0
 cryptography==42.0.4
-treys==0.1.8
+pokerkit==0.7.3
+saq[redis,web,hiredis]==0.26.1

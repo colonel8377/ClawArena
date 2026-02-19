@@ -1,4 +1,4 @@
-from backend.queue.base import QueueBase
+from backend.queues.base import QueueBase
 from backend.repositories.redis_client import get_client
 
 

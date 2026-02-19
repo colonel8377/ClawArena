@@ -6,14 +6,20 @@ interface WebGLDebugRendererInfo {
 type BotTokenResponse = {
   token: string;
   expires_in: number;
+  agent_id?: number;
+  agent_name?: string;
+  reward_granted?: boolean;
+  reward_amount?: number;
   message?: string;
   error?: string;
 };
 
 const BOT_TOKEN_KEY = 'aga-bot-token';
+const BOT_TOKEN_EXP_KEY = 'aga-bot-token-exp';
 const BOT_FP_KEY = 'aga-bot-fp';
 const PLAYER_ID_KEY = 'aga-player-id';
 const LOGIN_SECRET_KEY = 'aga-login-secret';
+const AGENT_NAME_KEY = 'aga-agent-name';
 
 let readyPromise: Promise<void> | null = null;
 let readyResolve: (() => void) | null = null;
@@ -126,18 +132,26 @@ export const getBotToken = (): string | null => {
   return window.localStorage.getItem(BOT_TOKEN_KEY);
 };
 
-export const setBotToken = (token: string) => {
+export const setBotToken = (token: string, expiresIn?: number) => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(BOT_TOKEN_KEY, token);
+  if (expiresIn && expiresIn > 0) {
+    window.localStorage.setItem(BOT_TOKEN_EXP_KEY, String(Date.now() + expiresIn * 1000));
+  }
 };
 
 const getEnvPlayerId = (): string | null => {
-  const value = process.env.NEXT_PUBLIC_AGENT_PLAYER_ID?.trim();
+  const value = process.env.NEXT_PUBLIC_AGENT_ID?.trim() || process.env.NEXT_PUBLIC_AGENT_PLAYER_ID?.trim();
   return value && value.length > 0 ? value : null;
 };
 
 const getEnvLoginSecret = (): string | null => {
-  const value = process.env.NEXT_PUBLIC_AGENT_LOGIN_SECRET?.trim();
+  const value = process.env.NEXT_PUBLIC_AGENT_SECRET?.trim() || process.env.NEXT_PUBLIC_AGENT_LOGIN_SECRET?.trim();
+  return value && value.length > 0 ? value : null;
+};
+
+const getEnvAgentName = (): string | null => {
+  const value = process.env.NEXT_PUBLIC_AGENT_NAME?.trim();
   return value && value.length > 0 ? value : null;
 };
 
@@ -155,6 +169,13 @@ export const getStoredLoginSecret = (): string | null => {
   return window.localStorage.getItem(LOGIN_SECRET_KEY) || getEnvLoginSecret();
 };
 
+export const getStoredAgentName = (): string | null => {
+  if (typeof window === 'undefined') {
+    return getEnvAgentName();
+  }
+  return window.localStorage.getItem(AGENT_NAME_KEY) || getEnvAgentName();
+};
+
 export const setAgentCredentials = (playerId: string, loginSecret: string) => {
   if (typeof window === 'undefined') {
     return;
@@ -163,36 +184,35 @@ export const setAgentCredentials = (playerId: string, loginSecret: string) => {
   window.localStorage.setItem(LOGIN_SECRET_KEY, loginSecret);
 };
 
+export const setAgentName = (agentName: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(AGENT_NAME_KEY, agentName);
+};
+
 export const clearAgentCredentials = () => {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(PLAYER_ID_KEY);
   window.localStorage.removeItem(LOGIN_SECRET_KEY);
-};
-
-const getTokenExpiry = (token: string): number => {
-  const parts = token.split('.');
-  if (parts.length < 2) return 0;
-  try {
-    const json = atob(parts[0].replace(/-/g, '+').replace(/_/g, '/'));
-    const payload = JSON.parse(json) as { exp?: number };
-    return payload.exp || 0;
-  } catch {
-    return 0;
-  }
+  window.localStorage.removeItem(AGENT_NAME_KEY);
 };
 
 export const hasValidToken = (): boolean => {
   const token = getBotToken();
   if (!token) return false;
-  return getTokenExpiry(token) > Math.floor(Date.now() / 1000) + 30;
+  if (typeof window === 'undefined') return true;
+  const rawExpiry = window.localStorage.getItem(BOT_TOKEN_EXP_KEY);
+  if (!rawExpiry) return true;
+  const expiryMs = Number(rawExpiry);
+  if (!Number.isFinite(expiryMs)) return true;
+  return expiryMs > Date.now() + 30 * 1000;
 };
 
 export const getBotHeaders = async (): Promise<Record<string, string>> => {
-  const fingerprint = await getFingerprint();
   const token = getBotToken();
   return {
-    'X-Fingerprint': fingerprint,
-    ...(token ? { 'X-Bot-Token': token } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 };
 
@@ -203,50 +223,43 @@ export const botFetch = async (url: string, init?: RequestInit): Promise<Respons
     ...headers,
   };
   const res = await fetch(url, { ...init, headers: mergedHeaders });
-  if (res.status !== 403 && res.status !== 429) {
+  if (res.status !== 401 && res.status !== 403 && res.status !== 429) {
     return res;
   }
-  try {
-    const data = (await res.clone().json()) as {
-      error?: string;
-      code?: string;
-      message?: string;
-    };
-    if (data?.error === 'bot_protection' || data?.error === 'token_required' || data?.error === 'invalid_token') {
-      requestBotGate();
-      await waitForBotReady();
-      const retryHeaders = await getBotHeaders();
-      return fetch(url, { ...init, headers: { ...(init?.headers || {}), ...retryHeaders } });
-    }
-  } catch {
-    // ignore parse failures
+  const hasCredentials = !!(getStoredPlayerId() && getStoredLoginSecret());
+  if (hasCredentials) {
+    requestBotGate();
+    await waitForBotReady();
+    const retryHeaders = await getBotHeaders();
+    return fetch(url, { ...init, headers: { ...(init?.headers || {}), ...retryHeaders } });
   }
   return res;
 };
 
 export const requestToken = async (apiBase: string): Promise<BotTokenResponse> => {
-  const fingerprint = await getFingerprint();
   const player_id = getStoredPlayerId();
   const login_secret = getStoredLoginSecret();
 
   if (!player_id || !login_secret) {
-    throw new Error('Agent credentials missing. Set player_id and login_secret before requesting a bot token.');
+    throw new Error('Agent credentials missing. Set agent_id and secret before requesting a token.');
   }
 
-  const res = await fetch(`${apiBase}/bot/token`, {
+  const res = await fetch(`${apiBase}/api/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Fingerprint': fingerprint,
     },
-    body: JSON.stringify({ fingerprint, player_id, login_secret }),
+    body: JSON.stringify({ agent_id: Number(player_id), secret: login_secret }),
   });
   if (!res.ok) {
     throw new Error(`Token request failed (${res.status})`);
   }
-  const data = (await res.json()) as BotTokenResponse;
-  if (!data.token) {
-    throw new Error(data.error || 'Token response missing token');
+  const payload = (await res.json()) as { ok?: boolean; data?: BotTokenResponse; message?: string };
+  if (!payload.ok || !payload.data?.token) {
+    throw new Error(payload.message || 'Token response missing token');
   }
-  return data;
+  if (payload.data.agent_name) {
+    setAgentName(payload.data.agent_name);
+  }
+  return payload.data;
 };

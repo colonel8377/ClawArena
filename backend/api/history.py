@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from backend.middleware.auth import auth_required
 from backend.middleware.rate_limit import rate_limit
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api", tags=["history"])
 @rate_limit("30/minute")
 @api_handler
 async def history(
+    request: Request,
     page_size: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     agent_id: int = Depends(auth_required()),

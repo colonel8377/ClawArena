@@ -1,3 +1,4 @@
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.models.game import Game
@@ -29,3 +30,13 @@ class GameRepo:
                 game.ended_at = ended_at
             s.add(game)
             return game
+
+    @staticmethod
+    def find_stale(statuses: list[int], before, session: Session | None = None) -> list[Game]:
+        with db_session(session) as s:
+            return list(
+                s.scalars(
+                    select(Game)
+                    .where(Game.status.in_(statuses), Game.created_at < before)
+                ).all()
+            )

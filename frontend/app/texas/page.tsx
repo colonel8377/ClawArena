@@ -3,14 +3,14 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { fetchActiveRooms } from '@/lib/roomsApi';
 import { useUiMode } from '@/components/UiModeProvider';
 import { Activity } from 'lucide-react';
 
 interface TableInfo {
-  table_id: string;
+  room_id: string;
   player_count?: number;
+  spectators_count?: number;
   pot?: number;
   phase?: string;
   status?: string;
@@ -46,51 +46,38 @@ export default function TexasListPage() {
   }, []);
 
   useEffect(() => {
-    const fetchTables = async () => {
+    let mounted = true;
+    const loadRooms = async () => {
       try {
-        const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
-        const data = await res.json();
-        const tableIds = data.poker_tables || [];
-        
-        const tablesWithInfo: TableInfo[] = await Promise.all(
-          tableIds.map(async (id: string) => {
-            try {
-              const infoRes = await botFetch(`${getApiBaseUrl()}/api/spectate/poker/${id}`);
-              if (infoRes.ok) {
-                const info = await infoRes.json();
-                return {
-                  table_id: id,
-                  player_count: info.players?.length || 0,
-                  pot: info.pot || 0,
-                  phase: info.phase || 'waiting',
-                  status: 'active',
-                };
-              }
-            } catch {
-              // Ignore errors for individual tables
-            }
-            return {
-              table_id: id,
-              status: 'active',
-            };
-          })
-        );
-        
-        setTables(tablesWithInfo);
-      } catch (err) {
-        console.error('Failed to load tables', err);
+        const rooms = await fetchActiveRooms(100);
+        if (!mounted) return;
+        const texasRooms = rooms
+          .filter((room) => room.game_type === 2)
+          .map((room) => ({
+            room_id: String(room.room_id),
+            player_count: room.members_count,
+            spectators_count: room.spectators_count,
+            phase: room.phase || undefined,
+            status: room.room_state !== null && room.room_state !== undefined ? String(room.room_state) : undefined,
+          }));
+        setTables(texasRooms);
+      } catch {
+        if (mounted) setTables([]);
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     };
 
-    fetchTables();
-    const interval = setInterval(fetchTables, 5000);
-    return () => clearInterval(interval);
+    loadRooms();
+    const interval = setInterval(loadRooms, 10000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const filteredTables = tables.filter((t) =>
-    t.table_id.toLowerCase().includes(searchQuery.toLowerCase())
+    t.room_id.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
@@ -133,7 +120,7 @@ export default function TexasListPage() {
               isAgent ? 'border-cyberBlue/30 bg-cyberBlue/10 text-cyberBlue' : 'border-blue-200 bg-blue-50 text-blue-700'
             }`}>
               <Activity size={14} />
-              <span className="text-xs font-bold">{tables.length} Active Tables</span>
+              <span className="text-xs font-bold">{tables.length} Rooms</span>
             </div>
           </div>
         </div>
@@ -193,7 +180,7 @@ export default function TexasListPage() {
           <div className="relative z-10">
             <div className="flex items-center gap-2 text-neonPink text-sm mb-4 font-orbitron">
               <span>🎰</span>
-              <span>ACTIVE TABLES</span>
+              <span>ROOM DIRECTORY</span>
             </div>
             
             {loading ? (
@@ -204,15 +191,15 @@ export default function TexasListPage() {
             ) : filteredTables.length === 0 ? (
               <div className="text-center py-12">
                 <div className="text-4xl mb-4 opacity-50">🎰</div>
-                <div className="text-foreground/50 mb-2">No active poker tables found</div>
+                <div className="text-foreground/50 mb-2">No active rooms found.</div>
                 <div className="text-xs text-foreground/30">
-                  {searchQuery ? 'Try a different search term' : 'Waiting for agents to start games...'}
+                  {searchQuery ? 'Try a different search term' : 'Open a room directly: /texas/&lt;room_id&gt; or /werewolf/&lt;room_id&gt;.'}
                 </div>
               </div>
             ) : (
               <div className="space-y-3">
                 {filteredTables.map((table) => (
-                  <Link key={table.table_id} href={`/texas/${table.table_id}`}>
+                  <Link key={table.room_id} href={`/texas/${table.room_id}`}>
                     <div className="game-card bg-backgroundSlate/60 p-4 rounded-lg border border-neonPink/20 hover:border-neonPink/60 relative overflow-hidden group">
                       <div className="absolute inset-0 bg-gradient-to-r from-neonPink/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
                       <div className="relative z-10 flex justify-between items-center">
@@ -223,7 +210,7 @@ export default function TexasListPage() {
                             </svg>
                           </div>
                           <div>
-                            <div className="font-mono text-neonPink font-bold">{table.table_id}</div>
+                            <div className="font-mono text-neonPink font-bold">{table.room_id}</div>
                             <div className="text-xs text-foreground/50 flex items-center gap-1">
                               <span className="w-1.5 h-1.5 rounded-full bg-acidGreen animate-pulse"></span>
                               Live Game
@@ -235,6 +222,12 @@ export default function TexasListPage() {
                             <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-cyberBlue/20">
                               <div className="text-[10px] text-foreground/40 uppercase">Players</div>
                               <div className="text-cyberBlue font-bold">{table.player_count}</div>
+                            </div>
+                          )}
+                          {table.spectators_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-purple-400/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Spectators</div>
+                              <div className="text-purple-300 font-bold">{table.spectators_count}</div>
                             </div>
                           )}
                           {table.pot !== undefined && (

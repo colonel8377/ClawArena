@@ -1,11 +1,17 @@
 import asyncio
 import time
+from datetime import datetime, timedelta
+from decimal import Decimal
 
-from backend.config.constants import GameEventType, GameType, SocketEvent, TexasAction, TexasPhase, WerewolfAction, WerewolfPhase, WerewolfWinner
+from backend.config.constants import DEFAULT_ENTRY_FEE, GameEventType, GameStatus, GameType, SocketEvent, TexasAction, TexasPhase, WerewolfAction, WerewolfPhase, WerewolfWinner
 from backend.config.settings import get_settings
 from backend.domain.werewolf.engine import WerewolfEngine
 from backend.domain.texas.engine import TexasEngine
+from backend.repositories.db import db_session
+from backend.repositories.game_player_repo import GamePlayerRepo
+from backend.repositories.game_repo import GameRepo
 from backend.repositories.redis_repo import RedisRepo
+from backend.repositories.wallet_repo import WalletRepo
 from backend.services.event_service import EventService
 from backend.services.game_state_service import GameStateService
 from backend.services.presence_service import PresenceService
@@ -13,9 +19,10 @@ from backend.services.timer_service import TimerService
 from backend.services.texas_settlement_service import TexasSettlementService
 from backend.services.werewolf_settlement_service import WerewolfSettlementService
 from backend.services.settlement_emitter import SettlementEmitter
+from backend.utils.money import to_token
 from backend.views.response import ok
-from backend.socket.broadcast import emit_room_event
-from backend.socket.server import sio
+from backend.sockets.broadcast import emit_room_event
+from backend.sockets.server import sio
 from backend.utils.log import get_logger
 logger = get_logger(__name__)
 
@@ -52,10 +59,14 @@ class OfflineMonitorService:
     async def run_loop() -> None:
         settings = get_settings()
         interval = settings.offline_check_interval_seconds
+        tick = 0
         while True:
             try:
                 await OfflineMonitorService.check_werewolf()
                 await OfflineMonitorService.check_texas()
+                tick += 1
+                if tick % 10 == 0:
+                    await OfflineMonitorService.check_stale_games()
             except Exception as exc:
                 logger.warning("offline_monitor_error error=%s", exc)
             await asyncio.sleep(interval)
@@ -225,3 +236,35 @@ class OfflineMonitorService:
                     break
                 if idle_expired and not offline_expired:
                     break
+
+    @staticmethod
+    async def check_stale_games() -> None:
+        settings = get_settings()
+        cutoff = datetime.utcnow() - timedelta(seconds=settings.stale_game_threshold_seconds)
+        statuses = [int(GameStatus.ACTIVE), int(GameStatus.SETTLING)]
+        games = GameRepo.find_stale(statuses, before=cutoff)
+        if not games:
+            return
+
+        for game in games:
+            try:
+                players = GamePlayerRepo.list_by_game(int(game.id))
+                if not players:
+                    GameRepo.update_status(int(game.id), int(GameStatus.ENDED), ended_at=datetime.utcnow())
+                    continue
+
+                entry_fee = to_token(Decimal(game.prize_pool_tokens or 0) / len(players))
+                if entry_fee <= 0:
+                    entry_fee = to_token(DEFAULT_ENTRY_FEE)
+
+                with db_session() as session:
+                    for player in players:
+                        WalletRepo.unlock_tokens(int(player.agent_id), entry_fee, session=session)
+                    GameRepo.update_status(int(game.id), int(GameStatus.ENDED), ended_at=datetime.utcnow(), session=session)
+
+                logger.warning(
+                    "stale_game_refunded game_id=%s players=%s entry_fee=%s",
+                    game.id, len(players), entry_fee,
+                )
+            except Exception as exc:
+                logger.error("stale_game_refund_failed game_id=%s error=%s", game.id, exc)

@@ -9,8 +9,8 @@ import { useUiMode } from '@/components/UiModeProvider';
 import DayNightCycle from '@/components/werewolf/DayNightCycle';
 import GodViewBoard from '@/components/werewolf/GodViewBoard';
 import InteractionGraph from '@/components/werewolf/InteractionGraph';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { mapWerewolfRoomState, normalizeWerewolfPhase } from '@/lib/stateAdapters';
+import { fetchRoomChatHistory } from '@/lib/roomsApi';
 import { motion } from 'framer-motion';
 import { useAnchoredCenter } from '@/hooks/useAnchoredCenter';
 
@@ -32,7 +32,7 @@ const getRoleName = (role?: WerewolfPlayer['role']) => {
 };
 
 export default function WerewolfGamePage() {
-  const { gameId } = useParams() as { gameId: string };
+  const { gameId: roomId } = useParams() as { gameId: string };
   const { readingMode } = useUiMode();
   const isAgent = readingMode === 'agent';
   const { center: tableCenter, stageRef, anchorRef: lobsterAnchorRef } = useAnchoredCenter();
@@ -54,8 +54,14 @@ export default function WerewolfGamePage() {
   const prevPhase = React.useRef<string | undefined>(undefined);
   const prevPlayers = React.useRef<WerewolfPlayer[] | undefined>(undefined);
   const prevEliminated = React.useRef<string | undefined>(undefined);
+  const prevDayEliminated = React.useRef<string | undefined>(undefined);
+  const prevVoteCounts = React.useRef<string | undefined>(undefined);
+  const prevOfflineDeaths = React.useRef<string | undefined>(undefined);
   const prevWinners = React.useRef<string[] | undefined>(undefined);
   const loggedDeathSids = React.useRef<Set<string>>(new Set());
+  const systemLogKeys = React.useRef<Set<string>>(new Set());
+  const [phaseRemainingMs, setPhaseRemainingMs] = React.useState<number | null>(null);
+  const pendingHistory = React.useRef<ChatMessage[] | null>(null);
 
   React.useEffect(() => {
     if (!gameState) return;
@@ -63,16 +69,22 @@ export default function WerewolfGamePage() {
 
     const newLogs: ChatMessage[] = [];
     const now = new Date().toISOString();
+    const addSystemLog = (key: string, message: string, sid: string) => {
+      if (systemLogKeys.current.has(key)) return;
+      systemLogKeys.current.add(key);
+      newLogs.push({
+        nickname: 'SYSTEM',
+        message,
+        timestamp: now,
+        sid,
+        isSystem: true
+      });
+    };
 
     // Check Phase Change
     if (prevPhase.current && prevPhase.current !== gameState.phase) {
-      newLogs.push({
-        nickname: 'SYSTEM',
-        message: `--- Phase: ${gameState.phase.replace(/_/g, ' ')} ---`,
-        timestamp: now,
-        sid: 'system-phase',
-        isSystem: true
-      });
+      const phaseLabel = gameState.phase.replace(/_/g, ' ');
+      addSystemLog(`phase:${gameState.phase}`, `🕒 Phase: ${phaseLabel}`, 'system-phase');
     }
     prevPhase.current = gameState.phase;
 
@@ -87,13 +99,11 @@ export default function WerewolfGamePage() {
         else if (death.cause === 'vote') causeText = 'was voted out';
         else if (death.cause === 'hunter_shot') causeText = 'was shot by the hunter';
         const roleText = death.role_revealed ? ` (Role: ${death.role_revealed})` : '';
-        newLogs.push({
-          nickname: 'SYSTEM',
-          message: `☠️ ${death.nickname} ${causeText}${roleText}`,
-          timestamp: now,
-          sid: 'system-death',
-          isSystem: true
-        });
+        addSystemLog(
+          `death:${death.sid}:${death.cause || 'unknown'}`,
+          `☠️ ${death.nickname} ${causeText}${roleText}`,
+          'system-death'
+        );
       }
     }
 
@@ -104,40 +114,83 @@ export default function WerewolfGamePage() {
          const oldP = prevPlayers.current?.find((op) => op.sid === p.sid);
          if (oldP && oldP.is_alive && !p.is_alive) {
             loggedDeathSids.current.add(p.sid);
-            newLogs.push({
-                nickname: 'SYSTEM',
-                message: `☠️ ${p.nickname} has been eliminated!`,
-                timestamp: now,
-                sid: 'system-death',
-                isSystem: true
-            });
+            addSystemLog(
+              `death:diff:${p.sid}`,
+              `☠️ ${p.nickname} has been eliminated.`,
+              'system-death'
+            );
          }
        });
     }
     prevPlayers.current = gameState.players;
 
-    if (gameState.eliminated_last_night && gameState.eliminated_last_night !== prevEliminated.current) {
-      newLogs.push({
-        nickname: 'SYSTEM',
-        message: `☠️ ${gameState.eliminated_last_night} was eliminated last night.`,
-        timestamp: now,
-        sid: 'system-night-death',
-        isSystem: true
-      });
-      prevEliminated.current = gameState.eliminated_last_night;
+    if (gameState.eliminated_last_night && gameState.eliminated_last_night.length > 0) {
+      const key = gameState.eliminated_last_night.join(',');
+      if (key !== prevEliminated.current) {
+        addSystemLog(
+          `night:${key}`,
+          `🌙 Night deaths: ${gameState.eliminated_last_night.join(', ')}`,
+          'system-night-death'
+        );
+        prevEliminated.current = key;
+      }
+    }
+
+    if (gameState.offline_deaths && gameState.offline_deaths.length > 0) {
+      const key = gameState.offline_deaths.join(',');
+      if (key !== prevOfflineDeaths.current) {
+        gameState.offline_deaths.forEach((sid) => loggedDeathSids.current.add(sid));
+        addSystemLog(
+          `offline:${key}`,
+          `⚠️ Offline removed: ${gameState.offline_deaths.join(', ')}`,
+          'system-default'
+        );
+        prevOfflineDeaths.current = key;
+      }
+    }
+
+    if (gameState.eliminated && gameState.eliminated.length > 0) {
+      const key = gameState.eliminated.join(',');
+      if (key !== prevDayEliminated.current) {
+        gameState.eliminated.forEach((sid) => loggedDeathSids.current.add(sid));
+        const reasonText = gameState.phase_reason ? ` (reason: ${gameState.phase_reason})` : '';
+        const forcedText = gameState.phase_forced ? ' [forced]' : '';
+        addSystemLog(
+          `eliminated:${key}:${gameState.phase_reason || ''}:${gameState.phase_forced ? 'forced' : 'normal'}`,
+          `🗳️ Eliminated: ${gameState.eliminated.join(', ')}${reasonText}${forcedText}`,
+          'system-death'
+        );
+        prevDayEliminated.current = key;
+      }
+    }
+
+    if (gameState.vote_counts && Object.keys(gameState.vote_counts).length > 0) {
+      const entries = Object.entries(gameState.vote_counts)
+        .map(([target, count]) => ({ target, count: Number(count) || 0 }))
+        .sort((a, b) => b.count - a.count);
+      const key = entries.map((entry) => `${entry.target}:${entry.count}`).join('|');
+      if (key && key !== prevVoteCounts.current) {
+        const resolveName = (id: string) => {
+          const player = gameState.players.find((p) => p.sid === id);
+          return player?.nickname || `agent_${id}`;
+        };
+        const summary = entries.map((entry) => `${resolveName(entry.target)}=${entry.count}`).join(', ');
+        addSystemLog(`votes:${key}`, `🗳️ Votes: ${summary}`, 'system-default');
+        if (!gameState.eliminated || gameState.eliminated.length === 0) {
+          const reasonText = gameState.phase_reason ? ` (reason: ${gameState.phase_reason})` : '';
+          if (reasonText) {
+            addSystemLog(`no_elim:${key}:${gameState.phase_reason || ''}`, `🗳️ No elimination${reasonText}`, 'system-default');
+          }
+        }
+        prevVoteCounts.current = key;
+      }
     }
 
     if (gameState.winners && gameState.winners.length > 0) {
       const winnersKey = gameState.winners.join('|');
       const prevKey = prevWinners.current?.join('|');
       if (winnersKey !== prevKey) {
-        newLogs.push({
-          nickname: 'SYSTEM',
-          message: `🏆 Winners: ${gameState.winners.join(', ')}`,
-          timestamp: now,
-          sid: 'system-winners',
-          isSystem: true
-        });
+        addSystemLog(`winners:${winnersKey}`, `🏆 Winners: ${gameState.winners.join(', ')}`, 'system-winners');
         prevWinners.current = [...gameState.winners];
       }
     }
@@ -146,6 +199,79 @@ export default function WerewolfGamePage() {
       setSystemLogs(prev => [...prev, ...newLogs]);
     }
   }, [gameState]);
+
+  React.useEffect(() => {
+    if (!gameState?.timers) {
+      setPhaseRemainingMs(null);
+      return;
+    }
+    const timers = gameState.timers;
+    const speakerDeadline = Number(timers.speaker_deadline_ms ?? 0);
+    const phaseDeadline = Number(timers.phase_deadline_ms ?? 0);
+    const speakerRemaining = Number(timers.speaker_remaining_ms ?? 0);
+    const phaseRemaining = Number(timers.phase_remaining_ms ?? 0);
+
+    const compute = () => {
+      if (Number.isFinite(speakerDeadline) && speakerDeadline > 0) {
+        setPhaseRemainingMs(Math.max(0, speakerDeadline - Date.now()));
+        return;
+      }
+      if (Number.isFinite(phaseDeadline) && phaseDeadline > 0) {
+        setPhaseRemainingMs(Math.max(0, phaseDeadline - Date.now()));
+        return;
+      }
+      if (Number.isFinite(speakerRemaining) && speakerRemaining > 0) {
+        setPhaseRemainingMs(speakerRemaining);
+        return;
+      }
+      if (Number.isFinite(phaseRemaining) && phaseRemaining > 0) {
+        setPhaseRemainingMs(phaseRemaining);
+        return;
+      }
+      setPhaseRemainingMs(null);
+    };
+
+    compute();
+    const interval = setInterval(compute, 500);
+    return () => clearInterval(interval);
+  }, [gameState?.timers]);
+
+  React.useEffect(() => {
+    pendingHistory.current = null;
+    let mounted = true;
+    const loadHistory = async () => {
+      try {
+        const history = await fetchRoomChatHistory(roomId, 80);
+        if (!mounted) return;
+        const mapped = (history.items || []).map((msg) => ({
+          sid: msg.sender_id !== undefined && msg.sender_id !== null ? String(msg.sender_id) : undefined,
+          nickname: msg.sender_name || `agent_${msg.sender_id ?? 'unknown'}`,
+          message: msg.content,
+          timestamp: new Date(msg.ts_ms).toISOString(),
+          is_wolf_chat: msg.channel === 'wolf',
+        }));
+        pendingHistory.current = mapped;
+        const current = useWerewolfStore.getState().gameState;
+        if (current) {
+          const existing = current.chat_messages || [];
+          const merged = [...mapped, ...existing];
+          const seen = new Set<string>();
+          const deduped = merged.filter((item) => {
+            const key = `${item.sid || ''}|${item.timestamp || ''}|${item.message}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          setGameState({ ...current, chat_messages: deduped.slice(-200) });
+        }
+      } catch {
+      }
+    };
+    loadHistory();
+    return () => {
+      mounted = false;
+    };
+  }, [roomId, setGameState]);
 
   // Merge and sort messages
   const allMessages = React.useMemo(() => {
@@ -266,74 +392,213 @@ export default function WerewolfGamePage() {
     return () => clearTimeout(timer);
   }, [gameState?.chat_messages]); // Re-run when chat messages update
 
+  const appendChat = React.useCallback((message: ChatMessage) => {
+    const current = useWerewolfStore.getState().gameState;
+    if (!current) return;
+    const next = {
+      ...current,
+      chat_messages: [...(current.chat_messages || []), message].slice(-100),
+    };
+    setGameState(next);
+  }, [setGameState]);
+
+  const applyPhaseChange = React.useCallback((event: any) => {
+    const payload = event?.payload || {};
+    const current = useWerewolfStore.getState().gameState;
+    if (!current) return;
+    const alive = Array.isArray(payload.alive) ? payload.alive.map((id: any) => String(id)) : [];
+    const voteCountsRaw = payload.vote_counts && typeof payload.vote_counts === 'object' ? payload.vote_counts : undefined;
+    const voteCounts: Record<string, number> | undefined = voteCountsRaw
+      ? Object.entries(voteCountsRaw).reduce<Record<string, number>>((acc, [target, count]) => {
+          acc[String(target)] = Number(count) || 0;
+          return acc;
+        }, {})
+      : undefined;
+    const eliminated = Array.isArray(payload.eliminated)
+      ? payload.eliminated.map((id: any) => String(id))
+      : undefined;
+    const offlineDeaths = Array.isArray(payload.offline_deaths)
+      ? payload.offline_deaths.map((id: any) => String(id))
+      : undefined;
+    const phaseReason = payload.reason ?? payload?.meta?.reason ?? undefined;
+    const updatedPlayers = current.players.map((player) => {
+      if (!alive.length) return player;
+      return {
+        ...player,
+        is_alive: alive.includes(player.sid),
+      };
+    });
+    const phase = payload.phase ? normalizeWerewolfPhase(String(payload.phase)) : current.phase;
+    const nextState = {
+      ...current,
+      phase,
+      day_count: payload.day ?? current.day_count,
+      current_speaker: payload.current_speaker ? String(payload.current_speaker) : current.current_speaker,
+      players: updatedPlayers,
+      winners: payload.winner ? [String(payload.winner)] : current.winners,
+      timers: payload.timers ?? current.timers,
+      vote_counts: voteCounts ?? (payload.phase ? undefined : current.vote_counts),
+      eliminated: eliminated ?? (payload.phase ? undefined : current.eliminated),
+      offline_deaths: offlineDeaths ?? (payload.phase ? undefined : current.offline_deaths),
+      phase_reason: phaseReason ?? (payload.phase ? undefined : current.phase_reason),
+    };
+    setGameState(nextState);
+  }, [setGameState]);
+
+  const applyVoteUpdate = React.useCallback((event: any) => {
+    const current = useWerewolfStore.getState().gameState;
+    if (!current) return;
+    const actorId = event?.actor_id;
+    const targetId = event?.payload?.target_id;
+    if (!actorId || !targetId) return;
+    const nextVotes = { ...(current.votes || {}) };
+    nextVotes[String(actorId)] = String(targetId);
+    setGameState({ ...current, votes: nextVotes });
+  }, [setGameState]);
+
   useSpectatorSocket({
     namespace: 'werewolf',
-    tableId: gameId,
-    revealMode: true, // Always reveal for God View
+    tableId: roomId,
     events: {
-      game_state: (data) => {
-        setGameState(data);
-        setLoadStatus('ready');
+      'room:state': (data) => {
+        const mapped = mapWerewolfRoomState(data);
+        if (mapped) {
+          const history = pendingHistory.current;
+          if (history && history.length > 0) {
+            const existing = mapped.chat_messages || [];
+            const merged = [...history, ...existing];
+            const seen = new Set<string>();
+            const deduped = merged.filter((item) => {
+              const key = `${item.sid || ''}|${item.timestamp || ''}|${item.message}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+            mapped.chat_messages = deduped.slice(-200);
+            pendingHistory.current = null;
+          }
+          setGameState(mapped);
+          setLoadStatus('ready');
+        }
       },
-      werewolf_state: (data) => {
-        setGameState(data);
-        setLoadStatus('ready');
+      'room:update': (data) => {
+        if (data?.type === 'game_finish') {
+          setLoadStatus('ended');
+        }
       },
-      GAME_ABORTED: () => {
-        reset();
-        setLoadStatus('ended');
+      'ww:day:vote': (data) => {
+        applyVoteUpdate(data);
       },
-      werewolf_phase_change: (data) => {
+      'ww:phase:change': (data) => {
+        applyPhaseChange(data);
         const now = new Date().toISOString();
-        const phaseLogs: ChatMessage[] = [];
+        const payload = data?.payload || {};
+        const detailLogs: ChatMessage[] = [];
+        const state = useWerewolfStore.getState().gameState;
+        const resolveName = (id: string | number) => {
+          const sid = String(id);
+          const player = state?.players?.find((p) => p.sid === sid);
+          return player?.nickname || `agent_${sid}`;
+        };
 
-        // Log deaths from the phase change event
-        if (data.deaths && Array.isArray(data.deaths)) {
-          for (const death of data.deaths) {
-            if (loggedDeathSids.current.has(death.sid)) continue;
-            loggedDeathSids.current.add(death.sid);
-            let causeText = 'has been eliminated';
-            if (death.cause === 'wolf_kill') causeText = 'was killed by wolves';
-            else if (death.cause === 'poison') causeText = 'was poisoned by the witch';
-            else if (death.cause === 'vote') causeText = 'was voted out';
-            else if (death.cause === 'hunter_shot') causeText = 'was shot by the hunter';
-            const roleText = death.role_revealed ? ` (Role: ${death.role_revealed})` : '';
-            phaseLogs.push({
+        const deaths = Array.isArray(payload.deaths) ? payload.deaths.map((id: any) => String(id)) : [];
+        const offlineDeaths = Array.isArray(payload.offline_deaths) ? payload.offline_deaths.map((id: any) => String(id)) : [];
+        const eliminated = Array.isArray(payload.eliminated) ? payload.eliminated.map((id: any) => String(id)) : [];
+        const reason = payload.reason ?? payload?.meta?.reason ?? undefined;
+        const forced = Boolean(payload.forced);
+
+        if (deaths.length > 0) {
+          deaths.forEach((sid) => loggedDeathSids.current.add(sid));
+          detailLogs.push({
+            nickname: 'SYSTEM',
+            message: `🌙 Night deaths: ${deaths.map(resolveName).join(', ')}`,
+            timestamp: now,
+            sid: 'system-night-death',
+            isSystem: true
+          });
+        }
+
+        if (offlineDeaths.length > 0) {
+          offlineDeaths.forEach((sid) => loggedDeathSids.current.add(sid));
+          detailLogs.push({
+            nickname: 'SYSTEM',
+            message: `⚠️ Offline removed: ${offlineDeaths.map(resolveName).join(', ')}`,
+            timestamp: now,
+            sid: 'system-default',
+            isSystem: true
+          });
+        }
+
+        if (eliminated.length > 0) {
+          eliminated.forEach((sid) => loggedDeathSids.current.add(sid));
+          const reasonText = reason ? ` (reason: ${reason})` : '';
+          const forcedText = forced ? ' [forced]' : '';
+          detailLogs.push({
+            nickname: 'SYSTEM',
+            message: `🗳️ Eliminated: ${eliminated.map(resolveName).join(', ')}${reasonText}${forcedText}`,
+            timestamp: now,
+            sid: 'system-death',
+            isSystem: true
+          });
+        }
+
+        const voteCountsRaw = payload.vote_counts && typeof payload.vote_counts === 'object' ? payload.vote_counts : undefined;
+        if (voteCountsRaw) {
+          const entries = Object.entries(voteCountsRaw)
+            .map(([target, count]) => ({ target: String(target), count: Number(count) || 0 }))
+            .sort((a, b) => b.count - a.count);
+          if (entries.length > 0) {
+            const summary = entries.map((entry) => `${resolveName(entry.target)}=${entry.count}`).join(', ');
+            detailLogs.push({
               nickname: 'SYSTEM',
-              message: `☠️ ${death.nickname} ${causeText}${roleText}`,
+              message: `🗳️ Votes: ${summary}`,
               timestamp: now,
-              sid: 'system-death',
+              sid: 'system-default',
+              isSystem: true
+            });
+          }
+          if (eliminated.length === 0 && reason) {
+            detailLogs.push({
+              nickname: 'SYSTEM',
+              message: `🗳️ No elimination (reason: ${reason})`,
+              timestamp: now,
+              sid: 'system-default',
               isSystem: true
             });
           }
         }
 
-        // Log phase transition
-        if (data.phase) {
-          const dayText = data.day_count ? ` (Day ${data.day_count})` : '';
-          phaseLogs.push({
-            nickname: 'SYSTEM',
-            message: `--- Phase: ${String(data.phase).replace(/_/g, ' ')}${dayText} ---`,
-            timestamp: now,
-            sid: 'system-phase',
-            isSystem: true
-          });
+        if (detailLogs.length > 0) {
+          setSystemLogs(prev => [...prev, ...detailLogs]);
         }
-
-        // Log game over / winners
-        if (data.winners && Array.isArray(data.winners) && data.winners.length > 0) {
-          phaseLogs.push({
-            nickname: 'SYSTEM',
-            message: `🏆 Winners: ${data.winners.join(', ')}`,
-            timestamp: now,
-            sid: 'system-winners',
-            isSystem: true
-          });
-        }
-
-        if (phaseLogs.length > 0) {
-          setSystemLogs(prev => [...prev, ...phaseLogs]);
-        }
+      },
+      'ww:chat:day': (data) => {
+        const payload = data?.payload || {};
+        appendChat({
+          nickname: payload.actor_name || payload.sender_name || String(data?.actor_id || 'player'),
+          message: payload.msg || payload.content || '',
+          timestamp: new Date().toISOString(),
+          sid: String(data?.actor_id || payload.sender_id || 'player'),
+        });
+      },
+      'ww:chat:wolf': (data) => {
+        const payload = data?.payload || {};
+        appendChat({
+          nickname: payload.actor_name || payload.sender_name || String(data?.actor_id || 'player'),
+          message: payload.msg || payload.content || '',
+          timestamp: new Date().toISOString(),
+          sid: String(data?.actor_id || payload.sender_id || 'player'),
+          is_wolf_chat: true,
+        } as any);
+      },
+      'room:chat': (data) => {
+        const payload = data || {};
+        appendChat({
+          nickname: payload.sender_name || payload.actor_name || String(payload.sender_id || payload.actor_id || 'player'),
+          message: payload.content || payload.msg || '',
+          timestamp: new Date().toISOString(),
+          sid: String(payload.sender_id || payload.actor_id || 'player'),
+        });
       },
       connect: () => setConnected(true),
       disconnect: () => setConnected(false),
@@ -341,37 +606,15 @@ export default function WerewolfGamePage() {
   });
 
   React.useEffect(() => {
-    let cancelled = false;
-    const fetchSnapshot = async () => {
-      try {
-        const res = await botFetch(`${getApiBaseUrl()}/api/spectate/werewolf/${gameId}`);
-        if (cancelled) return;
-        if (res.status === 404) {
-          setLoadStatus('ended');
-          return;
-        }
-        if (!res.ok) {
-          setLoadStatus('error');
-          return;
-        }
-        const data = await res.json();
-        if (cancelled) return;
-        setGameState(data);
-        setLoadStatus('ready');
-      } catch {
-        if (!cancelled) {
-          setLoadStatus('error');
-        }
+    const timeout = setTimeout(() => {
+      if (!useWerewolfStore.getState().gameState) {
+        setLoadStatus('error');
       }
-    };
+    }, 8000);
+    return () => clearTimeout(timeout);
+  }, []);
 
-    fetchSnapshot();
-    return () => {
-      cancelled = true;
-    };
-  }, [gameId, setGameState]);
-
-  const isTerminalGame = gameState?.phase === 'finished' || gameState?.phase === 'aborted';
+  const isTerminalGame = gameState?.phase === 'finished';
 
   if (isTerminalGame) {
     return (
@@ -443,6 +686,31 @@ export default function WerewolfGamePage() {
     }`}>
            <div className="flex-1 relative">
             <DayNightCycle phase={gameState.phase} isAgent={isAgent} contentRef={stageRef}>
+              {/* Phase HUD */}
+              <div className="absolute left-0 right-0 top-8 flex flex-col items-center gap-2 z-20 pointer-events-none">
+                <motion.div
+                  key={gameState.phase}
+                  initial={{ scale: 0.9, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                >
+                  <div className={`text-center px-6 py-2 rounded-full border text-lg font-black tracking-[0.35em] uppercase ${
+                    isAgent
+                      ? 'bg-black/70 border-purple-400/30 text-purple-100 shadow-[0_12px_40px_rgba(168,85,247,0.2)]'
+                      : 'bg-white/90 border-purple-200 text-purple-700 shadow-lg'
+                  }`}>
+                    {gameState.phase.replace(/_/g, ' ')}
+                  </div>
+                </motion.div>
+                {phaseRemainingMs !== null && (
+                  <div className={`text-xs font-semibold tracking-wider px-3.5 py-1 rounded-full text-center ${
+                    isAgent
+                      ? 'text-purple-200 bg-black/60 border border-purple-400/30'
+                      : 'text-purple-700 bg-white/80 border border-purple-200'
+                  }`}>
+                    TIMER: {Math.ceil(phaseRemainingMs / 1000)}s
+                  </div>
+                )}
+              </div>
               {(() => {
                 if (!activeMessage || !gameState?.players?.length) return null;
                 const speakerIndex = gameState.players.findIndex((p) => p.sid === activeMessage.sid);

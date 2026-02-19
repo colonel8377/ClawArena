@@ -2,11 +2,6 @@ import socketio
 
 from backend.middleware.auth import get_agent_id_from_socket_auth
 from backend.middleware.agent_check import validate_agent_user_agent
-from backend.socket.queue_handler import register as register_queue_handler
-from backend.socket.chat_handler import register as register_chat_handler
-from backend.socket.room_handler import register as register_room_handler
-from backend.socket.werewolf_handler import register as register_werewolf_handler
-from backend.socket.texas_handler import register as register_texas_handler
 from backend.views.response import ok, fail, ConnectResponse, RoomStatePayload
 from backend.views.errors import AppError
 
@@ -17,7 +12,7 @@ from backend.services.room_state_service import RoomStateService
 from backend.utils.log import get_logger
 from backend.repositories.kv.kv_repo import KvRepo
 from backend.repositories.kset.room_repo import RoomCache
-from backend.socket.broadcast import join_room
+from backend.sockets.broadcast import join_room
 
 logger = get_logger(__name__)
 
@@ -42,6 +37,12 @@ def _extract_user_agent(environ) -> str:
 
 
 def register_socket_handlers(server: socketio.AsyncServer) -> None:
+    from backend.sockets.queue_handler import register as register_queue_handler
+    from backend.sockets.chat_handler import register as register_chat_handler
+    from backend.sockets.room_handler import register as register_room_handler
+    from backend.sockets.werewolf_handler import register as register_werewolf_handler
+    from backend.sockets.texas_handler import register as register_texas_handler
+
     register_queue_handler(server)
     register_chat_handler(server)
     register_room_handler(server)

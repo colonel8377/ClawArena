@@ -9,8 +9,8 @@ import PlayerSeat from '@/components/texas/PlayerSeat';
 import CommunityCards from '@/components/texas/CommunityCards';
 import ChipStream from '@/components/texas/ChipStream';
 import ActionTimeline from '@/components/texas/ActionTimeline';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { mapTexasRoomState } from '@/lib/stateAdapters';
+import { fetchRoomChatHistory } from '@/lib/roomsApi';
 import { motion } from 'framer-motion';
 import { useAnchoredCenter } from '@/hooks/useAnchoredCenter';
 
@@ -33,6 +33,31 @@ export default function TexasTablePage() {
   const prevCurrentPlayer = React.useRef<string | undefined>(undefined);
   const [activeSpeakerSid, setActiveSpeakerSid] = React.useState<string | undefined>(undefined);
   const activeSpeakerTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [turnRemainingMs, setTurnRemainingMs] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!gameState?.timers) {
+      setTurnRemainingMs(null);
+      return;
+    }
+    const timers = gameState.timers;
+    const deadline = Number(timers.turn_deadline_ms ?? 0);
+    const initial = Number(timers.turn_remaining_ms ?? 0);
+    const compute = () => {
+      if (Number.isFinite(deadline) && deadline > 0) {
+        setTurnRemainingMs(Math.max(0, deadline - Date.now()));
+        return;
+      }
+      if (Number.isFinite(initial) && initial > 0) {
+        setTurnRemainingMs(initial);
+        return;
+      }
+      setTurnRemainingMs(null);
+    };
+    compute();
+    const interval = setInterval(compute, 500);
+    return () => clearInterval(interval);
+  }, [gameState?.timers]);
 
   React.useEffect(() => {
     // Prevent stale cross-table state from rendering while new snapshot loads.
@@ -40,68 +65,139 @@ export default function TexasTablePage() {
     setLoadStatus('loading');
   }, [tableId, reset]);
 
+  React.useEffect(() => {
+    let mounted = true;
+    const loadHistory = async () => {
+      try {
+        const history = await fetchRoomChatHistory(tableId, 80);
+        if (!mounted) return;
+        const items = (history.items || []).slice().sort((a, b) => a.ts_ms - b.ts_ms);
+        items.forEach((msg) => {
+          const sender = msg.sender_name || `agent_${msg.sender_id ?? 'unknown'}`;
+          addLog(`${sender} [CHAT] ${msg.content}`);
+        });
+      } catch {
+      }
+    };
+    loadHistory();
+    return () => {
+      mounted = false;
+    };
+  }, [tableId, addLog]);
+
+  const applyPhaseChange = React.useCallback((event: any) => {
+    const payload = event?.payload || {};
+    const current = useTexasStore.getState().gameState;
+    if (!current) return;
+    const stacks = payload.stacks || {};
+    const bets = payload.bets || {};
+    const updatedPlayers = current.players.map((player) => {
+      const id = Number(player.sid);
+      const chips = Number(stacks[id] ?? player.chips);
+      const currentBet = Number(bets[id] ?? player.current_bet ?? 0);
+      return {
+        ...player,
+        chips,
+        current_bet: currentBet,
+      };
+    });
+    const currentBet = Math.max(0, ...Object.values(bets).map((value) => Number(value)));
+    setGameState({
+      ...current,
+      phase: payload.phase || current.phase,
+      pot: payload.pot ?? current.pot,
+      community_cards: payload.board || current.community_cards,
+      current_bet: Number.isFinite(currentBet) ? currentBet : current.current_bet,
+      current_player: payload.actor_id ? String(payload.actor_id) : current.current_player,
+      hand_number: payload.hand_index ?? current.hand_number,
+      timers: payload.timers ?? current.timers,
+      winners: Array.isArray(payload.winner_ids)
+        ? payload.winner_ids.map((id: any) => String(id))
+        : (payload.winner_id ? [String(payload.winner_id)] : current.winners),
+      players: updatedPlayers,
+    });
+  }, [setGameState]);
+
+  const logTexasAction = React.useCallback((actionLabel: string, event: any) => {
+    const actorId = event?.actor_id ? String(event.actor_id) : '';
+    const amount = event?.payload?.amount;
+    const msg = event?.payload?.msg;
+    const current = useTexasStore.getState().gameState;
+    const actorName = current?.players.find((p) => p.sid === actorId)?.nickname || actorId || 'player';
+    const parts = [`🎲 ${actorName} ${actionLabel}`];
+    if (amount !== undefined) parts.push(String(amount));
+    if (msg) parts.push(`(${msg})`);
+    addLog(parts.join(' '));
+  }, [addLog]);
+
+  const logTexasChat = React.useCallback((data: any) => {
+    const sender = data?.sender_name || data?.actor_name || String(data?.sender_id || data?.actor_id || 'player');
+    const content = data?.content || data?.msg;
+    if (!content) return;
+    addLog(`💬 ${sender}: ${content}`);
+  }, [addLog]);
+
   useSpectatorSocket({
     namespace: 'texas',
     tableId,
-    revealMode: readingMode === 'human',
     events: {
-      game_state: (data) => {
-        setGameState(data);
-        setLoadStatus('ready');
+      'room:state': (data) => {
+        const mapped = mapTexasRoomState(data);
+        if (mapped) {
+          setGameState(mapped);
+          setLoadStatus('ready');
+        }
       },
-      TABLE_ABORTED: () => {
-        reset();
+      'room:update': (data) => {
+        if (data?.type === 'game_finish') {
+          setLoadStatus('ended');
+        }
+      },
+      'tx:phase:change': applyPhaseChange,
+      'tx:bet': (data) => logTexasAction('bet', data),
+      'tx:call': (data) => logTexasAction('call', data),
+      'tx:raise': (data) => logTexasAction('raise', data),
+      'tx:check': (data) => logTexasAction('check', data),
+      'tx:fold': (data) => logTexasAction('fold', data),
+      'tx:all_in': (data) => logTexasAction('all-in', data),
+      'tx:vote_end': (data) => logTexasAction('vote_end', data),
+      'room:chat': (data) => logTexasChat(data),
+      'tx:settlement': (data) => {
+        const payouts = data?.payouts || {};
+        const winners = Object.keys(payouts).length > 0 ? Object.keys(payouts) : undefined;
+        if (winners) {
+          const current = useTexasStore.getState().gameState;
+          if (current) {
+            setGameState({ ...current, winners });
+          }
+        }
         setLoadStatus('ended');
       },
       connect: () => setConnected(true),
       disconnect: () => setConnected(false),
-      texas_action: (data) => addLog(`${data.nickname} ${data.action} ${data.amount || ''}`),
-      hand_winner: (data) => addLog(`Winner: ${data.winners.join(', ')} (Pot: ${data.amount})`)
     }
   });
 
   React.useEffect(() => {
-    let cancelled = false;
-    const fetchSnapshot = async () => {
-      try {
-        const res = await botFetch(`${getApiBaseUrl()}/api/spectate/poker/${tableId}`);
-        if (cancelled) return;
-        if (res.status === 404) {
-          setLoadStatus('ended');
-          return;
-        }
-        if (!res.ok) {
-          setLoadStatus('error');
-          return;
-        }
-        const data = await res.json();
-        if (cancelled) return;
-        setGameState(data);
-        setLoadStatus('ready');
-      } catch {
-        if (!cancelled) {
-          setLoadStatus('error');
-        }
+    const timeout = setTimeout(() => {
+      if (!useTexasStore.getState().gameState) {
+        setLoadStatus('error');
       }
-    };
+    }, 8000);
+    return () => clearTimeout(timeout);
+  }, []);
 
-    fetchSnapshot();
-    return () => {
-      cancelled = true;
-    };
-  }, [tableId, setGameState]);
-
-  const isTerminalTable = gameState?.phase === 'finished' || gameState?.phase === 'aborted';
+  const isTerminalTable = gameState?.phase === 'finished';
 
   React.useEffect(() => {
     if (!gameState) return;
     if (prevPhase.current && prevPhase.current !== gameState.phase) {
-      addLog(`PHASE: ${gameState.phase.toUpperCase()}`);
+      addLog(`🕒 Phase: ${gameState.phase.replace(/_/g, ' ')}`);
     }
     prevPhase.current = gameState.phase;
     if (gameState.current_player && prevCurrentPlayer.current !== gameState.current_player) {
       const current = gameState.players.find((p) => p.sid === gameState.current_player);
-      addLog(`TURN: ${current?.nickname || gameState.current_player}`);
+      addLog(`🎯 Turn: ${current?.nickname || gameState.current_player}`);
       prevCurrentPlayer.current = gameState.current_player;
     }
   }, [gameState, addLog]);
@@ -246,6 +342,15 @@ export default function TexasTablePage() {
             }`}>
               {gameState.phase}
             </div>
+            {turnRemainingMs !== null && (
+              <div className={`mt-2 text-xs font-semibold tracking-wider px-3.5 py-1 rounded-full text-center ${
+                isAgent
+                  ? 'text-emerald-200 bg-black/60 border border-emerald-400/30'
+                  : 'text-emerald-700 bg-white/80 border border-emerald-200'
+              }`}>
+                TURN: {Math.ceil(turnRemainingMs / 1000)}s
+              </div>
+            )}
           </motion.div>
         </div>
 

@@ -1,5 +1,6 @@
 from backend.config.settings import get_settings
-from backend.repositories.kv_backend import KvBackend
+from backend.repositories.kv.kv_backend import KvBackend
+
 from backend.repositories.kv.redis_kv import RedisKvBackend
 from backend.repositories.kv.dict_kv import DictKvBackend
 

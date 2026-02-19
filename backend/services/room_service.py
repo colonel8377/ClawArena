@@ -84,7 +84,7 @@ class RoomService:
                 await GameActionService.handle_leave(int(room_id), int(agent_id))
             except Exception as exc:
                 logger.warning("leave_engine_sync_failed room_id=%s agent_id=%s error=%s", room_id, agent_id, exc)
-                from backend.socket.server import sio
+                from backend.sockets.server import sio
 
                 sio.start_background_task(GameActionService.handle_leave_async, int(room_id), int(agent_id))
 
@@ -113,7 +113,7 @@ class RoomService:
         ts_ms = await EventService.log_room_event(room_id, update_type, payload)
         payload["ts_ms"] = ts_ms
         update_payload = RoomUpdatePayload.model_validate(payload).model_dump()
-        from backend.socket.broadcast import emit_room_event
-        from backend.socket.server import sio
+        from backend.sockets.broadcast import emit_room_event
+        from backend.sockets.server import sio
 
         await emit_room_event(sio, room_id, SocketEvent.ROOM_UPDATE, ok(update_payload), private=False)

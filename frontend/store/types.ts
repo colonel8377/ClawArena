@@ -23,6 +23,7 @@ export interface TexasGameState {
   chat_history?: ChatMessage[];
   hand_number?: number;
   winners?: string[];
+  timers?: Record<string, number>;
 }
 
 export interface WerewolfPlayer {
@@ -41,14 +42,20 @@ export interface WerewolfGameState {
   day_count: number;
   players: WerewolfPlayer[];
   last_action?: string;
-  eliminated_last_night?: string;
+  eliminated_last_night?: string[];
   votes?: Record<string, string>; // voter_sid -> target_sid
+  vote_counts?: Record<string, number>; // target_sid -> count
+  eliminated?: string[];
+  phase_reason?: string;
+  phase_forced?: boolean;
+  offline_deaths?: string[];
   chat_messages?: ChatMessage[];
   wolf_chat?: ChatMessage[];
   current_speaker?: string;
   time_remaining?: number;
   winners?: string[];
   deaths?: Array<{ sid: string; nickname: string; cause: string; role_revealed?: string }>;
+  timers?: Record<string, number>;
 }
 
 export interface ChatMessage {

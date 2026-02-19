@@ -1,7 +1,7 @@
 import time
 from typing import Optional
 
-from backend.repositories.kv_backend import KvBackend
+from backend.repositories.kv.kv_backend import KvBackend
 
 
 class DictKvBackend(KvBackend):

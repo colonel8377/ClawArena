@@ -1,17 +1,18 @@
-from backend.services.room_service import RoomService
 from backend.services.room_state_service import RoomStateService
 from backend.middleware.decorators import socket_handler
 from backend.views.requests import RoomJoinRequest
 from backend.config.constants import RoomRole, SocketEvent
-from backend.socket.guards import socket_rate_limit, socket_require_agent, socket_validate, validate_response
+from backend.sockets.guards import socket_rate_limit, socket_require_agent, socket_validate, validate_response
 from backend.views.response import RoomJoinResponse, RoomLeaveResponse, RoomStatePayload, RoomUpdatePayload, ok
-from backend.socket.broadcast import join_room, leave_room, emit_room_event
+from backend.sockets.broadcast import join_room, leave_room, emit_room_event
 from backend.services.event_service import EventService
 from backend.repositories.redis_repo import RedisRepo
 from backend.repositories.kset.room_repo import RoomCache
 
 
 def register(server):
+    from backend.services.room_service import RoomService
+
     @server.on(SocketEvent.ROOM_JOIN)
     @socket_validate(RoomJoinRequest)
     @socket_require_agent(server)

@@ -1,4 +1,4 @@
-from backend.repositories.kv_backend import KvBackend
+from backend.repositories.kv.kv_backend import KvBackend
 from backend.repositories.redis_client import get_client
 
 

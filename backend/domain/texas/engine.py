@@ -57,6 +57,8 @@ class TexasEngine(GameEngine):
             "board": self._board_cards(),
             "hole_cards": self._hole_cards(),
             "pot": int(self._state.total_pot_amount) if self._state else 0,
+            "small_blind": int(self.SMALL_BLIND),
+            "big_blind": int(self.BIG_BLIND),
             "stacks": dict(self._stacks),
             "bets": self._bet_map(),
             "statuses": self._status_map(),
@@ -91,7 +93,7 @@ class TexasEngine(GameEngine):
 
     def dump_state(self) -> dict[str, Any]:
         state = self.get_state()
-        return {
+        payload = {
             "game_type": int(GameType.TEXAS),
             "game_id": self.game_id,
             "room_id": self.room_id,
@@ -106,6 +108,9 @@ class TexasEngine(GameEngine):
             "end_votes": self._end_votes,
             "left_players": list(self._left_players),
         }
+        if self._phase == TexasPhase.FINISHED:
+            payload["winner_ids"] = self._winner_ids()
+        return payload
 
     @classmethod
     def from_state(cls, state: dict[str, Any]) -> "TexasEngine":
@@ -314,7 +319,7 @@ class TexasEngine(GameEngine):
         active = [agent_id for agent_id in self._active_ids()]
         if len(active) <= 1:
             self._phase = TexasPhase.FINISHED
-            events.append(self._phase_event(self._phase_payload({"winner_id": active[0] if active else None})))
+            events.append(self._phase_event(self._phase_payload({"winner_ids": active})))
             return
         self._hand_index += 1
         self._hand_seed = self._derive_hand_seed(self._hand_index)
@@ -382,12 +387,24 @@ class TexasEngine(GameEngine):
             "actor_id": self._actor_id(),
             "board": self._board_cards(),
             "pot": int(self._state.total_pot_amount) if self._state else 0,
+            "small_blind": int(self.SMALL_BLIND),
+            "big_blind": int(self.BIG_BLIND),
             "stacks": dict(self._stacks),
             "bets": self._bet_map(),
         }
+        if self._phase == TexasPhase.FINISHED:
+            payload["winner_ids"] = self._winner_ids()
         if extra:
             payload.update(extra)
         return payload
+
+    def _winner_ids(self) -> list[int]:
+        if not self._stacks:
+            return []
+        max_stack = max(self._stacks.values())
+        if max_stack is None:
+            return []
+        return sorted([int(pid) for pid, stack in self._stacks.items() if stack == max_stack])
 
     def _event(self, actor_id: int, action: int, payload: dict[str, Any]) -> dict[str, Any]:
         return {

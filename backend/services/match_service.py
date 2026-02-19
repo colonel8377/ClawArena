@@ -3,7 +3,7 @@ import time
 
 from backend.config.constants import GameType
 from backend.config.settings import get_settings
-from backend.queue.provider import match_queue
+from backend.queues.provider import match_queue
 
 from backend.services.game_init_service import GameInitService
 from backend.services.room_service import RoomService

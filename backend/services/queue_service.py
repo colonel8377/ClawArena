@@ -1,6 +1,6 @@
 import time
 
-from backend.queue.provider import queue_backend
+from backend.queues.provider import queue_backend
 from backend.repositories.kv.kv_repo import KvRepo
 from backend.utils.log import get_logger
 

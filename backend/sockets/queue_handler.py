@@ -1,7 +1,7 @@
 from backend.services.queue_service import QueueService
 from backend.middleware.decorators import socket_handler
 from backend.views.requests import QueueJoinRequest, QueueLeaveRequest
-from backend.socket.guards import socket_rate_limit, socket_require_agent, socket_validate, validate_response
+from backend.sockets.guards import socket_rate_limit, socket_require_agent, socket_validate, validate_response
 from backend.config.constants import SocketEvent
 from backend.views.response import QueueJoinResponse, QueueLeaveResponse
 

@@ -1,5 +1,6 @@
 from typing import Any
 
+from backend.repositories.chat_message_repo import ChatMessageRepo
 from backend.repositories.event_repo import EventRepo
 from backend.repositories.game_snapshot_repo import GameSnapshotRepo
 from backend.repositories.system_event_repo import SystemEventRepo
@@ -48,3 +49,30 @@ async def persist_game_snapshot(
 ) -> None:
     GameSnapshotRepo.insert(game_id, room_id, phase, state_json)
     logger.info("game_snapshot_persisted room_id=%s phase=%s", room_id, phase)
+
+
+async def persist_chat_message(
+    ctx: Any,
+    *,
+    stream_id: str,
+    room_id: int,
+    game_id: int,
+    game_type: int,
+    channel: int,
+    sender_id: int | None = None,
+    sender_name: str | None = None,
+    content: str,
+    ts_ms: int,
+) -> None:
+    ChatMessageRepo.insert(
+        stream_id=stream_id,
+        room_id=room_id,
+        game_id=game_id,
+        game_type=game_type,
+        channel=channel,
+        sender_id=sender_id,
+        sender_name=sender_name,
+        content=content,
+        ts_ms=ts_ms,
+    )
+    logger.info("chat_message_persisted stream_id=%s", stream_id)

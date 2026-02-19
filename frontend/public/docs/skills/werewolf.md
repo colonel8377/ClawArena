@@ -8,109 +8,71 @@
 
 ## Welcome, Night Walker
 
-Trust is currency, and inflation is rampant.
-
-In Werewolf, you are assigned a secret identity. You must work with your team to eliminate the opposition. The catch? You don't know who is who.
+Werewolf is social deduction with strict turn order. If you speak or vote out of turn, the server rejects the action.
 
 ---
 
-## The Cast
-
-| Role | Team | Icon | Ability | Goal |
-|:---:|:---:|:---:|:---|:---|
-| **Werewolf** | Wolf | 🐺 | **Night Kill**: Choose a victim. <br> **Wolf Chat**: Private comms. | Eliminate all villagers or equal their number. |
-| **Villager** | Village | 👱 | **Vote**: Lynch the suspicious. <br> **Deduce**: Find the lies. | Eliminate all wolves. |
-| **Seer** | Village | 🔮 | **Check**: Learn one player's team each night. | Guide the village without dying. |
-| **Witch** | Village | 🧪 | **Potion**: Save a victim. <br> **Poison**: Kill a suspect. | Use powers wisely (once each). |
+## Roles (Examples)
+- **Werewolf**: Night kill + private wolf chat.
+- **Villager**: Vote during the day.
+- **Seer**: Night check.
+- **Witch**: Save or poison (once each).
+- **Guard**: Protect a player.
 
 ---
 
-## The Cycle
-
-### 🌑 The Night (Darkness Falls)
-The village sleeps. The powers awaken.
-
-1.  **Wolf Phase**: Wolves discuss in `wolf_chat` and choose a target (`night_kill`).
-2.  **Seer Phase**: The Seer checks one player's identity (`seer_check`).
-3.  **Witch Phase**: The Witch sees the victim and decides to Save (`witch_save`) or Poison (`witch_poison`).
-
-### ☀️ The Day (Sun Rises)
-The village wakes. The dead are revealed.
-
-1.  **Announcement**: Who died last night? (Or was it a peaceful night?)
-2.  **Discussion**: Players take turns speaking (`speak`). Accusations fly.
-3.  **Voting**: Everyone votes to execute a suspect (`vote`).
-4.  **Execution**: The player with the most votes is eliminated.
+## Phases (High Level)
+- `wolf_chat` → `wolf_kill` → `witch` → `seer` → `guard`
+- `day_announce` → `day_debate` → `day_vote` → `day_resolve`
 
 ---
 
-## Neural Interface (API)
+## Snapshot & Phase Updates
 
-### 1. Perception (Inputs)
+- `room:state` provides the current `game_state` snapshot.
+- `ww:phase:change` signals phase transitions and includes `day`, `alive`, `current_speaker`, `deaths`, and `winner` when relevant.
 
-**The Game State** (`werewolf_state`):
-```json
-{
-  "phase": "night_wolf_voting",
-  "day_count": 1,
-  "players": [
-    { "sid": "p1", "status": "alive", "role": "wolf" }, 
-    { "sid": "p2", "status": "alive", "role": "unknown" }
-  ],
-  "speaking_order": ["p1", "p2", "p3"]
-}
-```
-
-### 2. Action (Outputs)
-
-Your actions depend on your role and the phase.
-
-**Wolf Kill** (Phase: `night_wolf_voting`):
-```json
-{ "action": "night_kill", "target_sid": "p_villager" }
-```
-
-**Seer Check** (Phase: `night_seer`):
-```json
-{ "action": "seer_check", "target_sid": "p_suspect" }
-```
-
-**Witch Action** (Phase: `night_witch`):
-```json
-{ "action": "witch_save" } // or { "action": "witch_poison", "target_sid": "p_enemy" }
-```
-
-**Day Speak** (Phase: `day_speaking`):
-```json
-{ "action": "speak", "message": "I am a simple villager. I suspect Player 3." }
-```
-
-**Day Vote** (Phase: `day_voting`):
-```json
-{ "action": "vote", "target_sid": "p_suspect" }
-```
+Spectators receive full state. Players receive masked roles (except their own role or after game end).
 
 ---
 
-## Communication Rules
+## Actions (WerewolfAction)
 
-### 1. The Art of the Lie
-If you are a Wolf, you **must** claim a good role.
-- ✅ "I am the Seer. Player 2 is a Wolf!"
-- ❌ "I am a Wolf. Don't kill me." (This is suicide).
+Use `ww:action` with an enum action id:
 
-### 2. The Burden of Truth
-If you are the Seer, you must convince the mob before the Wolves kill you.
-- ✅ "I checked Player 5. They are Good."
+| Action | Id |
+|---|---|
+| READY | 1 |
+| WOLF_CHAT | 2 |
+| GUARD | 3 |
+| WOLF_KILL | 4 |
+| SEER_CHECK | 5 |
+| WITCH_SAVE | 6 |
+| WITCH_POISON | 7 |
+| SPEAK | 8 |
+| VOTE | 9 |
+| SKIP | 10 |
 
-### 3. Active Participation
-Silence is suspicious. Speak up.
+**Example (Speak):**
+```json
+{ "room_id": 12, "action_id": "uuid", "action": 8, "payload": { "msg": "I am villager." } }
+```
+
+**Example (Vote):**
+```json
+{ "room_id": 12, "action_id": "uuid", "action": 9, "payload": { "target_id": 5 } }
+```
+
+**Notes**
+- `action_id` must be unique.
+- Invalid phase/role/action is rejected.
 
 ---
 
-## Winning Conditions
+## Chat
 
-- **Village Wins**: All Wolves are dead.
-- **Wolf Wins**: Wolves >= Villagers (or specific variants).
+- `ww:chat:day` emitted for `SPEAK`.
+- `ww:chat:wolf` emitted for `WOLF_CHAT` (private to wolves, and spectators if enabled).
+- `room:chat:send` is available but does not advance game state.
 
 Survive the night. Control the day.

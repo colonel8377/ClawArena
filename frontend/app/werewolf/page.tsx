@@ -3,14 +3,14 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { fetchActiveRooms } from '@/lib/roomsApi';
 import { useUiMode } from '@/components/UiModeProvider';
 import { Activity } from 'lucide-react';
 
 interface GameInfo {
-  game_id: string;
+  room_id: string;
   player_count?: number;
+  spectators_count?: number;
   alive_count?: number;
   phase?: string;
   day_count?: number;
@@ -54,87 +54,38 @@ export default function WerewolfListPage() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    let fetching = false;
-
-    const fetchGames = async () => {
-      if (fetching) return;
-      fetching = true;
+    let mounted = true;
+    const loadRooms = async () => {
       try {
-        const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
-        const data = await res.json();
-        const gameIds = data.werewolf_games || [];
-        
-        const gamesWithInfo: GameInfo[] = await Promise.all(
-          gameIds.map(async (id: string) => {
-            try {
-              const infoRes = await botFetch(`${getApiBaseUrl()}/api/spectate/werewolf/${id}`);
-              if (infoRes.ok) {
-                const info = await infoRes.json();
-                const players = info.players || [];
-                return {
-                  game_id: id,
-                  player_count: players.length,
-                  alive_count: players.filter((p: { is_alive: boolean }) => p.is_alive).length,
-                  phase: info.phase || 'waiting',
-                  day_count: info.day_count || 1,
-                  status: 'active',
-                };
-              }
-            } catch {
-              // Ignore errors for individual games
-            }
-            return {
-              game_id: id,
-              status: 'active',
-            };
-          })
-        );
-
-        if (!cancelled) {
-          setGames(gamesWithInfo);
-        }
-      } catch (err) {
-        console.error('Failed to load games', err);
+        const rooms = await fetchActiveRooms(100);
+        if (!mounted) return;
+        const wwRooms = rooms
+          .filter((room) => room.game_type === 1)
+          .map((room) => ({
+            room_id: String(room.room_id),
+            player_count: room.members_count,
+            spectators_count: room.spectators_count,
+            phase: room.phase || undefined,
+            status: room.room_state !== null && room.room_state !== undefined ? String(room.room_state) : undefined,
+          }));
+        setGames(wwRooms);
+      } catch {
+        if (mounted) setGames([]);
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-        fetching = false;
+        if (mounted) setLoading(false);
       }
     };
 
-    const triggerRefresh = () => {
-      void fetchGames();
-    };
-
-    void fetchGames();
-
-    // Faster polling so newly created sessions show up quickly.
-    const interval = setInterval(triggerRefresh, 2000);
-
-    // Refresh immediately when the tab is focused/visible again.
-    window.addEventListener('focus', triggerRefresh);
-    const onVisibilityChange = () => {
-      if (!document.hidden) triggerRefresh();
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
-    // If socket reconnects, fetch immediately instead of waiting for the next poll.
-    const socket = getSocket();
-    socket?.on('connect', triggerRefresh);
-
+    loadRooms();
+    const interval = setInterval(loadRooms, 10000);
     return () => {
-      cancelled = true;
+      mounted = false;
       clearInterval(interval);
-      window.removeEventListener('focus', triggerRefresh);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      socket?.off('connect', triggerRefresh);
     };
   }, []);
 
   const filteredGames = games.filter((g) =>
-    g.game_id.toLowerCase().includes(searchQuery.toLowerCase())
+    g.room_id.toLowerCase().includes(searchQuery.toLowerCase())
   );
   
   return (
@@ -177,7 +128,7 @@ export default function WerewolfListPage() {
               isAgent ? 'border-cyberBlue/30 bg-cyberBlue/10 text-cyberBlue' : 'border-purple-200 bg-purple-50 text-purple-700'
             }`}>
               <Activity size={14} />
-              <span className="text-xs font-bold">{games.length} Active Games</span>
+              <span className="text-xs font-bold">{games.length} Rooms</span>
             </div>
           </div>
         </div>
@@ -233,7 +184,7 @@ export default function WerewolfListPage() {
           <div className="relative z-10">
             <div className="flex items-center gap-2 text-cyberBlue text-sm mb-4 font-orbitron">
               <span>🌙</span>
-              <span>ACTIVE GAMES</span>
+              <span>ROOM DIRECTORY</span>
             </div>
             
             {loading ? (
@@ -244,15 +195,15 @@ export default function WerewolfListPage() {
             ) : filteredGames.length === 0 ? (
               <div className="text-center py-12">
                 <div className="text-4xl mb-4 opacity-50">🌙</div>
-                <div className="text-foreground/50 mb-2">No active werewolf games found</div>
+                <div className="text-foreground/50 mb-2">No active rooms found.</div>
                 <div className="text-xs text-foreground/30">
-                  {searchQuery ? 'Try a different search term' : 'Waiting for agents to start games...'}
+                  {searchQuery ? 'Try a different search term' : 'Open a room directly: /texas/&lt;room_id&gt; or /werewolf/&lt;room_id&gt;.'}
                 </div>
               </div>
             ) : (
               <div className="space-y-3">
                 {filteredGames.map((game) => (
-                  <Link key={game.game_id} href={`/werewolf/${game.game_id}`}>
+                  <Link key={game.room_id} href={`/werewolf/${game.room_id}`}>
                     <div className="game-card bg-backgroundSlate/60 p-4 rounded-lg border border-cyberBlue/20 hover:border-cyberBlue/60 relative overflow-hidden group">
                       <div className="absolute inset-0 bg-gradient-to-r from-cyberBlue/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
                       <div className="relative z-10 flex justify-between items-center">
@@ -261,7 +212,7 @@ export default function WerewolfListPage() {
                             <span className="text-base leading-none">🐺</span>
                           </div>
                           <div>
-                            <div className="font-mono text-cyberBlue font-bold">{game.game_id}</div>
+                            <div className="font-mono text-cyberBlue font-bold">{game.room_id}</div>
                             <div className="text-xs text-foreground/50 flex items-center gap-1">
                               <span className="w-1.5 h-1.5 rounded-full bg-acidGreen animate-pulse"></span>
                               Live Game
@@ -273,6 +224,12 @@ export default function WerewolfListPage() {
                             <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-neonPink/20">
                               <div className="text-[10px] text-foreground/40 uppercase">Players</div>
                               <div className="text-neonPink font-bold">{game.player_count}</div>
+                            </div>
+                          )}
+                          {game.spectators_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-purple-400/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Spectators</div>
+                              <div className="text-purple-300 font-bold">{game.spectators_count}</div>
                             </div>
                           )}
                           {game.alive_count !== undefined && (

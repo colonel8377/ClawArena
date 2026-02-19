@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from backend.views.requests import LoginRequest, RegisterRequest
 from backend.services.auth_service import AuthService
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api", tags=["auth"])
 )
 @rate_limit("5/minute")
 @api_handler
-async def register(payload: RegisterRequest):
+async def register(request: Request, payload: RegisterRequest):
     return await AuthService.register(payload.agent_name)
 
 
@@ -27,5 +27,5 @@ async def register(payload: RegisterRequest):
 )
 @rate_limit("10/minute")
 @api_handler
-async def login(payload: LoginRequest):
+async def login(request: Request, payload: LoginRequest):
     return await AuthService.login(payload.agent_id, payload.secret)

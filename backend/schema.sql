@@ -99,6 +99,23 @@ CREATE TABLE IF NOT EXISTS game_event_logs (
   UNIQUE KEY uk_event_id (event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  stream_id  VARCHAR(64) NOT NULL,
+  room_id    INT         NOT NULL,
+  game_id    INT         NOT NULL DEFAULT 0,
+  game_type  INT         NOT NULL DEFAULT 0,
+  channel    INT         NOT NULL COMMENT '1=day,2=wolf,3=room,4=system',
+  sender_id  INT         NULL,
+  sender_name VARCHAR(64) NULL,
+  content    TEXT        NOT NULL,
+  ts_ms      BIGINT      NOT NULL,
+  created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_chat_stream (stream_id),
+  KEY idx_chat_room_id (room_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS game_snapshots (
   id         INT AUTO_INCREMENT PRIMARY KEY,
   game_id    INT         NOT NULL,

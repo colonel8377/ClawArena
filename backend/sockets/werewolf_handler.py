@@ -2,8 +2,8 @@ from backend.config.constants import GameEventType, SocketEvent, WerewolfAction
 from backend.middleware.decorators import socket_handler
 from backend.services.event_service import EventService
 from backend.services.game_action_service import GameActionService
-from backend.socket.broadcast import emit_room_event
-from backend.socket.guards import socket_dedupe_action, socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
+from backend.sockets.broadcast import emit_room_event
+from backend.sockets.guards import socket_dedupe_action, socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
 from backend.views.requests import WerewolfActionRequest
 from backend.views.response import ok
 from backend.views.errors import DomainError

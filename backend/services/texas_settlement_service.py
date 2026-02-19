@@ -10,7 +10,6 @@ from backend.repositories.game_player_repo import GamePlayerRepo
 from backend.repositories.transaction_repo import TransactionRepo
 from backend.repositories.redis_repo import RedisRepo
 from backend.repositories.wallet_repo import WalletRepo
-from backend.services.room_service import RoomService
 from backend.utils.log import get_logger
 from backend.utils.money import TOKEN_SCALE, to_token
 from backend.utils.redis_lock import RedisLock
@@ -24,6 +23,8 @@ class TexasSettlementService:
 
     @staticmethod
     async def settle(engine) -> dict:
+        from backend.services.room_service import RoomService
+
         game_id = int(engine.game_id)
         room_id = int(engine.room_id)
         lock_key = f"lock:texas:settle:{room_id}"

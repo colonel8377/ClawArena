@@ -2,12 +2,11 @@ from backend.config.constants import ChatChannel, GameType, SocketEvent, Werewol
 from backend.middleware.decorators import socket_handler
 from backend.services.event_service import EventService
 from backend.services.game_state_service import GameStateService
-from backend.socket.broadcast import emit_room_event
-from backend.socket.guards import socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
+from backend.sockets.broadcast import emit_room_event
+from backend.sockets.guards import socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
 from backend.views.errors import DomainError
 from backend.views.requests import RoomChatRequest
 from backend.views.response import ok
-
 
 def _build_meta(state: dict, sender_id: int) -> dict:
     meta: dict = {}
@@ -82,6 +81,8 @@ def register(server):
 
         event_payload = {
             "room_id": payload.room_id,
+            "game_id": int(state.get("game_id", 0) if state else 0),
+            "game_type": int(state.get("game_type", 0) if state else 0),
             "sender_id": agent_id,
             "sender_name": agent_name,
             "channel": payload.channel,

@@ -46,6 +46,12 @@ class WerewolfEngine(GameEngine):
         self._speaker_index: int = 0
         self._votes: dict[int, int] = {}
         self._vote_timeout_count: int = 0
+        self._last_deaths: list[int] = []
+        self._last_eliminated: list[int] = []
+        self._last_vote_counts: dict[int, int] = {}
+        self._last_offline_deaths: list[int] = []
+        self._last_phase_reason: str | None = None
+        self._last_phase_forced: bool = False
         self._night_actions: dict[str, Any] = {
             WerewolfNightActionKey.WOLF_KILL: None,
             WerewolfNightActionKey.GUARD: None,
@@ -127,6 +133,12 @@ class WerewolfEngine(GameEngine):
             "night_actions": self._night_actions,
             "witch_state": self._witch_state,
             "winner": self._winner,
+            "eliminated_last_night": list(self._last_deaths),
+            "eliminated": list(self._last_eliminated),
+            "vote_counts": dict(self._last_vote_counts),
+            "offline_deaths": list(self._last_offline_deaths),
+            "phase_reason": self._last_phase_reason,
+            "phase_forced": self._last_phase_forced,
         }
 
     @classmethod
@@ -152,6 +164,14 @@ class WerewolfEngine(GameEngine):
         votes = state.get("votes", {})
         engine._votes = {int(k): int(v) for k, v in votes.items()} if isinstance(votes, dict) else {}
         engine._vote_timeout_count = int(state.get("vote_timeout_count", 0))
+        engine._last_deaths = [int(v) for v in (state.get("last_deaths") or state.get("eliminated_last_night") or [])]
+        engine._last_eliminated = [int(v) for v in (state.get("last_eliminated") or state.get("eliminated") or [])]
+        engine._last_vote_counts = {
+            int(k): int(v) for k, v in (state.get("last_vote_counts") or state.get("vote_counts") or {}).items()
+        }
+        engine._last_offline_deaths = [int(v) for v in (state.get("last_offline_deaths") or state.get("offline_deaths") or [])]
+        engine._last_phase_reason = state.get("last_phase_reason") or state.get("phase_reason")
+        engine._last_phase_forced = bool(state.get("last_phase_forced") or state.get("phase_forced") or False)
         engine._night_actions = state.get("night_actions", {}) or {
             WerewolfNightActionKey.WOLF_KILL: None,
             WerewolfNightActionKey.GUARD: None,
@@ -294,6 +314,12 @@ class WerewolfEngine(GameEngine):
                 WerewolfNightActionKey.WITCH_SAVE: False,
                 WerewolfNightActionKey.WITCH_POISON: None,
             }
+            self._last_deaths = []
+            self._last_eliminated = []
+            self._last_vote_counts = {}
+            self._last_offline_deaths = []
+            self._last_phase_reason = None
+            self._last_phase_forced = False
         if phase == WerewolfPhase.DAY_DEBATE:
             self._build_speech_order()
         if phase == WerewolfPhase.DAY_VOTE:
@@ -343,6 +369,7 @@ class WerewolfEngine(GameEngine):
 
     def _enter_day(self, events: list[dict[str, Any]]) -> None:
         deaths = self._resolve_night()
+        self._last_deaths = list(deaths)
         winner = self._check_winner()
         self._set_phase(WerewolfPhase.DAY_ANNOUNCE)
         events.append(self._phase_event(self._phase_payload({"deaths": deaths})))
@@ -427,9 +454,15 @@ class WerewolfEngine(GameEngine):
             payload["reason"] = reason
         if forced:
             payload["forced"] = True
+        self._last_eliminated = list(eliminated)
+        self._last_vote_counts = dict(counts)
+        self._last_phase_reason = reason
+        self._last_phase_forced = forced
         events.append(self._phase_event(self._phase_payload(payload)))
         if eliminated:
             self._vote_timeout_count = 0
+        else:
+            self._vote_timeout_count += 1
         winner = self._check_winner()
         if winner:
             self._winner = winner
@@ -464,6 +497,7 @@ class WerewolfEngine(GameEngine):
             self._current_speaker = None
 
         extra = {"offline_deaths": [agent_id]}
+        self._last_offline_deaths = [agent_id]
         if self._phase == WerewolfPhase.DAY_DEBATE:
             extra.update({"speech_order": self._speech_order, "current_speaker": self._current_speaker})
 
@@ -499,9 +533,8 @@ class WerewolfEngine(GameEngine):
     def apply_vote_timeout(self, max_idle_rounds: int | None = None) -> list[dict[str, Any]]:
         if self._phase != WerewolfPhase.DAY_VOTE:
             return []
-        self._vote_timeout_count += 1
         forced_target = None
-        if max_idle_rounds and self._vote_timeout_count >= max_idle_rounds:
+        if max_idle_rounds and self._vote_timeout_count + 1 >= max_idle_rounds:
             forced_target = self._select_timeout_elimination()
         events: list[dict[str, Any]] = []
         self._resolve_day_vote(events, reason="timeout", forced_target_id=forced_target)
@@ -526,6 +559,8 @@ class WerewolfEngine(GameEngine):
         return []
 
     def _check_winner(self) -> str | None:
+        if not self._alive:
+            return WerewolfWinner.WOLVES
         wolves = self._alive_wolves()
         if not wolves:
             return WerewolfWinner.VILLAGERS

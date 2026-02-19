@@ -34,11 +34,13 @@ class Settings(BaseSettings):
     werewolf_speak_timeout_seconds: int = 30
     werewolf_vote_timeout_seconds: int = 45
     werewolf_max_idle_vote_rounds: int = 2
+    chat_history_limit: int = 200
 
     saq_redis_url: str = ""
     saq_concurrency: int = 10
     match_interval_seconds: int = 1
     match_timeout_seconds: int = 10
+    stale_game_threshold_seconds: int = 7200
     kv_backend: str = "redis"
     room_cache_backend: str = "redis"
 

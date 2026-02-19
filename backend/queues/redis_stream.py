@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from backend.queue.base import QueueBase
+from backend.queues.base import QueueBase
 from backend.repositories.redis_client import get_client
 
 
@@ -21,9 +21,17 @@ class RedisStreamQueue(QueueBase):
     async def rank(self, key: str, member: str) -> int | None:
         return None
 
-    async def publish(self, stream: str, payload: dict[str, Any]) -> str:
+    async def publish(self, stream: str, payload: dict[str, Any], maxlen: int | None = None) -> str:
         client = get_client()
-        message_id = await client.xadd(stream, {"payload": json.dumps(payload)})
+        if maxlen and maxlen > 0:
+            message_id = await client.xadd(
+                stream,
+                {"payload": json.dumps(payload)},
+                maxlen=maxlen,
+                approximate=True,
+            )
+        else:
+            message_id = await client.xadd(stream, {"payload": json.dumps(payload)})
         return str(message_id)
 
     async def read(self, stream: str, last_id: str, count: int = 10, block_ms: int = 0) -> list[tuple[str, dict[str, Any]]]:

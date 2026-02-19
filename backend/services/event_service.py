@@ -2,8 +2,9 @@ import json
 import time
 import uuid
 
-from backend.config.constants import GameEventType
+from backend.config.constants import ChatChannel, GameEventType, GameType, SocketEvent
 from backend.repositories.redis_repo import RedisRepo
+from backend.services.chat_history_service import ChatHistoryService
 from backend.services.game_state_service import GameStateService
 from backend.utils.log import get_logger
 from backend.workers.saq_client import enqueue_task
@@ -22,6 +23,33 @@ class EventService:
         if payload:
             actor_id = payload.get("actor_id") or payload.get("agent_id")
             actor_name = payload.get("actor_name") or payload.get("agent_name")
+        if event_type in {SocketEvent.ROOM_CHAT, SocketEvent.WW_CHAT_DAY, SocketEvent.WW_CHAT_WOLF}:
+            try:
+                if event_type == SocketEvent.ROOM_CHAT:
+                    channel = str(payload.get("channel") or ChatChannel.ROOM)
+                    await ChatHistoryService.append(
+                        room_id=room_id,
+                        game_id=int(payload.get("game_id", 0) if payload else 0),
+                        game_type=int(payload.get("game_type", 0) if payload else 0),
+                        channel=channel,
+                        sender_id=payload.get("sender_id") if payload else None,
+                        sender_name=payload.get("sender_name") if payload else None,
+                        content=str(payload.get("content") or "") if payload else "",
+                    )
+                else:
+                    inner = payload.get("payload") if payload else {}
+                    channel = ChatChannel.WOLF if event_type == SocketEvent.WW_CHAT_WOLF else ChatChannel.DAY
+                    await ChatHistoryService.append(
+                        room_id=room_id,
+                        game_id=int(payload.get("game_id", 0) if payload else 0),
+                        game_type=int(GameType.WEREWOLF),
+                        channel=str(channel),
+                        sender_id=payload.get("actor_id") if payload else None,
+                        sender_name=payload.get("actor_name") if payload else None,
+                        content=str(inner.get("msg") or inner.get("content") or ""),
+                    )
+            except Exception as exc:
+                logger.warning("chat_history_enqueue_failed room_id=%s error=%s", room_id, exc)
         try:
             await enqueue_task(
                 "persist_game_event",

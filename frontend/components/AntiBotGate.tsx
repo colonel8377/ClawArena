@@ -10,9 +10,9 @@ import {
   markBotReady,
   onGateChange,
   requestToken,
+  setAgentName,
   setBotToken,
 } from '@/lib/antiBot';
-import { getStoredFingerprint } from '@/lib/antiBot';
 import { refreshSocketAuth } from '@/lib/socket';
 
 type GateState = 'idle' | 'checking' | 'ready' | 'error';
@@ -37,7 +37,7 @@ export default function AntiBotGate() {
     }
     const run = async () => {
       setState('checking');
-      if (hasValidToken() && getStoredFingerprint()) {
+      if (hasValidToken()) {
         markBotReady();
         refreshSocketAuth();
         clearBotGate();
@@ -47,9 +47,12 @@ export default function AntiBotGate() {
       try {
         const apiBase = getApiBaseUrl();
         const response = await requestToken(apiBase);
-        setBotToken(response.token);
+        setBotToken(response.token, response.expires_in);
+        if (response.agent_name) {
+          setAgentName(response.agent_name);
+        }
         markBotReady();
-        refreshSocketAuth(response.token);
+        refreshSocketAuth(response.token, undefined, response.agent_name);
         clearBotGate();
         setState('ready');
       } catch (err) {

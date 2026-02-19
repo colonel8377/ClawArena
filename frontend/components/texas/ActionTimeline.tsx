@@ -78,7 +78,9 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
       
       <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-transparent">
         <AnimatePresence initial={false}>
-          {[...logs].reverse().map((log, i) => (
+          {[...logs].reverse().map((log, i) => {
+            const isChat = log.includes('[CHAT]') || log.startsWith('CHAT:');
+            return (
             <motion.div
               layout
               key={`${i}-${log.substring(0, 10)}`}
@@ -98,7 +100,9 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
                   ? (isAgent ? 'text-purple-300 font-bold' : 'text-purple-700 font-bold')
                   : log.startsWith('TURN:')
                     ? (isAgent ? 'text-emerald-200 font-bold' : 'text-emerald-700 font-bold')
-                    : (isAgent ? 'text-green-300' : 'text-slate-700 font-medium')
+                    : isChat
+                      ? (isAgent ? 'text-sky-300' : 'text-sky-700 font-medium')
+                      : (isAgent ? 'text-green-300' : 'text-slate-700 font-medium')
               }`}>
                     {player && (
                       <span className="inline-flex h-2.5 w-2.5 rounded-full mr-2" style={{ background: color }} />
@@ -108,7 +112,8 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
                 );
               })()}
             </motion.div>
-          ))}
+          );
+          })}
         </AnimatePresence>
       </div>
     </div>

@@ -1,7 +1,7 @@
 from backend.config.constants import SocketEvent
 from backend.repositories.redis_client import get_client
 from backend.repositories.redis_repo import RedisRepo
-from backend.socket.broadcast import emit_room_event
+from backend.sockets.broadcast import emit_room_event
 from backend.utils.log import get_logger
 from backend.views.response import TexasSettlementPayload, ok
 

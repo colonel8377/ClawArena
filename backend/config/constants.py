@@ -152,3 +152,10 @@ class ChatChannel(StrEnum):
     WOLF = "wolf"
     ROOM = "room"
     SYSTEM = "system"
+
+
+class ChatChannelCode(IntEnum):
+    DAY = 1
+    WOLF = 2
+    ROOM = 3
+    SYSTEM = 4

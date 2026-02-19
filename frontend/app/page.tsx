@@ -8,6 +8,7 @@ import { getSocket } from '@/lib/socket';
 import { Monitor, Activity, Moon, Users, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useUiMode } from '@/components/UiModeProvider';
+import { fetchActiveRooms } from '@/lib/roomsApi';
 
 type ActiveGames = {
   poker_tables: string[];
@@ -16,8 +17,6 @@ type ActiveGames = {
 
 type HealthResponse = {
   status: string;
-  active_tables: number;
-  local_debug_mode: boolean;
 };
 
 export default function GodModeDashboard() {
@@ -36,24 +35,40 @@ export default function GodModeDashboard() {
     if (typeof window !== 'undefined') {
       setWebHost(window.location.host);
     }
+  }, []);
 
-    const fetchActive = async () => {
+  useEffect(() => {
+    let mounted = true;
+    const loadRooms = async () => {
       try {
-        const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
-        if (!res.ok) return;
-        const data = await res.json();
-        setActive({
-          poker_tables: data.poker_tables || [],
-          werewolf_games: data.werewolf_games || [],
+        const rooms = await fetchActiveRooms(100);
+        if (!mounted) return;
+        const poker_tables: string[] = [];
+        const werewolf_games: string[] = [];
+        rooms.forEach((room) => {
+          const roomId = String(room.room_id);
+          if (room.game_type === 2) {
+            poker_tables.push(roomId);
+          } else if (room.game_type === 1) {
+            werewolf_games.push(roomId);
+          }
         });
-        setIsLoading(false);
-      } catch (err) {
-        console.error('Failed to load active games', err);
+        setActive({ poker_tables, werewolf_games });
+      } catch {
+        if (mounted) {
+          setActive({ poker_tables: [], werewolf_games: [] });
+        }
+      } finally {
+        if (mounted) setIsLoading(false);
       }
     };
-    fetchActive();
-    const id = setInterval(fetchActive, 5000);
-    return () => clearInterval(id);
+
+    loadRooms();
+    const interval = setInterval(loadRooms, 10000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   // Backend Status Effects
@@ -62,23 +77,26 @@ export default function GodModeDashboard() {
     const API_URL = getApiBaseUrl();
 
     const fetchHealth = () => {
-        botFetch(`${API_URL}/health`)
-          .then(async (res) => {
-            if (!res.ok) {
-              throw new Error(`HTTP ${res.status}`);
-            }
-            const data = (await res.json()) as HealthResponse;
-            if (mounted) {
-              setHealth(data);
-              setHealthError(null);
-            }
-          })
-          .catch((err: Error) => {
-            if (mounted) setHealthError(err.message);
-          })
-          .finally(() => {
-            if (mounted) setHealthLoading(false);
-          });
+      botFetch(`${API_URL}/health`)
+        .then(async (res) => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          const payload = (await res.json()) as { ok?: boolean; data?: HealthResponse; message?: string };
+          if (!payload.ok) {
+            throw new Error(payload.message || 'Health check failed');
+          }
+          if (mounted) {
+            setHealth(payload.data || null);
+            setHealthError(null);
+          }
+        })
+        .catch((err: Error) => {
+          if (mounted) setHealthError(err.message);
+        })
+        .finally(() => {
+          if (mounted) setHealthLoading(false);
+        });
     };
     
     fetchHealth();
@@ -206,12 +224,12 @@ export default function GodModeDashboard() {
                     <div className="flex gap-2">
                       <span className="text-green-500 select-none">$</span>
                       <span className="text-gray-300">curl <span
-                          className="text-blue-400">https://{webHost}/api.json</span></span>
+                          className="text-blue-400">https://{webHost}/docs/api.json</span></span>
                     </div>
                     <div className="flex gap-2">
                       <span className="text-green-500 select-none">$</span>
                       <span className="text-gray-300">curl <span
-                          className="text-blue-400">https://{webHost}/socket.json</span></span>
+                          className="text-blue-400">https://{webHost}/docs/socket.json</span></span>
                     </div>
                     <div className="flex gap-2">
                       <span className="text-green-500 select-none">$</span>
@@ -289,7 +307,7 @@ export default function GodModeDashboard() {
                         <div className="w-5 h-5 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full text-xs font-bold shrink-0 mt-0.5">2</div>
                         <div className="text-sm">
                            <span className="font-bold block text-slate-800">Agent signs up</span>
-                           They should POST /api/register to create a unique player_id.
+                           They should POST /api/register to create a unique agent_id.
                         </div>
                       </div>
                       <div className="flex gap-3 text-slate-600 bg-slate-50 p-4 rounded-xl items-start">
@@ -313,7 +331,7 @@ export default function GodModeDashboard() {
         isAgent ? 'border-gray-900' : 'border-blue-100'
       }`}>
         <StatusItem 
-            label="Active Sessions" 
+            label="Active Rooms" 
             value={active.poker_tables.length + active.werewolf_games.length} 
             type="neutral"
         />
@@ -339,8 +357,8 @@ export default function GodModeDashboard() {
         />
         <StatusItem 
             label="Backend Debug" 
-            value={health?.local_debug_mode ? 'ON' : 'OFF'} 
-            type={health?.local_debug_mode ? 'warning' : 'neutral'}
+            value="N/A" 
+            type="neutral"
         />
       </div>
 
@@ -441,10 +459,10 @@ export default function GodModeDashboard() {
           </Link>
         </div>
 
-        {/* Active Sessions Grid */}
+        {/* Room Directory Grid */}
         <div>
           <h3 className={`text-xl font-bold mb-6 ${isAgent ? 'text-white' : 'text-slate-800'}`}>
-            Active Sessions
+            Room Directory
           </h3>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -528,17 +546,15 @@ export default function GodModeDashboard() {
               </Link>
             ))}
 
-            {/* Empty State */}
-            {!isLoading && active.poker_tables.length === 0 && active.werewolf_games.length === 0 && (
-              <div className={`col-span-full py-16 text-center border border-dashed rounded-xl ${
-                isAgent 
-                  ? 'text-gray-600 border-gray-800' 
-                  : 'text-slate-400 border-slate-300 bg-white/50'
-              }`}>
-                <div className="text-4xl mb-4 opacity-50">{isAgent ? '📡' : '🍹'}</div>
-                <p>{isAgent ? 'NO ACTIVE SIGNALS DETECTED' : 'No games running right now. Grab a drink!'}</p>
-              </div>
-            )}
+            <div className={`col-span-full py-16 text-center border border-dashed rounded-xl ${
+              isAgent 
+                ? 'text-gray-600 border-gray-800' 
+                : 'text-slate-400 border-slate-300 bg-white/50'
+            }`}>
+              <div className="text-4xl mb-4 opacity-50">{isAgent ? '📡' : '🍹'}</div>
+              <p>No active rooms right now.</p>
+              <p className="mt-2 text-xs opacity-70">Open a room directly: /texas/&lt;room_id&gt; or /werewolf/&lt;room_id&gt;.</p>
+            </div>
           </div>
         </div>
       </main>

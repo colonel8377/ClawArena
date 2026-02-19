@@ -1,34 +1,48 @@
 import { useEffect, useRef } from 'react';
 import { getSocket } from '@/lib/socket';
+import { unwrapSocketPayload } from '@/lib/stateAdapters';
+import { getBotToken, requestBotGate } from '@/lib/antiBot';
 
 type EventHandler = (data: any) => void;
 
 interface UseSpectatorSocketProps {
-  namespace: string; // 'texas' or 'werewolf'
+  namespace: string;
   tableId: string;
   events: Record<string, EventHandler>;
   revealMode?: boolean;
 }
 
-export function useSpectatorSocket({ namespace, tableId, events, revealMode = false }: UseSpectatorSocketProps) {
+export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorSocketProps) {
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
   const rafRef = useRef<number | null>(null);
   const pendingUpdates = useRef<Map<string, any>>(new Map());
+  const coalesceEvents = useRef<Set<string>>(
+    new Set([
+      'room:state',
+      'room:update',
+      'tx:phase:change',
+      'ww:phase:change',
+    ])
+  );
 
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
     socketRef.current = socket;
+    if (!getBotToken()) {
+      requestBotGate();
+    }
 
     const activeSocket = socket;
 
     // Join logic
-    const joinEvent = namespace === 'texas' ? 'join_spectate' : 'join_spectate';
-    const payloadKey = namespace === 'texas' ? 'table_id' : 'game_id';
-    
     const joinRoom = () => {
-      console.log(`[Spectator] Joining ${namespace} room: ${tableId} (Reveal: ${revealMode})`);
-      activeSocket.emit(joinEvent, { [payloadKey]: tableId, reveal: revealMode });
+      const roomId = Number(tableId);
+      if (!Number.isFinite(roomId) || roomId <= 0) {
+        return;
+      }
+      console.log(`[Spectator] Joining ${namespace} room: ${tableId}`);
+      activeSocket.emit('room:join', { room_id: roomId, role: 2 });
     };
 
     if (activeSocket.connected) {
@@ -40,9 +54,14 @@ export function useSpectatorSocket({ namespace, tableId, events, revealMode = fa
     // Event binding with RAF throttling
     Object.entries(events).forEach(([eventName, handler]) => {
       activeSocket.on(eventName, (data: any) => {
-        // Simple throttling: store latest data for this event
-        pendingUpdates.current.set(eventName, data);
-        
+        const payload = unwrapSocketPayload(data);
+        if (!coalesceEvents.current.has(eventName)) {
+          handler(payload);
+          return;
+        }
+
+        // Throttle high-frequency state updates; keep only the latest per event.
+        pendingUpdates.current.set(eventName, payload);
         if (!rafRef.current) {
           rafRef.current = requestAnimationFrame(() => {
             pendingUpdates.current.forEach((data, evt) => {
@@ -62,13 +81,12 @@ export function useSpectatorSocket({ namespace, tableId, events, revealMode = fa
         cancelAnimationFrame(rafRef.current);
       }
       
-      const leavePayload = { [payloadKey]: tableId };
-      activeSocket.emit('leave_spectate', leavePayload);
+      activeSocket.emit('room:leave', {});
       
       activeSocket.off('connect', joinRoom);
       Object.keys(events).forEach((eventName) => {
         activeSocket.off(eventName);
       });
     };
-  }, [namespace, tableId, revealMode]); // Re-run if these change
+  }, [namespace, tableId]); // Re-run if these change
 }

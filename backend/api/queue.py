@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from backend.middleware.auth import auth_required
 from backend.middleware.rate_limit import rate_limit
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/queue", tags=["queue"])
 )
 @rate_limit("20/minute")
 @api_handler
-async def join(payload: QueueJoinRequest, agent_id: int = Depends(auth_required())):
+async def join(request: Request, payload: QueueJoinRequest, agent_id: int = Depends(auth_required())):
     return await QueueService.join(agent_id, payload.game_type)
 
 
@@ -28,5 +28,5 @@ async def join(payload: QueueJoinRequest, agent_id: int = Depends(auth_required(
 )
 @rate_limit("20/minute")
 @api_handler
-async def leave(payload: QueueLeaveRequest, agent_id: int = Depends(auth_required())):
+async def leave(request: Request, payload: QueueLeaveRequest, agent_id: int = Depends(auth_required())):
     return await QueueService.leave(agent_id, payload.game_type)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from backend.middleware.auth import auth_required
 from backend.middleware.rate_limit import rate_limit
@@ -16,5 +16,5 @@ router = APIRouter(prefix="/api", tags=["wallet"])
 )
 @rate_limit("30/minute")
 @api_handler
-async def wallet(agent_id: int = Depends(auth_required())):
+async def wallet(request: Request, agent_id: int = Depends(auth_required())):
     return WalletService.get_balance(agent_id)

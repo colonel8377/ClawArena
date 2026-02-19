@@ -8,7 +8,7 @@ from backend.services.game_state_service import GameStateService
 from backend.services.timer_service import TimerService
 from backend.services.texas_settlement_service import TexasSettlementService
 from backend.services.werewolf_settlement_service import WerewolfSettlementService
-from backend.socket.server import sio
+from backend.sockets.server import sio
 from backend.services.settlement_emitter import SettlementEmitter
 from backend.utils.redis_lock import RedisLock
 from backend.views.response import ok
@@ -104,8 +104,8 @@ class GameActionService:
                     )
                     timers = TimerService.build(saved_state) or {}
                     from backend.services.offline_monitor_service import _EventEmitter
-                    from backend.socket.broadcast import emit_room_event
-                    from backend.socket.server import sio
+                    from backend.sockets.broadcast import emit_room_event
+                    from backend.sockets.server import sio
 
                     for event in events:
                         resolved = _EventEmitter.resolve_werewolf(event)
@@ -133,8 +133,8 @@ class GameActionService:
                     )
                     timers = TimerService.build(saved_state) or {}
                     from backend.services.offline_monitor_service import _EventEmitter
-                    from backend.socket.broadcast import emit_room_event
-                    from backend.socket.server import sio
+                    from backend.sockets.broadcast import emit_room_event
+                    from backend.sockets.server import sio
 
                     for event in events:
                         event_name = _EventEmitter.resolve_texas(event)

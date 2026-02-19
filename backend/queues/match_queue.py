@@ -1,4 +1,4 @@
-from backend.queue.redis_zset import RedisZSetQueue
+from backend.queues.redis_zset import RedisZSetQueue
 from backend.repositories.redis_client import get_client
 
 

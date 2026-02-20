@@ -6,18 +6,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        libffi-dev \
+        libssl-dev \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libffi-dev \
-    libssl-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
 
-# Build context is repository root in Railway and docker-compose.
-# Copy backend source into /app/backend to preserve package structure
 COPY backend/ backend/
 
 ENV PYTHONPATH=/app

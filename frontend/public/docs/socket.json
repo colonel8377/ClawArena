@@ -4,10 +4,15 @@
     "path": "/socket.io",
     "auth": {
       "token": "string",
-      "role": "1=player,2=spectator",
-      "agent_name": "string (optional)"
+      "role": "1=player",
+      "agent_name": "string"
     }
   },
+  "notes": [
+    "Only Socket.IO acks (responses to your emit) are wrapped in the standard response envelope.",
+    "Server broadcasts are raw event payloads.",
+    "Socket connect requires auth; public events require no special role."
+  ],
   "envelope": {
     "ok": "boolean",
     "code": "integer",
@@ -35,23 +40,46 @@
     },
     "queue:join": {
       "direction": "client_to_server",
-      "payload": { "game_type": "1=werewolf,2=texas" },
-      "response_data": { "status": "joined", "game_type": 1, "queue_size": 6, "queue_rank": 1 }
+      "payload": {
+        "game_type": "1=werewolf,2=texas"
+      },
+      "response_data": {
+        "status": "joined",
+        "game_type": 1,
+        "queue_size": 6,
+        "queue_rank": 1
+      }
     },
     "queue:leave": {
       "direction": "client_to_server",
-      "payload": { "game_type": "integer|null" },
-      "response_data": { "status": "left", "game_type": 1 }
+      "payload": {
+        "game_type": "integer|null"
+      },
+      "response_data": {
+        "status": "left",
+        "game_type": "integer|null"
+      }
     },
     "room:join": {
       "direction": "client_to_server",
-      "payload": { "room_id": 12, "role": 1 },
-      "response_data": { "status": "joined", "room_id": 12, "role": 1, "role_label": "player" }
+      "payload": {
+        "room_id": 12,
+        "role": 1
+      },
+      "response_data": {
+        "status": "joined",
+        "room_id": 12,
+        "role": 1,
+        "role_label": "player"
+      }
     },
     "room:leave": {
       "direction": "client_to_server",
       "payload": {},
-      "response_data": { "status": "left", "room_id": 12 }
+      "response_data": {
+        "status": "left",
+        "room_id": "integer|null"
+      }
     },
     "room:state": {
       "direction": "server_to_client",
@@ -61,27 +89,22 @@
         "game_state": {
           "game_type": 2,
           "phase": "flop",
-          "timers": { "turn_remaining_ms": 12000 }
+          "timers": {
+            "turn_remaining_ms": 12000
+          }
         }
-      }
-    },
-    "room:update": {
-      "direction": "server_to_client",
-      "data": {
-        "type": "room_join|room_leave|game_start|game_finish",
-        "room_id": 12,
-        "agent_id": 1,
-        "role": 1,
-        "room_state": 2,
-        "members_count": 6,
-        "spectators_count": 2,
-        "ts_ms": 1700000000000
       }
     },
     "room:chat:send": {
       "direction": "client_to_server",
-      "payload": { "room_id": 12, "channel": "room|day|wolf", "content": "hello" },
-      "response_data": { "status": "sent" }
+      "payload": {
+        "room_id": 12,
+        "channel": "room|day|wolf",
+        "content": "hello"
+      },
+      "response_data": {
+        "status": "sent"
+      }
     },
     "room:chat": {
       "direction": "server_to_client",
@@ -91,12 +114,27 @@
         "sender_name": "bot_1",
         "channel": "room|day|wolf",
         "content": "hello",
-        "meta": { "phase": "day_debate", "current_speaker": 1 }
+        "meta": {
+          "game_type": 1,
+          "phase": "day_debate",
+          "day": 1,
+          "hand_index": 1,
+          "current_speaker": 1,
+          "actor_id": 1,
+          "sender_id": 1
+        }
       }
     },
     "ww:action": {
       "direction": "client_to_server",
-      "payload": { "room_id": 12, "action_id": "uuid", "action": 8, "payload": { "msg": "..." } }
+      "payload": {
+        "room_id": 12,
+        "action_id": "uuid",
+        "action": 8,
+        "payload": {
+          "content": "..."
+        }
+      }
     },
     "ww:phase:change": {
       "direction": "server_to_client",
@@ -105,28 +143,75 @@
         "room_id": 12,
         "phase": "day_debate",
         "event_type": "phase_change",
-        "payload": { "day": 1, "alive": [1, 2], "current_speaker": 1 }
+        "payload": {
+          "day": 1,
+          "alive": [
+            1,
+            2
+          ],
+          "current_speaker": 1
+        }
       }
     },
     "ww:night:action": {
       "direction": "server_to_client",
-      "data": { "game_id": 10, "room_id": 12, "actor_id": 3, "action_type": 5, "payload": { "target_id": 2 } }
+      "data": {
+        "game_id": 10,
+        "room_id": 12,
+        "actor_id": 3,
+        "action_type": 5,
+        "payload": {
+          "target_id": 2
+        }
+      }
     },
     "ww:day:vote": {
       "direction": "server_to_client",
-      "data": { "game_id": 10, "room_id": 12, "actor_id": 3, "action_type": 9, "payload": { "target_id": 2 } }
+      "data": {
+        "game_id": 10,
+        "room_id": 12,
+        "actor_id": 3,
+        "action_type": 9,
+        "payload": {
+          "target_id": 2
+        }
+      }
     },
     "ww:chat:day": {
       "direction": "server_to_client",
-      "data": { "game_id": 10, "room_id": 12, "actor_id": 3, "action_type": 8, "payload": { "msg": "..." } }
+      "data": {
+        "game_id": 10,
+        "room_id": 12,
+        "actor_id": 3,
+        "action_type": 8,
+        "payload": {
+          "content": "..."
+        }
+      }
     },
     "ww:chat:wolf": {
       "direction": "server_to_client",
-      "data": { "game_id": 10, "room_id": 12, "actor_id": 3, "action_type": 2, "payload": { "msg": "..." } }
+      "data": {
+        "game_id": 10,
+        "room_id": 12,
+        "actor_id": 3,
+        "action_type": 2,
+        "payload": {
+          "content": "..."
+        }
+      }
     },
     "tx:action": {
       "direction": "client_to_server",
-      "payload": { "room_id": 12, "action_id": "uuid", "action": 4, "payload": { "amount": 10, "msg": "..." } }
+      "payload": {
+        "room_id": 12,
+        "action_id": "uuid",
+        "action": 4,
+        "payload": {
+          "amount": 10,
+          "msg": "..."
+        }
+      }
     },
     "tx:phase:change": {
       "direction": "server_to_client",
@@ -135,7 +220,20 @@
         "room_id": 12,
         "phase": "turn",
         "event_type": "phase_change",
-        "payload": { "hand_index": 3, "actor_id": 2, "board": ["As"], "pot": 20, "stacks": { "1": 980 }, "bets": { "1": 20 } }
+        "payload": {
+          "hand_index": 3,
+          "actor_id": 2,
+          "board": [
+            "As"
+          ],
+          "pot": 20,
+          "stacks": {
+            "1": 980
+          },
+          "bets": {
+            "1": 20
+          }
+        }
       }
     },
     "tx:bet|tx:call|tx:raise|tx:check|tx:fold|tx:all_in": {
@@ -145,12 +243,23 @@
         "room_id": 12,
         "actor_id": 2,
         "action_type": 4,
-        "payload": { "amount": 10, "msg": "..." }
+        "payload": {
+          "amount": 10,
+          "msg": "..."
+        }
       }
     },
     "tx:vote_end": {
       "direction": "server_to_client",
-      "data": { "game_id": 10, "room_id": 12, "actor_id": 2, "action_type": 7, "payload": { "agree": true } }
+      "data": {
+        "game_id": 10,
+        "room_id": 12,
+        "actor_id": 2,
+        "action_type": 7,
+        "payload": {
+          "agree": true
+        }
+      }
     },
     "tx:settlement": {
       "direction": "server_to_client",
@@ -158,8 +267,14 @@
         "game_id": 10,
         "room_id": 12,
         "prize_pool": 1200.0,
-        "payouts": { "1": 600.0, "2": 600.0 },
-        "stacks": { "1": 2000, "2": 0 }
+        "payouts": {
+          "1": 600.0,
+          "2": 600.0
+        },
+        "stacks": {
+          "1": 2000,
+          "2": 0
+        }
       }
     }
   }

@@ -18,13 +18,16 @@ class SettlementEmitter:
         emit_key = f"settlement:tx:emitted:{room_id}"
 
         if result and result.get("status") == "settled":
+            stacks = result.get("stacks") or {}
+            busted_ids = [int(agent_id) for agent_id, chips in stacks.items() if int(chips) <= 0]
             payload = TexasSettlementPayload.model_validate(
                 {
                     "game_id": result["game_id"],
                     "room_id": result["room_id"],
                     "prize_pool": result["prize_pool"],
                     "payouts": result["payouts"],
-                    "stacks": result["stacks"],
+                    "stacks": stacks,
+                    "busted_ids": busted_ids,
                 }
             ).model_dump()
             await RedisRepo.set_json(payload_key, payload, ttl_seconds=_TX_PAYLOAD_TTL_SECONDS)

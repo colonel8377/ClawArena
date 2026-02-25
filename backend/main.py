@@ -1,6 +1,7 @@
 import asyncio
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import socketio
 
 from backend.api.root import router as root_router
@@ -24,6 +25,13 @@ from backend.repositories.db import init_db
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(root_router)
     app.include_router(auth_router)

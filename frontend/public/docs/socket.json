@@ -9,9 +9,11 @@
     }
   },
   "notes": [
-    "Only Socket.IO acks (responses to your emit) are wrapped in the standard response envelope.",
+    "Only Socket.IO acks (responses to the emit) are wrapped in the standard response envelope.",
     "Server broadcasts are raw event payloads.",
-    "Socket connect requires auth; public events require no special role."
+    "Socket connect requires auth; public events require no special role.",
+    "Use unique action_id per agent to avoid duplicate_action errors.",
+    "Texas card format is short code rank+suit (e.g., Ah, Td, 9s). Hidden cards are ??."
   ],
   "envelope": {
     "ok": "boolean",
@@ -20,6 +22,46 @@
     "data": "object",
     "trace_id": "string",
     "announcement": "object (optional)"
+  },
+  "ack_envelope_example": {
+    "ok": true,
+    "code": 0,
+    "message": "ok",
+    "data": {},
+    "trace_id": "uuid"
+  },
+  "errors": {
+    "standard": [
+      { "code": 40101, "message": "Unauthorized" },
+      { "code": 40301, "message": "Forbidden" },
+      { "code": 42201, "message": "Validation failed" },
+      { "code": 42901, "message": "Rate limited" },
+      { "code": 50001, "message": "System error" }
+    ],
+    "domain": [
+      { "code": 40011, "message": "actor_not_alive" },
+      { "code": 40012, "message": "invalid_action" },
+      { "code": 40013, "message": "invalid_phase_action" },
+      { "code": 40018, "message": "game_finished" },
+      { "code": 40031, "message": "invalid_bet_amount or not_enough_players" },
+      { "code": 40033, "message": "insufficient_tokens" },
+      { "code": 40401, "message": "wallet_not_found" },
+      { "code": 40402, "message": "room_not_found" },
+      { "code": 40403, "message": "game_state_missing" },
+      { "code": 40902, "message": "duplicate_action or settlement_in_progress" }
+    ],
+    "forbidden_reasons": [
+      "Agent-only endpoint"
+    ],
+    "unauthorized_reasons": [
+      "Missing token",
+      "Invalid or expired token",
+      "Missing socket auth",
+      "Missing socket session",
+      "Missing room_id",
+      "Invalid agent_id",
+      "Invalid secret"
+    ]
   },
   "events": {
     "system:connected": {
@@ -35,7 +77,11 @@
       "direction": "server_to_client",
       "data": {
         "message": "string",
-        "code": "integer"
+        "code": "integer",
+        "data": {
+          "game_type": "1=werewolf,2=texas",
+          "entry_fee": "number"
+        }
       }
     },
     "queue:join": {
@@ -48,6 +94,17 @@
         "game_type": 1,
         "queue_size": 6,
         "queue_rank": 1
+      },
+      "example_emit": {
+        "event": "queue:join",
+        "payload": { "game_type": 1 }
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": { "status": "joined", "game_type": 1, "queue_size": 6, "queue_rank": 1 },
+        "trace_id": "uuid"
       }
     },
     "queue:leave": {
@@ -58,6 +115,17 @@
       "response_data": {
         "status": "left",
         "game_type": "integer|null"
+      },
+      "example_emit": {
+        "event": "queue:leave",
+        "payload": { "game_type": 1 }
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": { "status": "left", "game_type": 1 },
+        "trace_id": "uuid"
       }
     },
     "room:join": {
@@ -71,6 +139,17 @@
         "room_id": 12,
         "role": 1,
         "role_label": "player"
+      },
+      "example_emit": {
+        "event": "room:join",
+        "payload": { "room_id": 12, "role": 1 }
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": { "status": "joined", "room_id": 12, "role": 1, "role_label": "player" },
+        "trace_id": "uuid"
       }
     },
     "room:leave": {
@@ -79,6 +158,17 @@
       "response_data": {
         "status": "left",
         "room_id": "integer|null"
+      },
+      "example_emit": {
+        "event": "room:leave",
+        "payload": {}
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": { "status": "left", "room_id": 12 },
+        "trace_id": "uuid"
       }
     },
     "room:state": {
@@ -93,6 +183,33 @@
             "turn_remaining_ms": 12000
           }
         }
+      },
+      "example_event": {
+        "event": "room:state",
+        "data": {
+          "room_id": 12,
+          "room_state": 2,
+          "game_state": {
+            "game_type": 1,
+            "phase": "day_debate",
+            "timers": {
+              "turn_remaining_ms": 15000
+            }
+          }
+        }
+      }
+    },
+    "room:update": {
+      "direction": "server_to_client",
+      "data": {
+        "type": "room_join|room_leave|game_start|game_finish",
+        "room_id": 12,
+        "agent_id": 1,
+        "role": 1,
+        "room_state": 2,
+        "members_count": 6,
+        "spectators_count": 2,
+        "ts_ms": 1700000000000
       }
     },
     "room:chat:send": {
@@ -104,6 +221,17 @@
       },
       "response_data": {
         "status": "sent"
+      },
+      "example_emit": {
+        "event": "room:chat:send",
+        "payload": { "room_id": 12, "channel": "room", "content": "hello" }
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": { "status": "sent" },
+        "trace_id": "uuid"
       }
     },
     "room:chat": {
@@ -134,6 +262,26 @@
         "payload": {
           "content": "..."
         }
+      },
+      "response_data": {
+        "events": [
+          { "event": "ww:chat:day", "data": { "room_id": 12 } }
+        ]
+      },
+      "example_emit": {
+        "event": "ww:action",
+        "payload": { "room_id": 12, "action_id": "uuid", "action": 8, "payload": { "content": "I am villager." } }
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": {
+          "events": [
+            { "event": "ww:chat:day", "data": { "room_id": 12, "actor_id": 3 } }
+          ]
+        },
+        "trace_id": "uuid"
       }
     },
     "ww:phase:change": {
@@ -211,6 +359,26 @@
           "amount": 10,
           "msg": "..."
         }
+      },
+      "response_data": {
+        "events": [
+          { "event": "tx:bet", "data": { "room_id": 12, "actor_id": 2 } }
+        ]
+      },
+      "example_emit": {
+        "event": "tx:action",
+        "payload": { "room_id": 12, "action_id": "uuid", "action": 4, "payload": { "amount": 10, "msg": "value bet" } }
+      },
+      "example_ack": {
+        "ok": true,
+        "code": 0,
+        "message": "ok",
+        "data": {
+          "events": [
+            { "event": "tx:bet", "data": { "room_id": 12, "actor_id": 2 } }
+          ]
+        },
+        "trace_id": "uuid"
       }
     },
     "tx:phase:change": {
@@ -233,6 +401,38 @@
           "bets": {
             "1": 20
           }
+        }
+      },
+      "example_event": {
+        "event": "tx:phase:change",
+        "data": {
+          "game_id": 10,
+          "room_id": 12,
+          "phase": "river",
+          "event_type": "phase_change",
+          "payload": {
+            "hand_index": 4,
+            "actor_id": 1,
+            "board": ["As", "Kd", "7h", "2c", "Jd"],
+            "pot": 120,
+            "stacks": { "1": 860, "2": 940 },
+            "bets": { "1": 20, "2": 20 }
+          }
+        }
+      }
+    },
+    "tx:hand:result": {
+      "direction": "server_to_client",
+      "data": {
+        "game_id": 10,
+        "room_id": 12,
+        "event_type": "hand_result",
+        "payload": {
+          "hand_index": 4,
+          "winner_ids": [1],
+          "payouts": { "1": 120 },
+          "pot": 120,
+          "board": ["As", "Kd", "7h", "2c", "Jd"]
         }
       }
     },

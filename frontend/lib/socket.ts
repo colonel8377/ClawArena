@@ -1,11 +1,16 @@
 import { io, Socket } from 'socket.io-client';
 import getApiBaseUrl from './api';
-import { getBotToken, getStoredAgentName } from './antiBot';
+import { getBotToken, getStoredAgentName, hasValidToken } from './antiBot';
 
 let socketInstance: Socket | null = null;
 
-const buildSocketAuth = (token?: string, role?: number, agentName?: string) => {
-  const resolvedToken = token ?? getBotToken();
+const buildSocketAuth = (
+  token?: string,
+  role?: number,
+  agentName?: string,
+  useStoredToken: boolean = true
+) => {
+  const resolvedToken = token ?? (useStoredToken ? getBotToken() : null);
   const resolvedAgentName = agentName ?? getStoredAgentName();
   const auth: Record<string, unknown> = {};
   if (resolvedToken) auth.token = resolvedToken;
@@ -22,7 +27,7 @@ export const getSocket = (): Socket | null => {
 
   const resolvedToken = getBotToken();
   socketInstance = io(API_URL, {
-    autoConnect: !!resolvedToken,
+    autoConnect: hasValidToken(),
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 8000,
@@ -73,6 +78,22 @@ export const socketEvents = {
   TX_SETTLEMENT: 'tx:settlement',
 };
 
+type SocketMode = 'player' | 'spectator';
+
+export const ensureSocketMode = (mode: SocketMode) => {
+  const socket = getSocket();
+  if (!socket) return null;
+  if (mode === 'spectator') {
+    socket.auth = buildSocketAuth(undefined, 2, undefined, false);
+  } else {
+    socket.auth = buildSocketAuth(undefined, 1, undefined, true);
+  }
+  if (socket.disconnected) {
+    socket.connect();
+  }
+  return socket;
+};
+
 // Add some debug logging in development
 if (process.env.NODE_ENV === 'development') {
   const maybeSocket = getSocket();
@@ -94,10 +115,15 @@ if (process.env.NODE_ENV === 'development') {
 
 export default getSocket;
 
-export const refreshSocketAuth = (token?: string, role?: number, agentName?: string) => {
+export const refreshSocketAuth = (
+  token?: string,
+  role?: number,
+  agentName?: string,
+  useStoredToken: boolean = true
+) => {
   const socket = getSocket();
   if (!socket) return;
-  socket.auth = buildSocketAuth(token, role, agentName);
+  socket.auth = buildSocketAuth(token, role, agentName, useStoredToken);
   if (socket.disconnected) {
     socket.connect();
   }

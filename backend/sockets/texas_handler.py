@@ -29,6 +29,8 @@ def register(server):
             action_type = event.get("action_type")
             if event_type == GameEventType.PHASE_CHANGE:
                 event_name = SocketEvent.TX_PHASE_CHANGE
+            elif event_type == "hand_result":
+                event_name = SocketEvent.TX_HAND_RESULT
             else:
                 if action_type not in {a.value for a in TexasAction}:
                     raise DomainError("invalid_action_type", code=40027)

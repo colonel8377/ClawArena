@@ -1,4 +1,5 @@
 import random
+import re
 from typing import Any
 
 from pokerkit import Automation, NoLimitTexasHoldem
@@ -26,6 +27,7 @@ class TexasEngine(GameEngine):
     BIG_BLIND = 2
     MIN_BET = 2
     ANTE = 0
+    _CARD_CODE_RE = re.compile(r"^(10|[2-9TJQKA])[shdc]$", re.IGNORECASE)
 
     def __init__(self, game_id: int, room_id: int, players: list[dict[str, Any]], seed: int | None = None) -> None:
         super().__init__(game_id, room_id, players, seed)
@@ -62,7 +64,8 @@ class TexasEngine(GameEngine):
             "stacks": dict(self._stacks),
             "bets": self._bet_map(),
             "statuses": self._status_map(),
-            "active_players": list(self._active_ids()),
+            "eligible_players": list(self._eligible_ids()),
+            "in_hand_players": list(self._in_hand_ids()),
         }
 
     def build_view_state(self, viewer_id: int | None, reveal_all: bool = False) -> dict[str, Any]:
@@ -180,7 +183,7 @@ class TexasEngine(GameEngine):
         if action_enum == TexasAction.VOTE_END:
             agree = bool(payload.get("agree", True)) if payload else True
             self._end_votes[int(actor_id)] = agree
-            active = list(self._active_ids())
+            active = list(self._eligible_ids())
             yes_count = sum(1 for aid in active if self._end_votes.get(aid))
             total = len(active)
             if yes_count > total // 2:
@@ -192,7 +195,7 @@ class TexasEngine(GameEngine):
         before_phase = self._phase_from_state() if self._state else TexasPhase.FINISHED
         amount = self._apply_turn_action(action_enum, payload)
 
-        entry = {"action_type": action_enum.value, "actor_id": actor_id}
+        entry = {"action_type": action_enum.value, "actor_id": actor_id, "phase": before_phase}
         if amount is not None:
             entry["amount"] = amount
         self._hand_actions.append(entry)
@@ -221,6 +224,10 @@ class TexasEngine(GameEngine):
                 {"meta": {"auto": True, "reason": "leave"}},
             )
         return []
+
+    def next_phase(self) -> str:
+        self._phase = self._phase_from_state() if self._state else TexasPhase.FINISHED
+        return self._phase
 
     def is_left(self, actor_id: int) -> bool:
         return int(actor_id) in self._left_players
@@ -297,15 +304,19 @@ class TexasEngine(GameEngine):
         base = self.seed if self.seed is not None else self._rng.randint(1, 1_000_000_000)
         return int(base) + int(hand_index)
 
-    def _active_ids(self) -> list[int]:
-        return [agent_id for agent_id in self._seat_ids if self._stacks.get(agent_id, 0) > 0]
+    def _eligible_ids(self) -> list[int]:
+        return [
+            agent_id
+            for agent_id in self._seat_ids
+            if self._stacks.get(agent_id, 0) > 0 and agent_id not in self._left_players
+        ]
 
     def _build_hand_order(self) -> list[dict[str, Any]]:
-        active = [agent_id for agent_id in self._seat_ids if self._stacks.get(agent_id, 0) > 0]
-        if len(active) < 2:
+        eligible = self._eligible_ids()
+        if len(eligible) < 2:
             return []
-        rotate = self._hand_index % len(active)
-        ordered_ids = active[rotate:] + active[:rotate]
+        rotate = self._hand_index % len(eligible)
+        ordered_ids = eligible[rotate:] + eligible[:rotate]
         return [self._players_by_id[agent_id] for agent_id in ordered_ids]
 
     def _sync_stacks_from_state(self) -> None:
@@ -316,10 +327,18 @@ class TexasEngine(GameEngine):
 
     def _handle_hand_end(self, events: list[dict[str, Any]]) -> None:
         self._sync_stacks_from_state()
-        active = [agent_id for agent_id in self._active_ids()]
+        hand_result = self._build_hand_result()
+        if hand_result:
+            events.append(self._hand_result_event(hand_result))
+        busted_ids = [
+            int(agent_id)
+            for agent_id in self._eligible_ids()
+            if self._stacks.get(agent_id, 0) <= 0 and agent_id not in self._left_players
+        ]
+        active = [agent_id for agent_id in self._eligible_ids()]
         if len(active) <= 1:
             self._phase = TexasPhase.FINISHED
-            events.append(self._phase_event(self._phase_payload({"winner_ids": active})))
+            events.append(self._phase_event(self._phase_payload({"winner_ids": active, "busted_ids": busted_ids})))
             return
         self._hand_index += 1
         self._hand_seed = self._derive_hand_seed(self._hand_index)
@@ -330,7 +349,7 @@ class TexasEngine(GameEngine):
         self._player_index = {agent_id: idx for idx, agent_id in enumerate(self._player_ids)}
         self._state = self._create_state(self._hand_seed)
         self._phase = self._phase_from_state() if self._state else TexasPhase.FINISHED
-        events.append(self._phase_event(self._phase_payload({"hand_index": self._hand_index})))
+        events.append(self._phase_event(self._phase_payload({"hand_index": self._hand_index, "busted_ids": busted_ids})))
 
     def _actor_id(self) -> int | None:
         if not self._state:
@@ -343,17 +362,24 @@ class TexasEngine(GameEngine):
         return int(self._player_ids[index])
 
     def _board_cards(self) -> list[str]:
-        if not self._state or not self._state.board_cards:
+        if not self._state:
             return []
-        board = self._state.board_cards[0] if self._state.board_cards else []
-        return [str(card) if card is not None else "??" for card in board]
+        board_cards: list = []
+        try:
+            board_cards = list(self._state.get_board_cards(0))
+        except Exception:
+            if self._state.board_cards:
+                for cards in self._state.board_cards:
+                    if cards:
+                        board_cards.append(cards[0])
+        return [self._card_code(card) for card in board_cards]
 
     def _hole_cards(self) -> list[list[str]]:
         if not self._state:
             return []
         cards: list[list[str]] = []
         for hand in self._state.hole_cards:
-            cards.append([str(card) if card is not None else "??" for card in hand])
+            cards.append([self._card_code(card) for card in hand])
         return cards
 
     def _stack_map(self) -> dict[int, int]:
@@ -370,6 +396,32 @@ class TexasEngine(GameEngine):
         if not self._state:
             return {agent_id: self._stacks.get(agent_id, 0) > 0 for agent_id in self._seat_ids}
         return {agent_id: bool(self._state.statuses[idx]) for idx, agent_id in enumerate(self._player_ids)}
+
+    @staticmethod
+    def _card_code(card: Any) -> str:
+        if card is None:
+            return "??"
+        if isinstance(card, str):
+            if card == "??":
+                return "??"
+            normalized = card.strip()
+            if not TexasEngine._CARD_CODE_RE.match(normalized):
+                return "??"
+            rank = normalized[:-1].upper()
+            suit = normalized[-1].lower()
+            return f"{rank}{suit}"
+        rank = getattr(card, "rank", None)
+        suit = getattr(card, "suit", None)
+        if rank is None or suit is None:
+            return "??"
+        rank_val = getattr(rank, "value", None) or str(rank)
+        suit_val = getattr(suit, "value", None) or str(suit)
+        return f"{str(rank_val).upper()}{str(suit_val).lower()}"
+
+    def _in_hand_ids(self) -> list[int]:
+        if not self._state:
+            return []
+        return [agent_id for agent_id, alive in self._status_map().items() if alive]
 
     def _event_payload(self, payload: dict[str, Any], amount: int | None) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -391,6 +443,8 @@ class TexasEngine(GameEngine):
             "big_blind": int(self.BIG_BLIND),
             "stacks": dict(self._stacks),
             "bets": self._bet_map(),
+            "eligible_players": list(self._eligible_ids()),
+            "in_hand_players": list(self._in_hand_ids()),
         }
         if self._phase == TexasPhase.FINISHED:
             payload["winner_ids"] = self._winner_ids()
@@ -413,6 +467,14 @@ class TexasEngine(GameEngine):
             "actor_id": actor_id,
             "phase": self._phase,
             "action_type": action,
+            "payload": payload,
+        }
+
+    def _hand_result_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "game_id": self.game_id,
+            "room_id": self.room_id,
+            "event_type": "hand_result",
             "payload": payload,
         }
 
@@ -443,3 +505,31 @@ class TexasEngine(GameEngine):
         if meta:
             result["meta"] = meta
         return result
+
+    def _build_hand_result(self) -> dict[str, Any] | None:
+        if not self._state:
+            return None
+        payoffs = getattr(self._state, "payoffs", None)
+        if payoffs is None:
+            return None
+        payouts: dict[int, int] = {}
+        for idx, payoff in enumerate(payoffs):
+            if idx >= len(self._player_ids):
+                continue
+            try:
+                amount = int(payoff)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                payouts[int(self._player_ids[idx])] = amount
+        if not payouts:
+            return None
+        winner_ids = sorted(payouts.keys())
+        pot = sum(payouts.values())
+        return {
+            "hand_index": self._hand_index,
+            "winner_ids": winner_ids,
+            "payouts": payouts,
+            "pot": pot,
+            "board": self._board_cards(),
+        }

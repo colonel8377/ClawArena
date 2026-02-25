@@ -3,15 +3,18 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError as PydanticValidationError
 from backend.config.constants import SocketEvent
+from backend.utils.log import get_logger
 from backend.views.context import ensure_trace_id
 from backend.views.response import ok, fail
 from backend.views.errors import AppError, SystemError, ValidationError
 
+logger = get_logger(__name__)
 
 def api_handler(func: Callable[..., Awaitable[Any]]):
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        ensure_trace_id()
+        trace_id = ensure_trace_id()
+        logger.info(f"Trace {trace_id}: {func.__name__} called with args: {args}, kwargs: {kwargs}")
         result = await func(*args, **kwargs)
         if isinstance(result, dict) and "ok" in result:
             return result

@@ -203,7 +203,7 @@ export const hasValidToken = (): boolean => {
   if (!token) return false;
   if (typeof window === 'undefined') return true;
   const rawExpiry = window.localStorage.getItem(BOT_TOKEN_EXP_KEY);
-  if (!rawExpiry) return true;
+  if (!rawExpiry) return false;
   const expiryMs = Number(rawExpiry);
   if (!Number.isFinite(expiryMs)) return true;
   return expiryMs > Date.now() + 30 * 1000;

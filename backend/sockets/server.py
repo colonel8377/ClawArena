@@ -1,7 +1,6 @@
 import socketio
 
 from backend.middleware.auth import get_agent_id_from_socket_auth
-from backend.middleware.agent_check import validate_agent_user_agent
 from backend.views.response import ok, fail, ConnectResponse, RoomStatePayload
 from backend.views.errors import AppError
 
@@ -12,6 +11,9 @@ from backend.services.room_state_service import RoomStateService
 from backend.utils.log import get_logger
 from backend.repositories.kv.kv_repo import KvRepo
 from backend.repositories.kset.room_repo import RoomCache
+from backend.repositories.redis_repo import RedisRepo
+from backend.config.constants import RoomRole
+from backend.config.settings import get_settings
 from backend.sockets.broadcast import join_room
 
 logger = get_logger(__name__)
@@ -51,9 +53,29 @@ def register_socket_handlers(server: socketio.AsyncServer) -> None:
 
     @server.event
     async def connect(sid, environ, auth):
+        settings = get_settings()
+        has_token = auth and auth.get("token")
+        role = None
+        if auth and isinstance(auth.get("role"), int):
+            role = auth.get("role")
+
+        if not has_token:
+            if role == int(RoomRole.SPECTATOR) and settings.allow_guest_spectator:
+                # Guest spectator connection – no auth required
+                await server.save_session(sid, {"agent_id": None, "role": int(RoomRole.SPECTATOR), "agent_name": None})
+                await RedisRepo.add_online_spectator(sid)
+                counts = await RedisRepo.get_online_counts()
+                await server.emit(SocketEvent.SYSTEM_ONLINE, ok(counts), to=sid)
+                await server.emit(SocketEvent.SYSTEM_ONLINE, ok(counts))
+                await server.emit(SocketEvent.SYSTEM_CONNECTED, ok({"status": "connected", "spectator": True}), to=sid)
+                logger.info("socket_connected_spectator sid=%s", sid)
+                return
+            payload = fail("Missing socket auth", 40101)
+            logger.warning("socket_connect_failed sid=%s error=%s", sid, payload)
+            raise ConnectionRefusedError(str(payload))
+
+        # Authenticated agent connection
         try:
-            user_agent = _extract_user_agent(environ)
-            validate_agent_user_agent(user_agent)
             agent_id = await get_agent_id_from_socket_auth(auth)
         except AppError as exc:
             payload = fail(exc.message, exc.code)
@@ -63,10 +85,15 @@ def register_socket_handlers(server: socketio.AsyncServer) -> None:
             payload = fail(str(exc), 40101)
             logger.warning("socket_connect_failed sid=%s error=%s", sid, exc)
             raise ConnectionRefusedError(str(payload)) from exc
-        role = None
-        if auth and isinstance(auth.get("role"), int):
-            role = auth.get("role")
         await server.save_session(sid, {"agent_id": agent_id, "role": role, "agent_name": auth.get("agent_name") if auth else None})
+        await server.enter_room(sid, f"agent:{agent_id}")
+        if role == int(RoomRole.SPECTATOR):
+            await RedisRepo.add_online_spectator(sid)
+        else:
+            await RedisRepo.add_online_player(sid)
+        counts = await RedisRepo.get_online_counts()
+        await server.emit(SocketEvent.SYSTEM_ONLINE, ok(counts), to=sid)
+        await server.emit(SocketEvent.SYSTEM_ONLINE, ok(counts))
 
         room_id = await KvRepo.get_agent_room(agent_id)
         await PresenceService.mark_online(agent_id, room_id=room_id)
@@ -100,6 +127,9 @@ def register_socket_handlers(server: socketio.AsyncServer) -> None:
         room_id = await KvRepo.get_agent_room(int(agent_id)) if agent_id else None
         if agent_id:
             await PresenceService.mark_offline(int(agent_id), room_id=room_id)
+        await RedisRepo.remove_online_sid(sid)
+        counts = await RedisRepo.get_online_counts()
+        await server.emit(SocketEvent.SYSTEM_ONLINE, ok(counts))
         await server.save_session(sid, {"agent_id": None, "role": None})
         logger.info("socket_disconnected sid=%s agent_id=%s", sid, agent_id)
 

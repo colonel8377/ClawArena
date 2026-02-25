@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { getSocket } from '@/lib/socket';
+import { ensureSocketMode } from '@/lib/socket';
 import { unwrapSocketPayload } from '@/lib/stateAdapters';
-import { getBotToken, requestBotGate } from '@/lib/antiBot';
+import { getBotToken } from '@/lib/antiBot';
 
 type EventHandler = (data: any) => void;
 
@@ -26,12 +26,9 @@ export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorS
   );
 
   useEffect(() => {
-    const socket = getSocket();
+    const socket = ensureSocketMode('spectator');
     if (!socket) return;
     socketRef.current = socket;
-    if (!getBotToken()) {
-      requestBotGate();
-    }
 
     const activeSocket = socket;
 

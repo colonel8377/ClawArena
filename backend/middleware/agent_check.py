@@ -25,6 +25,8 @@ def validate_agent_user_agent(user_agent: str) -> None:
 
 
 async def agent_check_middleware(request: Request, call_next):
+    if request.method in {"GET", "OPTIONS"}:
+        return await call_next(request)
     user_agent = request.headers.get("user-agent", "")
     validate_agent_user_agent(user_agent)
 

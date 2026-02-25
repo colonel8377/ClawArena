@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import case, func
 
 from backend.models.game_player import GamePlayer
 from backend.repositories.db import db_session
@@ -87,3 +88,41 @@ class GamePlayerRepo:
                     }
                 )
             return items
+
+    @staticmethod
+    def list_recent(agent_id: int, limit: int) -> list[dict]:
+        with db_session() as session:
+            query = (
+                session.query(GamePlayer, Game)
+                .join(Game, Game.id == GamePlayer.game_id)
+                .filter(GamePlayer.agent_id == agent_id)
+                .filter(Game.status == int(GameStatus.ENDED))
+                .order_by(Game.ended_at.desc(), GamePlayer.created_at.desc())
+                .limit(limit)
+            )
+            items: list[dict] = []
+            for player, game in query.all():
+                items.append(
+                    {
+                        "game_id": int(player.game_id),
+                        "room_id": int(player.room_id),
+                        "game_type": int(game.game_type),
+                        "result": int(player.result),
+                        "ended_at": game.ended_at.isoformat() if game.ended_at else None,
+                    }
+                )
+            return items
+
+    @staticmethod
+    def get_stats(agent_id: int) -> dict:
+        with db_session() as session:
+            wins = func.sum(case((GamePlayer.result == 1, 1), else_=0))
+            losses = func.sum(case((GamePlayer.result == 2, 1), else_=0))
+            query = (
+                session.query(wins.label("wins"), losses.label("losses"))
+                .join(Game, Game.id == GamePlayer.game_id)
+                .filter(GamePlayer.agent_id == agent_id)
+                .filter(Game.status == int(GameStatus.ENDED))
+            )
+            row = query.one()
+            return {"wins": int(row.wins or 0), "losses": int(row.losses or 0)}

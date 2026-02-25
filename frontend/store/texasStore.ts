@@ -12,6 +12,7 @@ interface TexasStore {
   setConnected: (connected: boolean) => void;
   setRevealMode: (reveal: boolean) => void;
   addLog: (log: string) => void;
+  clearLog: () => void;
   reset: () => void;
 }
 
@@ -25,5 +26,6 @@ export const useTexasStore = create<TexasStore>((set) => ({
   setConnected: (connected) => set({ isConnected: connected }),
   setRevealMode: (reveal) => set({ revealMode: reveal }),
   addLog: (log) => set((state) => ({ gameLog: [...state.gameLog.slice(-49), log] })),
+  clearLog: () => set({ gameLog: [] }),
   reset: () => set({ gameState: null, isConnected: false, gameLog: [] }),
 }));

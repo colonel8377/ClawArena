@@ -5,6 +5,7 @@ from backend.middleware.auth import auth_optional, auth_required
 from backend.middleware.decorators import api_handler
 from backend.middleware.rate_limit import rate_limit
 from backend.services.chat_history_service import ChatHistoryService
+from backend.services.event_service import EventService
 from backend.services.room_directory_service import RoomDirectoryService
 from backend.services.room_service import RoomService
 from backend.views.response import ApiResponse, ErrorResponse
@@ -47,9 +48,10 @@ async def leave(request: Request, agent_id: int = Depends(auth_required())):
 async def chat_history(
     request: Request,
     room_id: int = Path(ge=1),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=100),
     before_id: str | None = Query(default=None),
     after_id: str | None = Query(default=None),
+    hand_index: int | None = Query(default=None),
     agent_id: int | None = Depends(auth_optional()),
 ):
     return await ChatHistoryService.list_history(
@@ -57,6 +59,36 @@ async def chat_history(
         limit=limit,
         before_id=before_id,
         after_id=after_id,
+        hand_index=hand_index,
+        agent_id=agent_id,
+    )
+
+
+@router.get(
+    "/{room_id}/events",
+    response_model=ApiResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+@rate_limit("30/minute")
+@api_handler
+async def event_history(
+    request: Request,
+    room_id: int = Path(ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    before_id: str | None = Query(default=None),
+    after_id: str | None = Query(default=None),
+    types: str | None = Query(default=None),
+    include_chat: bool = Query(default=False),
+    agent_id: int | None = Depends(auth_optional()),
+):
+    type_list = [t.strip() for t in (types or "").split(",") if t and t.strip()] if types else None
+    return await EventService.list_room_events(
+        room_id=room_id,
+        limit=limit,
+        before_id=before_id,
+        after_id=after_id,
+        types=type_list,
+        include_chat=include_chat,
         agent_id=agent_id,
     )
 

@@ -21,6 +21,7 @@ class AuthService:
     @staticmethod
     async def register(agent_name: str) -> dict:
         lock_key = f"lock:register:{agent_name}"
+
         async with RedisLock(lock_key, ttl_ms=8000) as lock:
             if not lock.acquired:
                 logger.warning("register_lock_busy agent_name=%s", agent_name)

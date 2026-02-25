@@ -1,6 +1,7 @@
 import secrets
 from typing import Optional
 
+from backend.utils.log import get_logger
 from backend.repositories.redis_client import get_client
 
 
@@ -21,6 +22,7 @@ class RedisLock:
         self.acquired: bool = False
 
     async def acquire(self) -> bool:
+        logger.info("try RedisLock key=%s ttl_ms=%s", self.key, self.ttl_ms)
         if self.acquired:
             return True
         self.token = secrets.token_urlsafe(16)
@@ -43,3 +45,4 @@ class RedisLock:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.release()
+logger = get_logger(__name__)

@@ -1,94 +1,491 @@
 'use client';
 
 import React from 'react';
-import { useParams } from 'next/navigation';
+import { AnimatePresence, motion } from 'framer-motion';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useSpectatorSocket } from '@/hooks/useSpectatorSocket';
 import { useTexasStore } from '@/store/texasStore';
 import { useUiMode } from '@/components/UiModeProvider';
-import PlayerSeat from '@/components/texas/PlayerSeat';
+import PlayerSeat, { SEAT_AVATARS } from '@/components/texas/PlayerSeat';
 import CommunityCards from '@/components/texas/CommunityCards';
 import ChipStream from '@/components/texas/ChipStream';
-import ActionTimeline from '@/components/texas/ActionTimeline';
+import EventTicker from '@/components/texas/EventTicker';
 import { mapTexasRoomState } from '@/lib/stateAdapters';
-import { fetchRoomChatHistory } from '@/lib/roomsApi';
-import { motion } from 'framer-motion';
-import { useAnchoredCenter } from '@/hooks/useAnchoredCenter';
+import { fetchRoomChatHistory, fetchRoomEventHistory } from '@/lib/roomsApi';
+import type { RoomChatMessage } from '@/lib/roomsApi';
+import { ensureSocketMode } from '@/lib/socket';
+import type { AnchoredCenter } from '@/hooks/useAnchoredCenter';
+import seatLayout from '@/config/texasSeatLayout.json';
+
+type ActionItem = { id: string; kind: 'action'; action: string; message: string; phase?: string; handIndex: number; actorId?: string };
+type ChatItem = { id: string; kind: 'chat'; message: string; phase?: string; handIndex: number; senderId?: string };
+const BASE_STAGE_WIDTH = 1200;
+const BASE_STAGE_HEIGHT = 820;
+const TICKER_DURATION_MS = 1400;
+const VICTORY_DURATION_MS = 1200;
 
 export default function TexasTablePage() {
   const { tableId } = useParams() as { tableId: string };
+  const searchParams = useSearchParams();
+  const debugSeatLayout = searchParams.get('seatLayoutDebug') === '1';
   const { readingMode } = useUiMode();
   const isAgent = readingMode === 'agent';
-  const { center: tableCenter, stageRef, anchorRef: tableAnchorRef } = useAnchoredCenter();
+  const stageContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const stageFrameRef = React.useRef<HTMLDivElement | null>(null);
+  const potRef = React.useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = React.useState({ width: 0, height: 0 });
+  const [seatAnchors, setSeatAnchors] = React.useState<Record<string, { x: number; y: number }>>({});
+  const [potAnchor, setPotAnchor] = React.useState<{ x: number; y: number } | null>(null);
+  const [settlementPulse, setSettlementPulse] = React.useState<{ id: string; payouts: Record<string, number> } | null>(null);
+  const [victoryBanner, setVictoryBanner] = React.useState<{ id: string; message: string; winners: string[] } | null>(null);
   
   const { 
     gameState, 
     setGameState, 
     addLog,
+    clearLog,
     setConnected,
     reset
   } = useTexasStore();
-  const gameLog = useTexasStore((state) => state.gameLog);
   const [loadStatus, setLoadStatus] = React.useState<'loading' | 'ready' | 'ended' | 'error'>('loading');
   const prevPhase = React.useRef<string | undefined>(undefined);
   const prevCurrentPlayer = React.useRef<string | undefined>(undefined);
   const [activeSpeakerSid, setActiveSpeakerSid] = React.useState<string | undefined>(undefined);
   const activeSpeakerTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [turnRemainingMs, setTurnRemainingMs] = React.useState<number | null>(null);
+  const [lastActionSid, setLastActionSid] = React.useState<string | undefined>(undefined);
+  const lastActionTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [ticker, setTicker] = React.useState<{ message: string; tone?: 'action' | 'win' | 'system' } | null>(null);
+  const [layoutNonce, setLayoutNonce] = React.useState(0);
+  const [layoutConfig, setLayoutConfig] = React.useState<any>(seatLayout as any);
+  const refreshRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevHandRef = React.useRef<number | null>(null);
+  const prevPlayerStatusRef = React.useRef<Record<string, string>>({});
+  const [handStartStacks, setHandStartStacks] = React.useState<Record<string, number>>({});
+  const [actionItems, setActionItems] = React.useState<ActionItem[]>([]);
+  const [chatItems, setChatItems] = React.useState<ChatItem[]>([]);
+  const [actionPhaseCollapse, setActionPhaseCollapse] = React.useState<Record<string, boolean>>({});
+  const [chatPhaseCollapse, setChatPhaseCollapse] = React.useState<Record<string, boolean>>({});
+  const actionSeenRef = React.useRef<Set<string>>(new Set());
+  const chatSeenRef = React.useRef<Set<string>>(new Set());
+  const actionIndexRef = React.useRef<number>(0);
+  const elementOffsets = layoutConfig?.elementOffsets || {};
+  const getElementOffset = React.useCallback((key: string) => {
+    const raw = elementOffsets?.[key];
+    const x = Number(raw?.x);
+    const y = Number(raw?.y);
+    return {
+      x: Number.isFinite(x) ? x : 0,
+      y: Number.isFinite(y) ? y : 0
+    };
+  }, [elementOffsets]);
 
   React.useEffect(() => {
-    if (!gameState?.timers) {
-      setTurnRemainingMs(null);
+    let mounted = true;
+    const loadLayout = async () => {
+      try {
+        const res = await fetch('/api/texas-seat-layout');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (mounted && data) {
+          setLayoutConfig(data);
+        }
+      } catch {
+      }
+    };
+    loadLayout();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const getAvatarForSid = React.useCallback((sid?: string | null) => {
+    if (!sid) return '🧑';
+    const current = useTexasStore.getState().gameState;
+    if (current) {
+      const idx = current.players.findIndex((p) => p.sid === String(sid));
+      if (idx >= 0) {
+        return SEAT_AVATARS[idx % SEAT_AVATARS.length];
+      }
+    }
+    let hash = 0;
+    const str = String(sid);
+    for (let i = 0; i < str.length; i += 1) {
+      hash = (hash * 31 + str.charCodeAt(i)) | 0;
+    }
+    return SEAT_AVATARS[Math.abs(hash) % SEAT_AVATARS.length];
+  }, []);
+
+  const ACTION_LABELS: Record<number, string> = {
+    1: 'fold',
+    2: 'check',
+    3: 'call',
+    4: 'bet',
+    5: 'raise',
+    6: 'all-in',
+    7: 'vote_end',
+  };
+  const EVENT_ACTION_LABELS: Record<string, string> = {
+    'tx:fold': 'fold',
+    'tx:check': 'check',
+    'tx:call': 'call',
+    'tx:bet': 'bet',
+    'tx:raise': 'raise',
+    'tx:all_in': 'all-in',
+    'tx:vote_end': 'vote_end',
+  };
+
+  const formatPhase = React.useCallback((phase?: string | null) => {
+    if (!phase) return 'UNKNOWN';
+    return String(phase).replace(/_/g, ' ').toUpperCase();
+  }, []);
+
+  const buildActionKey = React.useCallback(
+    (handIndex: number, phase: string | null | undefined, actionLabel: string, actorId: string, amount?: number) => {
+      const phaseKey = phase ? String(phase) : 'na';
+      return `action-${handIndex}-${phaseKey}-${actionLabel}-${actorId}-${amount ?? ''}`;
+    },
+    []
+  );
+
+  const appendActionEntries = React.useCallback(
+    (entries: Array<{ action_type?: number; actor_id?: number; amount?: number; phase?: string }>, handIndex: number, startIndex = 0) => {
+      if (!entries || entries.length === 0 || startIndex >= entries.length) return;
+      setActionItems((prev) => {
+        const next = [...prev];
+        entries.slice(startIndex).forEach((entry) => {
+          const phase = entry.phase;
+          const actionType = Number(entry.action_type ?? 0);
+          const actionLabel = ACTION_LABELS[actionType] || 'action';
+          const actorId = entry.actor_id != null ? String(entry.actor_id) : '';
+          const parsedAmount = entry.amount !== undefined ? Number(entry.amount) : undefined;
+          const amount = Number.isFinite(parsedAmount) ? parsedAmount : undefined;
+          const key = buildActionKey(handIndex, phase, actionLabel, actorId, amount);
+          if (actionSeenRef.current.has(key)) return;
+          actionSeenRef.current.add(key);
+          const avatar = getAvatarForSid(actorId);
+          const message = `${avatar} ${actionLabel}${amount !== undefined ? ` ${amount}` : ''}`;
+          next.push({ id: key, kind: 'action', action: actionLabel, message, phase, handIndex, actorId });
+        });
+        return next;
+      });
+      actionIndexRef.current = entries.length;
+    },
+    [buildActionKey, getAvatarForSid]
+  );
+
+  const appendActionItem = React.useCallback(
+    (actionLabel: string, event: any, handIndex: number, idOverride?: string) => {
+      const actorId = event?.actor_id != null ? String(event.actor_id) : '';
+      const fallbackPhase = useTexasStore.getState().gameState?.phase;
+      const phase = event?.phase || event?.payload?.phase || event?.meta?.phase || fallbackPhase || undefined;
+      const amountRaw = event?.payload?.amount ?? event?.amount;
+      const parsedAmount = amountRaw !== undefined ? Number(amountRaw) : undefined;
+      const amount = Number.isFinite(parsedAmount) ? parsedAmount : undefined;
+      const key = idOverride ? String(idOverride) : buildActionKey(handIndex, phase, actionLabel, actorId, amount);
+      if (actionSeenRef.current.has(key)) return;
+      actionSeenRef.current.add(key);
+      const avatar = getAvatarForSid(actorId);
+      const message = `${avatar} ${actionLabel}${amount !== undefined ? ` ${amount}` : ''}`;
+      setActionItems((prev) => [...prev, { id: key, kind: 'action', action: actionLabel, message, phase, handIndex, actorId }]);
+    },
+    [buildActionKey, getAvatarForSid]
+  );
+
+  const appendChatEntry = React.useCallback(
+    (
+      payload: { id?: string; phase?: string | null; sender_id?: number | string | null; content?: string | null },
+      handIndex: number
+    ) => {
+      const fallbackPhase = useTexasStore.getState().gameState?.phase;
+      const phase = payload.phase ? String(payload.phase) : fallbackPhase || null;
+      const senderId = payload.sender_id != null ? String(payload.sender_id) : null;
+      const content = String(payload.content || '');
+      if (!content) return;
+      const key = payload.id || `chat-${handIndex}-${senderId}-${phase || 'na'}-${content}`;
+      if (chatSeenRef.current.has(key)) return;
+      chatSeenRef.current.add(key);
+      setChatItems((prev) => {
+        const next = [...prev];
+        const avatar = getAvatarForSid(senderId);
+        next.push({ id: key, kind: 'chat', message: `${avatar}: ${content}`, phase: phase || undefined, handIndex, senderId: senderId || undefined });
+        return next;
+      });
+    },
+    [getAvatarForSid]
+  );
+
+  const requestRoomState = React.useCallback(() => {
+    if (refreshRef.current) return;
+    refreshRef.current = setTimeout(() => {
+      refreshRef.current = null;
+      const socket = ensureSocketMode('spectator');
+      if (!socket) return;
+      const roomId = Number(tableId);
+      if (!Number.isFinite(roomId) || roomId <= 0) return;
+      socket.emit('room:join', { room_id: roomId, role: 2 });
+    }, 250);
+  }, [tableId]);
+
+  React.useEffect(() => {
+    return () => {
+      if (refreshRef.current) {
+        clearTimeout(refreshRef.current);
+        refreshRef.current = null;
+      }
+    };
+  }, []);
+
+  const applyLocalAction = React.useCallback((actionLabel: string, event: any) => {
+    const allowed = new Set(['fold', 'check', 'call', 'bet', 'raise', 'all-in', 'all_in']);
+    if (!allowed.has(actionLabel)) return;
+    const current = useTexasStore.getState().gameState;
+    if (!current) return;
+    const actorId = event?.actor_id != null ? String(event.actor_id) : '';
+    if (!actorId) return;
+    const amountRaw = event?.payload?.amount ?? event?.amount;
+    const amount = Number(amountRaw);
+    const nextPlayers = current.players.map((player) => {
+      if (player.sid !== actorId) return player;
+      let status = player.status;
+      if (actionLabel === 'fold') {
+        status = 'folded';
+      } else if (actionLabel === 'all-in' || actionLabel === 'all_in') {
+        status = 'allin';
+      } else if (player.status === 'folded' || player.status === 'allin') {
+        status = player.status;
+      } else {
+        status = 'active';
+      }
+      let currentBet = player.current_bet ?? 0;
+      if (Number.isFinite(amount) && ['bet', 'raise', 'call', 'all-in', 'all_in'].includes(actionLabel)) {
+        currentBet = Math.max(currentBet, amount);
+      }
+      return {
+        ...player,
+        status,
+        current_bet: currentBet,
+      };
+    });
+    setGameState({ ...current, players: nextPlayers });
+  }, [setGameState]);
+  const exportSeatLayout = React.useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const totalPlayers = gameState?.players?.length || 0;
+    if (!totalPlayers) return;
+    const key = `texas:seatLayout:${totalPlayers}`;
+    const payload = window.localStorage.getItem(key) || '{}';
+    const text = payload && payload !== '{}' ? payload : JSON.stringify({});
+    const label = `[Texas SeatLayout] total=${totalPlayers}`;
+    const write = navigator?.clipboard?.writeText;
+    if (write) {
+      write(text)
+        .then(() => console.log(label, text))
+        .catch(() => console.log(label, text));
+    } else {
+      console.log(label, text);
+      window.prompt('Seat layout JSON', text);
+    }
+  }, [gameState?.players?.length]);
+  const clearSeatLayout = React.useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const totalPlayers = gameState?.players?.length || 0;
+    if (!totalPlayers) return;
+    const key = `texas:seatLayout:${totalPlayers}`;
+    window.localStorage.removeItem(key);
+    setLayoutNonce((value) => value + 1);
+    console.log('[Texas SeatLayout] cleared', { totalPlayers });
+  }, [gameState?.players?.length]);
+
+  React.useEffect(() => {
+    if (!ticker) return;
+    const timeout = setTimeout(() => setTicker(null), TICKER_DURATION_MS);
+    return () => clearTimeout(timeout);
+  }, [ticker]);
+
+  const resetHistory = React.useCallback((handNumber: number) => {
+    actionSeenRef.current = new Set();
+    chatSeenRef.current = new Set();
+    actionIndexRef.current = 0;
+    setActionItems([]);
+    setChatItems([]);
+    setActionPhaseCollapse({});
+    setChatPhaseCollapse({});
+  }, []);
+
+  const loadChatHistoryForHand = React.useCallback(async (handNumber: number) => {
+    try {
+      const limit = 100;
+      let beforeId: string | undefined;
+      const collected: RoomChatMessage[] = [];
+      for (let i = 0; i < 20; i += 1) {
+        const history = await fetchRoomChatHistory(tableId, limit, beforeId, undefined, handNumber);
+        const batch = (history.items || [])
+          .filter((msg) => msg.hand_index === undefined || msg.hand_index === null || Number(msg.hand_index) === handNumber)
+          .slice()
+          .sort((a, b) => a.ts_ms - b.ts_ms);
+        if (batch.length === 0) break;
+        collected.unshift(...batch);
+        if (batch.length < limit) break;
+        beforeId = batch[0]?.id;
+        if (!beforeId) break;
+      }
+      collected.forEach((msg) => {
+        appendChatEntry(
+          {
+            id: msg.id,
+            phase: msg.phase ?? undefined,
+            sender_id: msg.sender_id ?? msg.sender_name ?? null,
+            content: msg.content,
+          },
+          handNumber
+        );
+      });
+    } catch {
+    }
+  }, [appendChatEntry, tableId]);
+
+  const loadActionHistoryForHand = React.useCallback(async (handNumber: number, fallbackEntries?: Array<{ action_type?: number; actor_id?: number; amount?: number; phase?: string }>) => {
+    try {
+      const limit = 200;
+      const history = await fetchRoomEventHistory(tableId, limit, undefined, undefined, Object.keys(EVENT_ACTION_LABELS));
+      const items = (history.items || [])
+        .filter((item) => EVENT_ACTION_LABELS[item.event_type])
+        .map((item) => {
+          const event = item.payload || {};
+          const eventHand = Number(event?.payload?.hand_index ?? event?.hand_index ?? event?.meta?.hand_index);
+          if (Number.isFinite(eventHand) && Number.isFinite(handNumber) && eventHand !== handNumber) {
+            return null;
+          }
+          return { id: item.id, event_type: item.event_type, event };
+        })
+        .filter(Boolean) as Array<{ id: string; event_type: string; event: any }>;
+      if (items.length === 0 && fallbackEntries && fallbackEntries.length > 0) {
+        appendActionEntries(fallbackEntries, handNumber, 0);
+        return;
+      }
+      items.sort((a, b) => {
+        const tA = Number(a.event?.ts_ms ?? 0);
+        const tB = Number(b.event?.ts_ms ?? 0);
+        return tA - tB;
+      });
+      items.forEach((item) => {
+        const actionLabel = EVENT_ACTION_LABELS[item.event_type];
+        if (!actionLabel) return;
+        appendActionItem(actionLabel, item.event, handNumber, item.id);
+      });
+    } catch {
+      if (fallbackEntries && fallbackEntries.length > 0) {
+        appendActionEntries(fallbackEntries, handNumber, 0);
+      }
+    }
+  }, [EVENT_ACTION_LABELS, appendActionEntries, appendActionItem, tableId]);
+
+  React.useEffect(() => {
+    if (!gameState) return;
+    const handNumber = Number(gameState.hand_number ?? 0);
+    const logHandCards = () => {
+      if (process.env.NODE_ENV !== 'development') return;
+      const snapshot = gameState.players.map((player) => ({
+        player: player.nickname,
+        sid: player.sid,
+        cards: player.hole_cards,
+      }));
+      console.log('[Texas] hand cards', { handNumber, snapshot, board: gameState.community_cards });
+    };
+    if (prevHandRef.current === null || prevHandRef.current !== handNumber) {
+      if (prevHandRef.current !== null) {
+        const prevStatusMap = prevPlayerStatusRef.current || {};
+        const newlyBusted = gameState.players.filter((player) => player.status === 'busted' && prevStatusMap[player.sid] !== 'busted');
+        if (newlyBusted.length > 0) {
+          const first = newlyBusted[0];
+          const label = `${getAvatarForSid(first.sid)} OUT OF CHIPS — SPECTATE OR EXIT`;
+          setTicker({ message: label, tone: 'system' });
+        }
+      }
+      prevHandRef.current = handNumber;
+      clearLog();
+      setActiveSpeakerSid(undefined);
+      const next: Record<string, number> = {};
+      gameState.players.forEach((player) => {
+        next[player.sid] = Number(player.chips ?? 0) + Number(player.current_bet ?? 0);
+      });
+      setHandStartStacks(next);
+      resetHistory(handNumber);
+      const entries = Array.isArray(gameState.hand_actions) ? gameState.hand_actions : [];
+      loadActionHistoryForHand(handNumber, entries);
+      if (Number.isFinite(handNumber)) {
+        loadChatHistoryForHand(handNumber);
+      }
+      logHandCards();
+      prevPlayerStatusRef.current = Object.fromEntries(
+        gameState.players.map((player) => [player.sid, player.status])
+      );
       return;
     }
-    const timers = gameState.timers;
-    const deadline = Number(timers.turn_deadline_ms ?? 0);
-    const initial = Number(timers.turn_remaining_ms ?? 0);
-    const compute = () => {
-      if (Number.isFinite(deadline) && deadline > 0) {
-        setTurnRemainingMs(Math.max(0, deadline - Date.now()));
-        return;
-      }
-      if (Number.isFinite(initial) && initial > 0) {
-        setTurnRemainingMs(initial);
-        return;
-      }
-      setTurnRemainingMs(null);
+    prevPlayerStatusRef.current = Object.fromEntries(
+      gameState.players.map((player) => [player.sid, player.status])
+    );
+    setHandStartStacks((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      gameState.players.forEach((player) => {
+        if (!Number.isFinite(next[player.sid])) {
+          next[player.sid] = Number(player.chips ?? 0) + Number(player.current_bet ?? 0);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    const entries = Array.isArray(gameState.hand_actions) ? gameState.hand_actions : [];
+    if (entries.length > actionIndexRef.current) {
+      appendActionEntries(entries, handNumber, actionIndexRef.current);
+    }
+  }, [appendActionEntries, clearLog, gameState, loadActionHistoryForHand, loadChatHistoryForHand, resetHistory]);
+
+  React.useEffect(() => {
+    const node = stageContainerRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const update = () => {
+      const rect = node.getBoundingClientRect();
+      setStageSize({ width: rect.width, height: rect.height });
     };
-    compute();
-    const interval = setInterval(compute, 500);
-    return () => clearInterval(interval);
-  }, [gameState?.timers]);
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    update();
+    return () => observer.disconnect();
+  }, []);
 
   React.useEffect(() => {
     // Prevent stale cross-table state from rendering while new snapshot loads.
     reset();
     setLoadStatus('loading');
+    prevHandRef.current = null;
+    prevPlayerStatusRef.current = {};
+    actionIndexRef.current = 0;
+    actionSeenRef.current = new Set();
+    chatSeenRef.current = new Set();
+    setActionItems([]);
+    setChatItems([]);
+    setActionPhaseCollapse({});
+    setChatPhaseCollapse({});
+    setSeatAnchors({});
+    setPotAnchor(null);
+    setSettlementPulse(null);
+    setVictoryBanner(null);
   }, [tableId, reset]);
-
-  React.useEffect(() => {
-    let mounted = true;
-    const loadHistory = async () => {
-      try {
-        const history = await fetchRoomChatHistory(tableId, 80);
-        if (!mounted) return;
-        const items = (history.items || []).slice().sort((a, b) => a.ts_ms - b.ts_ms);
-        items.forEach((msg) => {
-          const sender = msg.sender_name || `agent_${msg.sender_id ?? 'unknown'}`;
-          addLog(`${sender} [CHAT] ${msg.content}`);
-        });
-      } catch {
-      }
-    };
-    loadHistory();
-    return () => {
-      mounted = false;
-    };
-  }, [tableId, addLog]);
 
   const applyPhaseChange = React.useCallback((event: any) => {
     const payload = event?.payload || {};
     const current = useTexasStore.getState().gameState;
     if (!current) return;
+    const nextHand = Number(payload.hand_index);
+    const currentHand = current.hand_number;
+    if (Number.isFinite(nextHand) && Number.isFinite(currentHand) && nextHand < Number(currentHand)) {
+      return;
+    }
+    if (Number.isFinite(nextHand) && Number.isFinite(currentHand) && nextHand > Number(currentHand)) {
+      resetHistory(nextHand);
+    }
     const stacks = payload.stacks || {};
     const bets = payload.bets || {};
     const updatedPlayers = current.players.map((player) => {
@@ -102,6 +499,7 @@ export default function TexasTablePage() {
       };
     });
     const currentBet = Math.max(0, ...Object.values(bets).map((value) => Number(value)));
+    const shouldClearWinners = Number.isFinite(nextHand) && Number.isFinite(currentHand) && nextHand > Number(currentHand);
     setGameState({
       ...current,
       phase: payload.phase || current.phase,
@@ -113,29 +511,87 @@ export default function TexasTablePage() {
       timers: payload.timers ?? current.timers,
       winners: Array.isArray(payload.winner_ids)
         ? payload.winner_ids.map((id: any) => String(id))
-        : (payload.winner_id ? [String(payload.winner_id)] : current.winners),
+        : (payload.winner_id ? [String(payload.winner_id)] : (shouldClearWinners ? [] : current.winners)),
       players: updatedPlayers,
     });
-  }, [setGameState]);
+  }, [resetHistory, setGameState]);
+
+  const handleHandResult = React.useCallback((event: any) => {
+    const payload = event?.payload || {};
+    const payouts = payload?.payouts || {};
+    const winners = Array.isArray(payload.winner_ids)
+      ? payload.winner_ids.map((id: any) => String(id))
+      : Object.keys(payouts);
+    if (!winners || winners.length === 0) return;
+    const current = useTexasStore.getState().gameState;
+    if (current) {
+      setGameState({ ...current, winners });
+    }
+    const topWinner = winners[0];
+    const topAmount = payouts[topWinner];
+    const winnerName = getAvatarForSid(String(topWinner));
+    const message = winners.length > 1
+      ? `WINNERS: ${winners.map((id) => getAvatarForSid(String(id))).join(' · ')}`
+      : `WINNER: ${winnerName}${topAmount !== undefined ? ` +${topAmount}` : ''}`;
+    setTicker({ message, tone: 'win' });
+    setVictoryBanner({ id: `${Date.now()}`, message, winners });
+    setSettlementPulse({ id: `${Date.now()}`, payouts });
+  }, [getAvatarForSid, setGameState]);
 
   const logTexasAction = React.useCallback((actionLabel: string, event: any) => {
     const actorId = event?.actor_id ? String(event.actor_id) : '';
     const amount = event?.payload?.amount;
     const msg = event?.payload?.msg;
-    const current = useTexasStore.getState().gameState;
-    const actorName = current?.players.find((p) => p.sid === actorId)?.nickname || actorId || 'player';
+    const actorName = getAvatarForSid(actorId);
     const parts = [`🎲 ${actorName} ${actionLabel}`];
     if (amount !== undefined) parts.push(String(amount));
     if (msg) parts.push(`(${msg})`);
     addLog(parts.join(' '));
-  }, [addLog]);
+    const shouldTicker = ['raise', 'all-in', 'all_in'].includes(actionLabel);
+    if (shouldTicker) {
+      const label = `${actorName} ${actionLabel.toUpperCase()}${amount !== undefined ? ` ${amount}` : ''}`;
+      setTicker({ message: label, tone: 'action' });
+    }
+    if (actorId) {
+      setActiveSpeakerSid(actorId);
+      if (activeSpeakerTimer.current) clearTimeout(activeSpeakerTimer.current);
+      activeSpeakerTimer.current = setTimeout(() => setActiveSpeakerSid(undefined), 1800);
+      setLastActionSid(actorId);
+      if (lastActionTimer.current) clearTimeout(lastActionTimer.current);
+      lastActionTimer.current = setTimeout(() => setLastActionSid(undefined), 2000);
+    }
+    const handIndex = Number(event?.payload?.hand_index ?? event?.hand_index ?? useTexasStore.getState().gameState?.hand_number ?? 0);
+    const currentHand = useTexasStore.getState().gameState?.hand_number;
+    if (Number.isFinite(handIndex) && Number.isFinite(currentHand) && handIndex !== Number(currentHand)) {
+      return;
+    }
+    const eventId = event?.id || event?.event_id;
+    appendActionItem(actionLabel, event, handIndex, eventId ? String(eventId) : undefined);
+    applyLocalAction(actionLabel, event);
+    requestRoomState();
+  }, [addLog, appendActionItem, applyLocalAction, getAvatarForSid, requestRoomState]);
 
   const logTexasChat = React.useCallback((data: any) => {
-    const sender = data?.sender_name || data?.actor_name || String(data?.sender_id || data?.actor_id || 'player');
+    const senderId = data?.sender_id ?? data?.actor_id ?? data?.sender_name ?? data?.actor_name;
+    const sender = getAvatarForSid(senderId);
     const content = data?.content || data?.msg;
     if (!content) return;
     addLog(`💬 ${sender}: ${content}`);
-  }, [addLog]);
+    const handIndex = Number(data?.meta?.hand_index ?? useTexasStore.getState().gameState?.hand_number ?? 0);
+    const currentHand = useTexasStore.getState().gameState?.hand_number;
+    if (Number.isFinite(handIndex) && Number.isFinite(currentHand) && handIndex !== Number(currentHand)) {
+      return;
+    }
+    appendChatEntry(
+      {
+        id: data?.chat_id || data?.id,
+        phase: data?.meta?.phase ?? data?.phase ?? undefined,
+        sender_id: data?.sender_id ?? data?.actor_id ?? data?.sender_name ?? null,
+        content,
+      },
+      handIndex
+    );
+  }, [addLog, appendChatEntry, getAvatarForSid]);
 
   useSpectatorSocket({
     namespace: 'texas',
@@ -154,6 +610,7 @@ export default function TexasTablePage() {
         }
       },
       'tx:phase:change': applyPhaseChange,
+      'tx:hand:result': handleHandResult,
       'tx:bet': (data) => logTexasAction('bet', data),
       'tx:call': (data) => logTexasAction('call', data),
       'tx:raise': (data) => logTexasAction('raise', data),
@@ -161,7 +618,10 @@ export default function TexasTablePage() {
       'tx:fold': (data) => logTexasAction('fold', data),
       'tx:all_in': (data) => logTexasAction('all-in', data),
       'tx:vote_end': (data) => logTexasAction('vote_end', data),
-      'room:chat': (data) => logTexasChat(data),
+      'room:chat': (data) => {
+        console.log('[Texas] room:chat', data);
+        logTexasChat(data);
+      },
       'tx:settlement': (data) => {
         const payouts = data?.payouts || {};
         const winners = Object.keys(payouts).length > 0 ? Object.keys(payouts) : undefined;
@@ -170,6 +630,15 @@ export default function TexasTablePage() {
           if (current) {
             setGameState({ ...current, winners });
           }
+          const topWinner = winners[0];
+          const topAmount = payouts[topWinner];
+          const winnerName = getAvatarForSid(String(topWinner));
+          const message = winners.length > 1
+            ? `WINNERS: ${winners.map((id) => getAvatarForSid(String(id))).join(' · ')}`
+            : `WINNER: ${winnerName}${topAmount !== undefined ? ` +${topAmount}` : ''}`;
+          setTicker({ message, tone: 'win' });
+          setVictoryBanner({ id: `${Date.now()}`, message, winners });
+          setSettlementPulse({ id: `${Date.now()}`, payouts });
         }
         setLoadStatus('ended');
       },
@@ -193,28 +662,89 @@ export default function TexasTablePage() {
     if (!gameState) return;
     if (prevPhase.current && prevPhase.current !== gameState.phase) {
       addLog(`🕒 Phase: ${gameState.phase.replace(/_/g, ' ')}`);
+      setTicker({ message: `Phase: ${gameState.phase.replace(/_/g, ' ')}`, tone: 'system' });
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[Texas] phase change', {
+          phase: gameState.phase,
+          handNumber: gameState.hand_number,
+          board: gameState.community_cards,
+        });
+      }
     }
     prevPhase.current = gameState.phase;
     if (gameState.current_player && prevCurrentPlayer.current !== gameState.current_player) {
       const current = gameState.players.find((p) => p.sid === gameState.current_player);
-      addLog(`🎯 Turn: ${current?.nickname || gameState.current_player}`);
+      addLog(`🎯 Turn: ${getAvatarForSid(current?.sid || gameState.current_player)}`);
       prevCurrentPlayer.current = gameState.current_player;
+      if (activeSpeakerSid && activeSpeakerSid !== gameState.current_player) {
+        setActiveSpeakerSid(undefined);
+      }
+      if (lastActionSid && lastActionSid !== gameState.current_player) {
+        setLastActionSid(undefined);
+      }
     }
-  }, [gameState, addLog]);
+  }, [activeSpeakerSid, addLog, gameState, getAvatarForSid, lastActionSid]);
+
+  const paidMap = React.useMemo(() => {
+    const map: Record<string, number> = {};
+    const players = gameState?.players ?? [];
+    players.forEach((player) => {
+      const start = Number(handStartStacks[player.sid] ?? player.chips ?? 0);
+      const now = Number(player.chips ?? 0);
+      map[player.sid] = Math.max(0, start - now);
+    });
+    return map;
+  }, [gameState?.players, handStartStacks]);
+  const totalBets = React.useMemo(() => {
+    const players = gameState?.players ?? [];
+    return players.reduce((sum, player) => sum + Number(player.current_bet ?? 0), 0);
+  }, [gameState?.players]);
+  const displayPot = Math.max(0, Number(gameState?.pot ?? 0) + totalBets);
+  const stageWidth = stageSize.width || BASE_STAGE_WIDTH;
+  const stageHeight = stageSize.height || BASE_STAGE_HEIGHT;
+  const stageScale = React.useMemo(
+    () => Math.min(1, stageWidth / BASE_STAGE_WIDTH, stageHeight / BASE_STAGE_HEIGHT),
+    [stageWidth, stageHeight]
+  );
+
+  const toStagePoint = React.useCallback((rect: DOMRect | null) => {
+    if (!rect) return null;
+    const frame = stageFrameRef.current;
+    if (!frame) return null;
+    const frameRect = frame.getBoundingClientRect();
+    const scale = stageScale || 1;
+    if (!Number.isFinite(scale) || scale <= 0) return null;
+    return {
+      x: (rect.left + rect.width / 2 - frameRect.left) / scale,
+      y: (rect.top + rect.height / 2 - frameRect.top) / scale
+    };
+  }, [stageScale]);
+
+  const handleSeatAnchor = React.useCallback((sid: string, rect: DOMRect) => {
+    const point = toStagePoint(rect);
+    if (!point) return;
+    setSeatAnchors((prev) => {
+      const prior = prev[sid];
+      if (prior && Math.abs(prior.x - point.x) < 0.5 && Math.abs(prior.y - point.y) < 0.5) {
+        return prev;
+      }
+      return { ...prev, [sid]: point };
+    });
+  }, [toStagePoint]);
+
+  React.useLayoutEffect(() => {
+    const rect = potRef.current?.getBoundingClientRect() ?? null;
+    const point = toStagePoint(rect);
+    if (point) {
+      setPotAnchor(point);
+    }
+  }, [toStagePoint, stageWidth, stageHeight, stageScale, displayPot]);
 
   React.useEffect(() => {
-    if (!gameState) return;
-    const latestLog = gameLog[gameLog.length - 1];
-    if (!latestLog || latestLog.startsWith('PHASE:') || latestLog.startsWith('TURN:') || latestLog.startsWith('Winner:')) return;
-    const speaker = gameState.players.find((p) => latestLog.startsWith(p.nickname));
-    if (!speaker) return;
-    setActiveSpeakerSid(speaker.sid);
-    if (activeSpeakerTimer.current) clearTimeout(activeSpeakerTimer.current);
-    activeSpeakerTimer.current = setTimeout(() => setActiveSpeakerSid(undefined), 3500);
-    return () => {
-      if (activeSpeakerTimer.current) clearTimeout(activeSpeakerTimer.current);
-    };
-  }, [gameLog, gameState]);
+    if (!victoryBanner) return;
+    const timeout = setTimeout(() => setVictoryBanner(null), VICTORY_DURATION_MS);
+    return () => clearTimeout(timeout);
+  }, [victoryBanner]);
 
   if (isTerminalTable) {
     return (
@@ -288,143 +818,372 @@ export default function TexasTablePage() {
   const bigBlindIndex = dealerIndex !== undefined && totalPlayers > 0
     ? (dealerIndex + 2) % totalPlayers
     : undefined;
-  const hudWidth = 'min(420px, 72vw)';
-
+  const winnerSet = new Set(gameState.winners ?? []);
+  const scale = stageScale;
+  const tableCenter: AnchoredCenter = {
+    percent: { left: '50%', top: '50%' },
+    pixel: { x: BASE_STAGE_WIDTH / 2, y: BASE_STAGE_HEIGHT / 2 },
+    stageSize: { width: BASE_STAGE_WIDTH, height: BASE_STAGE_HEIGHT }
+  };
+  const currentHandIndex = Number(gameState.hand_number ?? 0);
+  const visibleActionItems = actionItems.filter((item) => item.handIndex === currentHandIndex);
+  const visibleChatItems = chatItems.filter((item) => item.handIndex === currentHandIndex);
+  const actionCount = visibleActionItems.filter((item) => item.kind === 'action').length;
+  const chatCount = visibleChatItems.filter((item) => item.kind === 'chat').length;
+  const phaseOrder = ['preflop', 'flop', 'turn', 'river', 'showdown', 'finished'];
+  const currentPhaseKey = gameState.phase ? String(gameState.phase) : 'unknown';
+  const phaseScore = (phase: string) => {
+    const idx = phaseOrder.indexOf(phase);
+    if (idx >= 0) return idx;
+    if (phase === currentPhaseKey) return phaseOrder.length + 1;
+    return -1;
+  };
+  const buildPhaseGroups = <T extends { phase?: string }>(items: T[]) => {
+    const groups = new Map<string, T[]>();
+    items.forEach((item) => {
+      const phase = item.phase ? String(item.phase) : currentPhaseKey;
+      if (!groups.has(phase)) groups.set(phase, []);
+      groups.get(phase)?.push(item);
+    });
+    if (!groups.has(currentPhaseKey)) groups.set(currentPhaseKey, []);
+    return Array.from(groups.keys())
+      .sort((a, b) => phaseScore(b) - phaseScore(a))
+      .map((phase) => ({ phase, items: groups.get(phase) || [] }));
+  };
+  const actionPhaseGroups = buildPhaseGroups(visibleActionItems);
+  const chatPhaseGroups = buildPhaseGroups(visibleChatItems);
+  const handLabel = `HAND ${Math.max(1, (gameState.hand_number ?? 0) + 1)}`;
+  const phaseLabel = (gameState.phase || 'unknown').replace(/_/g, ' ').toUpperCase();
   return (
     <div className={`flex h-screen overflow-hidden font-mono transition-colors duration-500 ${
       isAgent ? 'bg-[#0a0a0a] text-gray-200' : 'bg-slate-50 text-slate-800'
     }`}>
+      {/* Left Actions Panel */}
+      <div
+        className={`w-64 border-r px-4 py-4 overflow-x-hidden ${
+          isAgent ? 'border-emerald-500/20 bg-black/60 text-emerald-100' : 'border-emerald-200 bg-white/90 text-emerald-700'
+        }`}
+        style={{ transform: `translate(${getElementOffset('actionPanel').x}px, ${getElementOffset('actionPanel').y}px)` }}
+      >
+        <div className="text-[13px] font-bold uppercase tracking-[0.32em] opacity-80">Actions ({actionCount})</div>
+        <div className={`mt-2 text-[11px] font-semibold uppercase tracking-[0.3em] ${
+          isAgent ? 'text-emerald-200/70' : 'text-emerald-600/70'
+        }`}>
+          {handLabel} · {phaseLabel}
+        </div>
+        <div className="mt-3 space-y-2 text-sm max-h-[calc(100vh-220px)] overflow-y-auto pr-1 overflow-x-hidden">
+          {actionCount === 0 ? (
+            <div className="opacity-70">No key actions yet.</div>
+          ) : (
+            actionPhaseGroups.map((group) => {
+              const isCurrent = group.phase === currentPhaseKey;
+              const collapsed = !isCurrent && (actionPhaseCollapse[group.phase] ?? true);
+              return (
+                <div key={`action-phase-${group.phase}`} className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isCurrent) return;
+                      setActionPhaseCollapse((prev) => ({
+                        ...prev,
+                        [group.phase]: !(prev[group.phase] ?? true),
+                      }));
+                    }}
+                    className={`w-full flex items-center justify-between text-[11px] font-bold uppercase tracking-[0.3em] ${
+                      isCurrent
+                        ? (isAgent ? 'text-emerald-200' : 'text-emerald-700')
+                        : (isAgent ? 'text-emerald-200/70' : 'text-emerald-700/70')
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>{formatPhase(group.phase)}</span>
+                      {isCurrent && <span className="text-[9px] px-2 py-0.5 rounded-full border border-emerald-400/40">LIVE</span>}
+                    </span>
+                    {!isCurrent && <span className="text-[10px]">{collapsed ? '▸' : '▾'}</span>}
+                  </button>
+                  {!collapsed && (
+                    group.items.length === 0 ? (
+                      <div className="opacity-60 text-xs">No actions yet.</div>
+                    ) : (
+                      [...group.items].reverse().map((item, idx) => {
+                        const lower = item.action.toLowerCase();
+                        const isKey = lower.includes('all-in') || lower.includes('all in') || lower.includes('raise') || lower.includes('showdown') || lower.includes('wins');
+                        const icon = lower.includes('all-in') || lower.includes('all in')
+                          ? '💥'
+                          : lower.includes('raise')
+                            ? '🚀'
+                            : lower.includes('bet')
+                              ? '🪙'
+                              : lower.includes('call')
+                                ? '📞'
+                                : lower.includes('check')
+                                  ? '✅'
+                                  : lower.includes('fold')
+                                    ? '🪫'
+                                    : '🎲';
+                    const isLatest = isCurrent && idx === 0;
+                    const isActing = item.actorId
+                      ? item.actorId === gameState.current_player
+                      : (isLatest && lastActionSid === gameState.current_player);
+                    return (
+                      <div
+                        key={item.id}
+                        className={`leading-snug flex items-start gap-2 ${
+                          isActing
+                            ? (isAgent ? 'text-emerald-100 font-extrabold' : 'text-emerald-900 font-bold')
+                            : isLatest
+                              ? (isAgent ? 'text-emerald-100 font-semibold' : 'text-emerald-800 font-semibold')
+                            : isKey
+                              ? (isAgent ? 'text-emerald-200 font-semibold' : 'text-emerald-700 font-semibold')
+                              : (isAgent ? 'text-emerald-200/70' : 'text-emerald-700/80')
+                        }`}
+                      >
+                        <span className="text-base">{isActing ? '▶︎' : icon}</span>
+                        <span>{item.message}</span>
+                          </div>
+                        );
+                      })
+                    )
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
       {/* Main Game Area */}
-      <div ref={stageRef} className={`flex-1 relative ${
+      <div ref={stageContainerRef} className={`flex-1 relative overflow-hidden ${
         isAgent 
           ? 'bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-green-900/20 via-black to-black'
           : 'bg-slate-100'
       }`}>
-        {/* Table Felt */}
-        <div className={`absolute inset-4 m-auto w-[82%] h-[72%] border-[18px] rounded-[220px] shadow-2xl ${
+        {debugSeatLayout && (
+          <div className="absolute top-4 left-4 z-40 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={exportSeatLayout}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide border ${
+                isAgent
+                  ? 'bg-black/70 border-emerald-400/40 text-emerald-200 hover:border-emerald-300/70 hover:text-emerald-100'
+                  : 'bg-white/90 border-emerald-200 text-emerald-700 hover:border-emerald-300'
+              }`}
+            >
+              Export Seat Layout
+            </button>
+            <button
+              type="button"
+              onClick={clearSeatLayout}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide border ${
+                isAgent
+                  ? 'bg-black/60 border-rose-400/40 text-rose-200 hover:border-rose-300/70 hover:text-rose-100'
+                  : 'bg-white/90 border-rose-200 text-rose-700 hover:border-rose-300'
+              }`}
+            >
+              Clear Local Layout
+            </button>
+          </div>
+        )}
+        <div className={`absolute bottom-10 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full border text-[12px] font-semibold tracking-wide ${
           isAgent
-            ? 'border-[#1a1a1a] bg-[#0f2a15] shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]'
-            : 'border-[#e2e8f0] bg-[#3b82f6] shadow-[inset_0_0_50px_rgba(0,0,0,0.1)]'
+            ? 'bg-black/60 border-emerald-400/20 text-emerald-200'
+            : 'bg-white/80 border-emerald-200 text-emerald-700'
         }`}>
-          <div
-            ref={tableAnchorRef}
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-2 pointer-events-none"
-          />
-          <div
-            className={`absolute inset-0 flex items-center justify-center text-center pointer-events-none select-none z-0 ${
-            isAgent ? 'text-green-900/30' : 'text-white/10'
-          }`}
-          >
-            <div className="flex flex-col items-center justify-center">
-              <div className="text-5xl md:text-6xl font-black tracking-tighter opacity-50">
-                CLAW<span className={isAgent ? 'text-green-800/40' : 'text-white/20'}>ARENA</span>.IO
+          D = Dealer · SB = Small Blind · BB = Big Blind
+        </div>
+        <div
+          ref={stageFrameRef}
+          className="absolute left-1/2 top-1/2"
+          style={{
+            width: BASE_STAGE_WIDTH,
+            height: BASE_STAGE_HEIGHT,
+            transform: `translate(-50%, -50%) scale(${scale})`,
+            transformOrigin: 'center center'
+          }}
+        >
+          {/* Table Felt */}
+          <div className={`absolute inset-4 m-auto w-[82%] h-[72%] border-[18px] rounded-[220px] shadow-2xl relative ${
+            isAgent
+              ? 'border-[#1a1a1a] bg-[#0f2a15] shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]'
+              : 'border-[#e2e8f0] bg-[#3b82f6] shadow-[inset_0_0_50px_rgba(0,0,0,0.1)]'
+          }`}>
+            <div
+              className="absolute left-1/2 top-1.5 z-30 pointer-events-none"
+              style={{ transform: `translate(-50%, 0) translate(${getElementOffset('round').x}px, ${getElementOffset('round').y}px)` }}
+            >
+              <div className={`px-4 py-1 rounded-full text-[12px] font-bold tracking-wide border ${
+                isAgent
+                  ? 'bg-black/70 border-emerald-400/40 text-emerald-100'
+                  : 'bg-white/90 border-emerald-200 text-emerald-700'
+              }`}>
+                Round {Math.max(1, (gameState.hand_number ?? 0) + 1)}: {(gameState.phase || 'unknown').replace(/_/g, ' ').toUpperCase()}
               </div>
-              <div className="text-6xl md:text-7xl mt-4 opacity-25 filter blur-[1px] w-fit mx-auto">🦞</div>
+            </div>
+            <AnimatePresence>
+              {victoryBanner && (
+                <motion.div
+                  key={victoryBanner.id}
+                  initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -6, scale: 0.96 }}
+                  transition={{ duration: 0.35 }}
+                  className="absolute left-1/2 top-12 z-40 pointer-events-none"
+                  style={{ transform: `translate(-50%, 0) translate(${getElementOffset('round').x}px, ${getElementOffset('round').y}px)` }}
+                >
+                  <div className={`px-6 py-2 rounded-full border text-sm font-bold tracking-wide ${
+                    isAgent
+                      ? 'bg-amber-500/15 border-amber-300/60 text-amber-100 shadow-[0_0_24px_rgba(251,191,36,0.45)]'
+                      : 'bg-amber-100 border-amber-200 text-amber-800 shadow-lg'
+                  }`}>
+                    {victoryBanner.message}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <CommunityCards cards={gameState.community_cards || []} center={tableCenter} offset={getElementOffset('communityCards')} />
+            {/* BroadcastHud removed from center to reduce clutter */}
+            <div
+              className="absolute left-1/2 top-1/2 z-30 pointer-events-none"
+              style={{ transform: `translate(-50%, -50%) translate(${getElementOffset('pot').x}px, ${getElementOffset('pot').y}px)` }}
+            >
+              <div
+                ref={potRef}
+                className={`px-5 py-2 rounded-full border text-sm font-bold tracking-wide ${
+                isAgent
+                  ? 'bg-black/75 border-emerald-400/40 text-emerald-100 shadow-[0_10px_30px_rgba(16,185,129,0.2)]'
+                  : 'bg-white/95 border-emerald-200 text-emerald-700 shadow-lg'
+              }`}
+              >
+                POT 🪙{displayPot}
+              </div>
+            </div>
+            <div
+              className={`absolute inset-0 flex items-center justify-center text-center pointer-events-none select-none z-0 ${
+              isAgent ? 'text-green-900/30' : 'text-white/10'
+            }`}
+            >
+              <div className="flex flex-col items-center justify-center">
+                <div className="text-5xl md:text-6xl font-black tracking-tighter opacity-50">
+                  CLAW<span className={isAgent ? 'text-green-800/40' : 'text-white/20'}>ARENA</span>.IO
+                </div>
+                <div className="text-6xl md:text-7xl mt-4 opacity-25 filter blur-[1px] w-fit mx-auto">🦞</div>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Game Components */}
-        <CommunityCards cards={gameState.community_cards || []} center={tableCenter} />
+          {/* Game Components */}
+          <EventTicker message={ticker?.message} tone={ticker?.tone} />
 
-        {/* Phase HUD */}
-        <div className="absolute left-0 right-0 top-8 flex justify-center z-20 pointer-events-none">
-          <motion.div
-            key={gameState.phase}
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            style={{ width: hudWidth }}
-          >
-            <div className={`w-full text-center px-6 py-2 rounded-full border text-lg font-black tracking-[0.35em] uppercase ${
-              isAgent
-                ? 'bg-black/70 border-emerald-400/30 text-emerald-100 shadow-[0_12px_40px_rgba(16,185,129,0.2)]'
-                : 'bg-white/90 border-emerald-200 text-emerald-700 shadow-lg'
-            }`}>
-              {gameState.phase}
-            </div>
-            {turnRemainingMs !== null && (
-              <div className={`mt-2 text-xs font-semibold tracking-wider px-3.5 py-1 rounded-full text-center ${
-                isAgent
-                  ? 'text-emerald-200 bg-black/60 border border-emerald-400/30'
-                  : 'text-emerald-700 bg-white/80 border border-emerald-200'
-              }`}>
-                TURN: {Math.ceil(turnRemainingMs / 1000)}s
-              </div>
-            )}
-          </motion.div>
-        </div>
+          {/* Players */}
+          {gameState.players.map((player, idx) => (
+            <PlayerSeat
+              key={player.sid}
+              player={player}
+              index={idx}
+              totalPlayers={gameState.players.length}
+              center={tableCenter}
+              paidTotal={paidMap[player.sid]}
+              avatarOverride={SEAT_AVATARS[idx % SEAT_AVATARS.length]}
+              debugLayout={debugSeatLayout}
+              layoutNonce={layoutNonce}
+              isAgent={isAgent}
+              isDealer={dealerIndex === idx}
+              isSmallBlind={smallBlindIndex === idx}
+              isBigBlind={bigBlindIndex === idx}
+              isCurrentTurn={gameState.current_player === player.sid}
+              isSpeaking={activeSpeakerSid === player.sid && gameState.current_player === player.sid}
+              isWinner={winnerSet.has(player.sid)}
+              onAvatarAnchor={handleSeatAnchor}
+            />
+          ))}
 
-
-        {/* Pot Display */}
-        <div
-          className="absolute left-0 right-0 flex justify-center z-30"
-          style={{ top: 'calc(34% + 140px)' }}
-        >
-          <motion.div
-            key={gameState.pot}
-            initial={{ scale: 1.1 }}
-            animate={{ scale: 1 }}
-            className="flex flex-col items-center"
-            style={{ width: hudWidth }}
-          >
-            <div className={`w-full text-center px-5 py-2.5 rounded-full border text-lg font-bold tracking-wide ${
-              isAgent 
-                ? 'bg-black/75 border-emerald-400/40 text-emerald-100 shadow-[0_10px_30px_rgba(16,185,129,0.2)]' 
-                : 'bg-white/95 border-emerald-200 text-emerald-700 shadow-lg'
-            }`}>
-              POT ${gameState.pot}
-            </div>
-            {(gameState.small_blind && gameState.big_blind) && (
-              <div className={`mt-2 text-sm font-semibold tracking-wider px-3.5 py-1 rounded-full ${
-                isAgent 
-                  ? 'text-emerald-200 bg-black/50 border border-emerald-400/30' 
-                  : 'text-emerald-700 bg-white/70 border border-emerald-200'
-              }`}>
-                Blinds: ${gameState.small_blind}/${gameState.big_blind}
-              </div>
-            )}
-          </motion.div>
-        </div>
-
-        {/* Players */}
-        {gameState.players.map((player, idx) => (
-          <PlayerSeat
-            key={player.sid}
-            player={player}
-            index={idx}
-            totalPlayers={gameState.players.length}
+          {/* Animations */}
+          <ChipStream
+            players={gameState.players}
             center={tableCenter}
-            isAgent={isAgent}
-            isDealer={dealerIndex === idx}
-            isSmallBlind={smallBlindIndex === idx}
-            isBigBlind={bigBlindIndex === idx}
-            isCurrentTurn={gameState.current_player === player.sid}
-            isSpeaking={activeSpeakerSid === player.sid}
-            pot={gameState.pot}
-            winners={gameState.winners}
+            seatAnchors={seatAnchors}
+            potAnchor={potAnchor}
+            settlement={settlementPulse}
           />
-        ))}
 
-        {/* Animations */}
-        <ChipStream
-          players={gameState.players}
-          pot={gameState.pot}
-          center={tableCenter}
-        />
+        </div>
       </div>
 
-      {/* Sidebar Info */}
-      <div className={`w-80 border-l z-30 ${
-        isAgent 
-          ? 'border-gray-800 bg-black/90' 
-          : 'border-slate-200 bg-white/90 backdrop-blur-md shadow-xl'
-      }`}>
-        <ActionTimeline
-          logs={gameLog}
-          phase={gameState.phase}
-          currentPlayerSid={gameState.current_player}
-          players={gameState.players}
-        />
+      {/* Right Chat Panel */}
+        <div
+          className={`w-64 border-l px-4 py-4 overflow-x-hidden ${
+            isAgent ? 'border-emerald-500/20 bg-black/60 text-emerald-100' : 'border-emerald-200 bg-white/90 text-emerald-700'
+          }`}
+          style={{ transform: `translate(${getElementOffset('chatPanel').x}px, ${getElementOffset('chatPanel').y}px)` }}
+        >
+        <div className="text-[13px] font-bold uppercase tracking-[0.32em] opacity-80">Chat ({chatCount})</div>
+        <div className={`mt-2 text-[11px] font-semibold uppercase tracking-[0.3em] ${
+          isAgent ? 'text-emerald-200/70' : 'text-emerald-600/70'
+        }`}>
+          {handLabel} · {phaseLabel}
+        </div>
+        <div className="mt-3 space-y-2 text-sm max-h-[calc(100vh-220px)] overflow-y-auto pr-1 overflow-x-hidden">
+          {chatCount === 0 ? (
+            <div className="opacity-70">No messages yet.</div>
+          ) : (
+            chatPhaseGroups.map((group) => {
+              const isCurrent = group.phase === currentPhaseKey;
+              const collapsed = !isCurrent && (chatPhaseCollapse[group.phase] ?? true);
+              return (
+                <div key={`chat-phase-${group.phase}`} className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isCurrent) return;
+                      setChatPhaseCollapse((prev) => ({
+                        ...prev,
+                        [group.phase]: !(prev[group.phase] ?? true),
+                      }));
+                    }}
+                    className={`w-full flex items-center justify-between text-[11px] font-bold uppercase tracking-[0.3em] ${
+                      isCurrent
+                        ? (isAgent ? 'text-emerald-200' : 'text-emerald-700')
+                        : (isAgent ? 'text-emerald-200/70' : 'text-emerald-700/70')
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>{formatPhase(group.phase)}</span>
+                      {isCurrent && <span className="text-[9px] px-2 py-0.5 rounded-full border border-emerald-400/40">LIVE</span>}
+                    </span>
+                    {!isCurrent && <span className="text-[10px]">{collapsed ? '▸' : '▾'}</span>}
+                  </button>
+                  {!collapsed && (
+                    group.items.length === 0 ? (
+                      <div className="opacity-60 text-xs">No messages yet.</div>
+                    ) : (
+                      [...group.items].reverse().map((item, idx) => {
+                    const isLatest = isCurrent && idx === 0;
+                    const isActing = item.senderId
+                      ? item.senderId === gameState.current_player
+                      : (isLatest && lastActionSid === gameState.current_player);
+                    return (
+                      <div
+                        key={item.id}
+                        className={`leading-snug flex items-start gap-2 ${
+                          isActing
+                            ? (isAgent ? 'text-emerald-100 font-extrabold' : 'text-emerald-900 font-bold')
+                            : isLatest
+                              ? (isAgent ? 'text-emerald-100 font-semibold' : 'text-emerald-800 font-semibold')
+                              : ''
+                        }`}
+                      >
+                        <span className="text-base">{isActing ? '▶︎' : '💬'}</span>
+                        <span>{item.message}</span>
+                      </div>
+                    );
+                  })
+                )
+              )}
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
     </div>
   );

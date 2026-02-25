@@ -58,6 +58,7 @@ class SocketEvent:
     ROOM_CHAT = "room:chat"
     SYSTEM_CONNECTED = "system:connected"
     SYSTEM_ERROR = "system:error"
+    SYSTEM_ONLINE = "system:online"
     WW_ACTION = "ww:action"
     WW_CHAT_WOLF = "ww:chat:wolf"
     WW_CHAT_DAY = "ww:chat:day"
@@ -66,6 +67,7 @@ class SocketEvent:
     WW_PHASE_CHANGE = "ww:phase:change"
     TX_ACTION = "tx:action"
     TX_PHASE_CHANGE = "tx:phase:change"
+    TX_HAND_RESULT = "tx:hand:result"
     TX_SETTLEMENT = "tx:settlement"
 
 

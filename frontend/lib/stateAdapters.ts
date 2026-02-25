@@ -10,6 +10,20 @@ const toString = (value: unknown, fallback = ''): string => {
   return String(value);
 };
 
+const CARD_CODE_RE = /^(10|[2-9TJQKA])([shdc])$/i;
+
+const extractCardCodes = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.flatMap(extractCardCodes);
+  if (typeof value !== 'string') return [];
+  const normalized = value.trim();
+  if (normalized === '??') return ['??'];
+  const match = normalized.match(CARD_CODE_RE);
+  if (!match) return [];
+  const rank = match[1].toUpperCase();
+  const suit = match[2].toLowerCase();
+  return [`${rank}${suit}`];
+};
+
 export const unwrapSocketPayload = <T = any>(payload: any): T => {
   if (payload && typeof payload === 'object' && 'ok' in payload && 'data' in payload) {
     return payload.data as T;
@@ -20,7 +34,7 @@ export const unwrapSocketPayload = <T = any>(payload: any): T => {
 export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
   const gameState = roomState?.game_state ?? roomState?.gameState ?? roomState;
   if (!gameState) return null;
-  const inner = gameState.state || {};
+  const inner = gameState.state && typeof gameState.state === 'object' ? gameState.state : gameState;
   const smallBlind = toNumber(inner.small_blind ?? gameState.small_blind ?? 1, 1);
   const bigBlind = toNumber(inner.big_blind ?? gameState.big_blind ?? 2, 2);
   const playersRaw = Array.isArray(gameState.players) ? gameState.players : [];
@@ -28,6 +42,8 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
   const bets = inner.bets || {};
   const statuses = inner.statuses || {};
   const leftPlayers = new Set<number>((gameState.left_players || inner.left_players || []).map((id: any) => toNumber(id)));
+  const eligiblePlayers = new Set<number>((inner.eligible_players || gameState.eligible_players || []).map((id: any) => toNumber(id)));
+  const inHandPlayers = new Set<number>((inner.in_hand_players || gameState.in_hand_players || []).map((id: any) => toNumber(id)));
   const handIndex = toNumber(inner.hand_index ?? gameState.hand_index ?? 0, 0);
   const seatOrder = [...playersRaw].sort((a, b) => toNumber(a.seat) - toNumber(b.seat));
 
@@ -43,33 +59,50 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
   }
 
   const holeCards = Array.isArray(inner.hole_cards) ? inner.hole_cards : [];
+  const handActions = Array.isArray(gameState.hand_actions) ? gameState.hand_actions : [];
   const holeMap: Record<number, string[]> = {};
   holeCards.forEach((cards: any, idx: number) => {
     const player = handOrder[idx];
     if (!player) return;
     const id = toNumber(player.agent_id ?? player.id ?? player.sid);
-    holeMap[id] = Array.isArray(cards) ? cards.map((c) => toString(c)) : [];
+    holeMap[id] = extractCardCodes(cards).slice(0, 2);
   });
 
   const mappedPlayers: SpectatorPlayer[] = seatOrder.map((player) => {
     const id = toNumber(player.agent_id ?? player.id ?? player.sid);
     const nickname = player.agent_name ?? player.nickname ?? `agent_${id}`;
     const chips = toNumber(stacks[id] ?? player.chips ?? 0);
-    const isActive = Boolean(statuses[id]);
-    const status = isActive ? 'active' : (chips > 0 ? 'folded' : 'sitout');
+    const isLeft = leftPlayers.has(id);
+    const eligibleFallback = chips > 0 && !isLeft;
+    const isEligible = eligiblePlayers.size > 0 ? eligiblePlayers.has(id) : eligibleFallback;
+    const inHandFallback = Boolean(statuses[id]);
+    const isInHand = inHandPlayers.size > 0 ? inHandPlayers.has(id) : inHandFallback;
+    let status: SpectatorPlayer['status'];
+    if (isLeft) {
+      status = 'out';
+    } else if (!isEligible) {
+      status = chips > 0 ? 'sitout' : 'busted';
+    } else if (isInHand) {
+      status = chips === 0 ? 'allin' : 'active';
+    } else {
+      status = 'folded';
+    }
     const currentBet = toNumber(bets[id] ?? 0);
+    const holeCards = !isEligible || isLeft ? [] : holeMap[id];
     return {
       sid: toString(id),
       nickname,
       chips,
       status,
-      hole_cards: holeMap[id],
+      hole_cards: holeCards,
       current_bet: currentBet,
     };
   });
 
   const pot = toNumber(inner.pot ?? 0);
-  const board = Array.isArray(inner.board) ? inner.board.map((c: any) => toString(c)) : [];
+  const boardSource = inner.board ?? inner.community_cards ?? [];
+  const isNested = Array.isArray(boardSource) && boardSource.some((item) => Array.isArray(item));
+  const board = isNested ? [] : extractCardCodes(boardSource).slice(0, 5);
   const currentBet = Math.max(0, ...Object.values(bets).map((value) => toNumber(value)));
   const actorId = inner.actor_id ?? inner.actorId;
   const dealerPosition = seatOrder.length > 0 ? handIndex % seatOrder.length : undefined;
@@ -85,6 +118,7 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
     dealer_position: dealerPosition,
     current_player: actorId !== undefined && actorId !== null ? toString(actorId) : undefined,
     hand_number: handIndex,
+    hand_actions: handActions,
     small_blind: smallBlind,
     big_blind: bigBlind,
     timers,

@@ -2,7 +2,7 @@ export interface SpectatorPlayer {
   sid: string;
   nickname: string;
   chips: number;
-  status: string; // 'active' | 'folded' | 'allin' | 'sitout'
+  status: string; // 'active' | 'folded' | 'allin' | 'sitout' | 'out' | 'busted'
   cards?: string[]; // Exposed cards (if any)
   hole_cards?: string[]; // Only visible in Reveal Mode or Showdown
   current_bet?: number;
@@ -22,6 +22,7 @@ export interface TexasGameState {
   big_blind?: number;
   chat_history?: ChatMessage[];
   hand_number?: number;
+  hand_actions?: Array<{ action_type: number; actor_id?: number; amount?: number; phase?: string }>;
   winners?: string[];
   timers?: Record<string, number>;
 }
@@ -59,11 +60,13 @@ export interface WerewolfGameState {
 }
 
 export interface ChatMessage {
+  id?: string;
   sid?: string;
   nickname: string;
   message: string;
   action?: string;
   timestamp?: string;
+  ts_ms?: number;
   phase?: string;
   is_wolf_chat?: boolean;
   isSystem?: boolean;

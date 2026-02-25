@@ -9,10 +9,12 @@ interface PlayingCardProps {
   suit: Suit;
   rank: Rank;
   hidden?: boolean;
+  compact?: boolean;
+  showRank?: boolean;
   className?: string;
 }
 
-const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, className = '' }) => {
+const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, compact = false, showRank = true, className = '' }) => {
   // Get suit symbol
   const getSuitSymbol = (suit: Suit): string => {
     switch (suit) {
@@ -26,9 +28,9 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
   // Get suit color
   const getSuitColor = (suit: Suit): string => {
     if (suit === 'hearts' || suit === 'diamonds') {
-      return 'text-red-600';
+      return 'text-red-700';
     }
-    return 'text-slate-800';
+    return 'text-slate-900';
   };
 
   const getSuitTextShadow = (suit: Suit): string => {
@@ -38,22 +40,17 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     return 'drop-shadow-[0_1px_0_rgba(255,255,255,0.25)]';
   };
 
-  const getBorderColor = (suit: Suit): string => {
-    if (suit === 'hearts' || suit === 'diamonds') {
-      return 'border-red-200';
-    }
-    return 'border-slate-200';
-  };
+  const getBorderColor = (_suit: Suit): string => 'border-slate-200';
 
   if (hidden) {
     return (
       <div
         className={`
           relative w-20 h-28 
-          bg-slate-900 border-2 border-slate-700
-          rounded-lg overflow-hidden
-          shadow-lg
-          ${className}
+        bg-slate-900 border-2 border-slate-700
+        rounded-lg overflow-hidden
+        shadow-lg
+        ${className}
         `}
         role="img"
         aria-label="Hidden playing card"
@@ -70,44 +67,52 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     <div
       className={`
         relative w-20 h-28 
-        bg-white border-2 ${getBorderColor(suit)}
+        bg-[#f7f6f2] border-2 ${getBorderColor(suit)}
         rounded-lg overflow-hidden
-        shadow-md
-        transition-transform hover:scale-[1.03]
+        shadow-[0_6px_16px_rgba(0,0,0,0.25)]
+        ring-1 ring-black/5
         ${className}
       `}
       role="img"
-      aria-label={`${rank} of ${suit}`}
+      aria-label="Playing card"
     >
-      <div className="absolute inset-0 flex items-center justify-center text-6xl opacity-5 select-none">
-        🃏
-      </div>
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.9),rgba(255,255,255,0.4)_45%,rgba(0,0,0,0.02)_100%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.55),rgba(0,0,0,0.03))]" />
       
       {/* Card content */}
-      <div className="relative h-full flex flex-col p-2">
-        {/* Top rank and suit */}
-        <div className="flex flex-col items-start">
-          <div className={`text-[15px] font-bold leading-none tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
-            {rank}
-          </div>
-          <div className={`text-xl ${getSuitColor(suit)} leading-none`}>
+      <div
+        className="relative h-full font-serif"
+        style={{ fontFamily: '"Times New Roman", "Georgia", serif' }}
+      >
+        {/* Top-left rank and suit */}
+        <div className="absolute top-2 left-2 flex flex-col items-start leading-none">
+          {showRank && (
+            <div className={`${compact ? 'text-[13px]' : 'text-[20px]'} font-bold tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+              {rank}
+            </div>
+          )}
+          <div className={`${compact ? 'text-[14px]' : 'text-[20px]'} ${getSuitColor(suit)} leading-none`}>
             {getSuitSymbol(suit)}
           </div>
         </div>
         
         {/* Center suit symbol (consistent for all ranks) */}
-        <div className="flex-1 flex items-center justify-center">
-          <div className={`text-3xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
-            {getSuitSymbol(suit)}
+        {!compact && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className={`text-5xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+              {getSuitSymbol(suit)}
+            </div>
           </div>
-        </div>
+        )}
         
-        {/* Bottom rank and suit (rotated) */}
-        <div className="flex flex-col items-end rotate-180">
-          <div className={`text-[15px] font-bold leading-none tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
-            {rank}
-          </div>
-          <div className={`text-xl ${getSuitColor(suit)} leading-none`}>
+        {/* Bottom-right rank and suit (rotated) */}
+        <div className="absolute bottom-2 right-2 flex flex-col items-end rotate-180 leading-none">
+          {showRank && (
+            <div className={`${compact ? 'text-[13px]' : 'text-[20px]'} font-bold tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+              {rank}
+            </div>
+          )}
+          <div className={`${compact ? 'text-[14px]' : 'text-[20px]'} ${getSuitColor(suit)} leading-none`}>
             {getSuitSymbol(suit)}
           </div>
         </div>

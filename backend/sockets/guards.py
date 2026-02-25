@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from backend.views.errors import AuthError
 from backend.views.errors import ForbiddenError
+from backend.config.constants import RoomRole
 from backend.repositories.kset.room_repo import RoomCache
 from backend.repositories.redis_client import get_client
 from backend.views.response import fail
@@ -65,6 +66,34 @@ def socket_require_agent(server):
     return decorator
 
 
+def socket_require_role(server, required_role: RoomRole | None, allow_guest: bool | None = None):
+    def decorator(func: Callable[..., Awaitable[Any]]):
+        @wraps(func)
+        async def wrapper(sid, payload=None, *args, **kwargs):
+            settings = get_settings()
+            role = getattr(payload, "role", None)
+            session = await server.get_session(sid)
+            agent_id = session.get("agent_id") if session else None
+            guest_allowed = settings.allow_guest_spectator if allow_guest is None else allow_guest
+
+            if role == RoomRole.SPECTATOR:
+                if required_role is not None and required_role != RoomRole.SPECTATOR:
+                    raise ForbiddenError("spectator_readonly")
+                if agent_id is None and not guest_allowed:
+                    raise ForbiddenError("spectator_readonly")
+                return await func(sid, agent_id, payload, *args, **kwargs)
+
+            if required_role == RoomRole.SPECTATOR:
+                raise ForbiddenError("spectator_readonly")
+
+            agent_id = await require_agent_id(server, sid)
+            return await func(sid, agent_id, payload, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def socket_require_room_player(server):
     def decorator(func: Callable[..., Awaitable[Any]]):
         @wraps(func)
@@ -110,6 +139,15 @@ def _parse_rate_limit(limit: str) -> tuple[int, int]:
 
 def socket_rate_limit(server, limit: str, key_prefix: str | None = None):
     max_count, window_seconds = _parse_rate_limit(limit)
+    settings = get_settings()
+
+    if settings.debug:
+        def decorator(func: Callable[..., Awaitable[Any]]):
+            @wraps(func)
+            async def wrapper(sid, *args, **kwargs):
+                return await func(sid, *args, **kwargs)
+            return wrapper
+        return decorator
 
     def decorator(func: Callable[..., Awaitable[Any]]):
         @wraps(func)

@@ -6,6 +6,7 @@ import { WerewolfPlayer } from '@/store/types';
 import { getWerewolfSeatPosition } from './layoutUtils';
 import { motion } from 'framer-motion';
 import type { AnchoredCenter } from '@/hooks/useAnchoredCenter';
+import AgentSummaryHover from '@/components/AgentSummaryHover';
 
 interface GodViewBoardProps {
   players: WerewolfPlayer[];
@@ -158,7 +159,7 @@ export default function GodViewBoard({ players, activeMessage, center, isAgent =
         // Death state overrides
         let deathOverride = '';
         if (!player.is_alive) {
-          avatar = '💀';
+          avatar = '☠️';
           deathOverride = isAgent
             ? 'border-gray-700 grayscale opacity-50'
             : 'border-slate-300 opacity-40';
@@ -182,27 +183,29 @@ export default function GodViewBoard({ players, activeMessage, center, isAgent =
             transition={{ type: 'spring', stiffness: 300, damping: 20 }}
           >
             {/* Avatar Circle */}
-            <div className={`
-              w-full h-full rounded-full border-[6px] ${finalRingColor} ${finalBgColor}
-              flex items-center justify-center relative
-              ${isSpeaking ? 'ring-8 ring-yellow-400 ring-opacity-60 animate-pulse' : ''}
-              transition-all duration-300
-            `}>
-              <div
-                className="absolute inset-2 rounded-full opacity-30"
-                style={{ background: `radial-gradient(circle at 30% 30%, hsl(${getPlayerHue(player.sid)} 85% 70%) 0%, transparent 60%)` }}
-              />
-              <span className="text-6xl filter drop-shadow-md select-none leading-none mt-2">{avatar}</span>
+            <AgentSummaryHover agentId={player.sid} agentName={player.nickname} isAgent={isAgent}>
+              <div className={`
+                w-full h-full rounded-full border-[6px] ${finalRingColor} ${finalBgColor}
+                flex items-center justify-center relative
+                ${isSpeaking ? 'ring-8 ring-yellow-400 ring-opacity-60 animate-pulse' : ''}
+                transition-all duration-300
+              `}>
+                <div
+                  className="absolute inset-2 rounded-full opacity-30"
+                  style={{ background: `radial-gradient(circle at 30% 30%, hsl(${getPlayerHue(player.sid)} 85% 70%) 0%, transparent 60%)` }}
+                />
+                <span className="text-6xl filter drop-shadow-md select-none leading-none mt-2">{avatar}</span>
 
-              {/* Seat Number */}
-              <div className={`absolute -bottom-1 -right-1 w-9 h-9 rounded-full flex items-center justify-center border-2 text-sm font-bold shadow-lg ${
-                isAgent
-                  ? 'bg-black border-gray-700 text-white'
-                  : 'bg-white border-slate-200 text-slate-700'
-              }`}>
-                {idx + 1}
+                {/* Seat Number */}
+                <div className={`absolute -bottom-1 -right-1 w-9 h-9 rounded-full flex items-center justify-center border-2 text-sm font-bold shadow-lg ${
+                  isAgent
+                    ? 'bg-black border-gray-700 text-white'
+                    : 'bg-white border-slate-200 text-slate-700'
+                }`}>
+                  {idx + 1}
+                </div>
               </div>
-            </div>
+            </AgentSummaryHover>
 
             {/* Name */}
             <div

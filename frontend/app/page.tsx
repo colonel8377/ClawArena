@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import getApiBaseUrl from '@/lib/api';
 import { botFetch } from '@/lib/antiBot';
-import { getSocket } from '@/lib/socket';
+import { ensureSocketMode } from '@/lib/socket';
+import { hasValidToken } from '@/lib/antiBot';
 import { Monitor, Activity, Moon, Users, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useUiMode } from '@/components/UiModeProvider';
@@ -30,6 +31,7 @@ export default function GodModeDashboard() {
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [onlineCounts, setOnlineCounts] = useState<{ players: number; spectators: number }>({ players: 0, spectators: 0 });
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -45,7 +47,9 @@ export default function GodModeDashboard() {
         if (!mounted) return;
         const poker_tables: string[] = [];
         const werewolf_games: string[] = [];
-        rooms.forEach((room) => {
+        rooms
+          .filter((room) => room.room_state === 2 && (room.members_count ?? 0) > 0)
+          .forEach((room) => {
           const roomId = String(room.room_id);
           if (room.game_type === 2) {
             poker_tables.push(roomId);
@@ -110,25 +114,39 @@ export default function GodModeDashboard() {
   }, []);
 
   useEffect(() => {
-    const socket = getSocket();
+    const socket = ensureSocketMode(hasValidToken() ? 'player' : 'spectator');
     if (!socket) return;
 
     const onConnect = () => setSocketConnected(true);
     const onDisconnect = () => setSocketConnected(false);
-
-    setSocketConnected(socket.connected);
+    const onOnline = (payload: any) => {
+      if (!payload?.ok) return;
+      const data = payload.data || {};
+      setOnlineCounts({
+        players: Number(data.players || 0),
+        spectators: Number(data.spectators || 0),
+      });
+    };
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
+    socket.on('system:online', onOnline);
+
+    // Connect for dashboard monitoring in spectator mode.
+    if (!socket.connected) {
+      socket.connect();
+    }
+    setSocketConnected(socket.connected);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
+      socket.off('system:online', onOnline);
     };
   }, []);
 
   const isAgent = readingMode === 'agent';
-  
+
   const apiStatusLabel = healthLoading
     ? 'POLLING...'
     : healthError
@@ -336,13 +354,18 @@ export default function GodModeDashboard() {
             type="neutral"
         />
         <StatusItem 
-            label="System Uptime" 
-            value="100%" 
-            type="success"
+            label="Players" 
+            value={onlineCounts.players} 
+            type="neutral"
         />
         <StatusItem 
-            label="Socket Status" 
-            value={socketConnected ? 'ONLINE' : 'OFFLINE'} 
+            label="Spectators" 
+            value={onlineCounts.spectators} 
+            type="neutral"
+        />
+        <StatusItem
+            label="Socket Status"
+            value={socketConnected ? 'ONLINE' : 'OFFLINE'}
             type={socketConnected ? 'success' : 'error'}
         />
         <StatusItem 
@@ -351,14 +374,9 @@ export default function GodModeDashboard() {
             type={!healthError ? 'success' : 'error'}
         />
         <StatusItem 
-            label="Privacy" 
-            value="ON" 
+            label="System Uptime" 
+            value="100%" 
             type="success"
-        />
-        <StatusItem 
-            label="Backend Debug" 
-            value="N/A" 
-            type="neutral"
         />
       </div>
 
@@ -528,7 +546,7 @@ export default function GodModeDashboard() {
                       <span className="text-[10px] font-bold uppercase tracking-wider">Werewolf</span>
                     </div>
                     <div className={`text-lg font-bold truncate ${isAgent ? 'text-white' : 'text-slate-800'}`}>
-                      {gameId}
+                      Room {gameId}
                     </div>
                   </div>
 

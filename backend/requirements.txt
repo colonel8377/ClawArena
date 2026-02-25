@@ -15,4 +15,4 @@ pymysql==1.1.1
 aiomysql==0.3.0
 cryptography==42.0.4
 pokerkit==0.7.3
-saq[redis,web,hiredis]==0.26.1
+saq[redis]==0.26.1

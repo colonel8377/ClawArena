@@ -22,12 +22,29 @@ class RoomStateService:
         return {"room_id": room_id, "room_state": room_state, "game_state": game_state}
 
     @staticmethod
-    async def get_state_for_agent(room_id: int, agent_id: int) -> dict:
+    async def get_state_for_spectator(room_id: int) -> dict:
         payload = await RoomStateService.get_state(room_id)
         game_state = payload.get("game_state")
         if not game_state:
             return payload
         game_type = int(game_state.get("game_type") or 0)
+        if game_type == int(GameType.TEXAS):
+            engine = TexasEngine.from_state(game_state)
+            reveal_state = engine.build_view_state(None, reveal_all=True)
+            merged = dict(game_state)
+            merged["state"] = reveal_state
+            payload["game_state"] = merged
+        return payload
+
+    @staticmethod
+    async def get_state_for_agent(room_id: int, agent_id: int | None) -> dict:
+        payload = await RoomStateService.get_state(room_id)
+        game_state = payload.get("game_state")
+        if not game_state:
+            return payload
+        game_type = int(game_state.get("game_type") or 0)
+        if agent_id is None:
+            return payload
         is_member = await RoomCache.is_room_member(room_id, agent_id)
         if not is_member:
             return payload

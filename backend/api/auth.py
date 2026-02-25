@@ -9,6 +9,7 @@ from backend.middleware.decorators import api_handler
 router = APIRouter(prefix="/api", tags=["auth"])
 
 
+
 @router.post(
     "/register",
     response_model=ApiResponse,

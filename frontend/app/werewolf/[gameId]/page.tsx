@@ -10,8 +10,7 @@ import DayNightCycle from '@/components/werewolf/DayNightCycle';
 import GodViewBoard from '@/components/werewolf/GodViewBoard';
 import InteractionGraph from '@/components/werewolf/InteractionGraph';
 import { mapWerewolfRoomState, normalizeWerewolfPhase } from '@/lib/stateAdapters';
-import { fetchRoomChatHistory } from '@/lib/roomsApi';
-import { motion } from 'framer-motion';
+import { fetchRoomChatHistory, fetchRoomEventHistory } from '@/lib/roomsApi';
 import { useAnchoredCenter } from '@/hooks/useAnchoredCenter';
 
 const hashString = (value: string) => {
@@ -29,6 +28,12 @@ const getRoleName = (role?: WerewolfPlayer['role']) => {
   if (!role) return undefined;
   if (typeof role === 'string') return role;
   return role.role;
+};
+
+type ActionFeedItem = {
+  id: string;
+  ts_ms: number;
+  message: string;
 };
 
 export default function WerewolfGamePage() {
@@ -62,23 +67,37 @@ export default function WerewolfGamePage() {
   const systemLogKeys = React.useRef<Set<string>>(new Set());
   const [phaseRemainingMs, setPhaseRemainingMs] = React.useState<number | null>(null);
   const pendingHistory = React.useRef<ChatMessage[] | null>(null);
+  const chatSeenRef = React.useRef<Set<string>>(new Set());
+  const actionSeenRef = React.useRef<Set<string>>(new Set());
+  const [actionFeed, setActionFeed] = React.useState<ActionFeedItem[]>([]);
+  const pushAction = React.useCallback((item: ActionFeedItem) => {
+    if (!item || !item.id) return;
+    if (actionSeenRef.current.has(item.id)) return;
+    actionSeenRef.current.add(item.id);
+    setActionFeed((prev) => [...prev, item].slice(-20));
+  }, []);
 
   React.useEffect(() => {
     if (!gameState) return;
     setLoadStatus('ready');
 
     const newLogs: ChatMessage[] = [];
-    const now = new Date().toISOString();
-    const addSystemLog = (key: string, message: string, sid: string) => {
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    const addSystemLog = (key: string, message: string, sid: string, toAction = false) => {
       if (systemLogKeys.current.has(key)) return;
       systemLogKeys.current.add(key);
       newLogs.push({
         nickname: 'SYSTEM',
         message,
         timestamp: now,
+        ts_ms: nowMs,
         sid,
         isSystem: true
       });
+      if (toAction) {
+        pushAction({ id: `system:${key}`, ts_ms: nowMs, message });
+      }
     };
 
     // Check Phase Change
@@ -96,13 +115,14 @@ export default function WerewolfGamePage() {
         let causeText = 'has been eliminated';
         if (death.cause === 'wolf_kill') causeText = 'was killed by wolves';
         else if (death.cause === 'poison') causeText = 'was poisoned by the witch';
-        else if (death.cause === 'vote') causeText = 'was voted out';
+        else if (death.cause === 'vote') causeText = 'was voted out by the village';
         else if (death.cause === 'hunter_shot') causeText = 'was shot by the hunter';
         const roleText = death.role_revealed ? ` (Role: ${death.role_revealed})` : '';
         addSystemLog(
           `death:${death.sid}:${death.cause || 'unknown'}`,
           `☠️ ${death.nickname} ${causeText}${roleText}`,
-          'system-death'
+          'system-death',
+          true
         );
       }
     }
@@ -117,7 +137,8 @@ export default function WerewolfGamePage() {
             addSystemLog(
               `death:diff:${p.sid}`,
               `☠️ ${p.nickname} has been eliminated.`,
-              'system-death'
+              'system-death',
+              true
             );
          }
        });
@@ -130,7 +151,8 @@ export default function WerewolfGamePage() {
         addSystemLog(
           `night:${key}`,
           `🌙 Night deaths: ${gameState.eliminated_last_night.join(', ')}`,
-          'system-night-death'
+          'system-night-death',
+          true
         );
         prevEliminated.current = key;
       }
@@ -143,7 +165,8 @@ export default function WerewolfGamePage() {
         addSystemLog(
           `offline:${key}`,
           `⚠️ Offline removed: ${gameState.offline_deaths.join(', ')}`,
-          'system-default'
+          'system-default',
+          true
         );
         prevOfflineDeaths.current = key;
       }
@@ -158,7 +181,8 @@ export default function WerewolfGamePage() {
         addSystemLog(
           `eliminated:${key}:${gameState.phase_reason || ''}:${gameState.phase_forced ? 'forced' : 'normal'}`,
           `🗳️ Eliminated: ${gameState.eliminated.join(', ')}${reasonText}${forcedText}`,
-          'system-death'
+          'system-death',
+          true
         );
         prevDayEliminated.current = key;
       }
@@ -175,11 +199,11 @@ export default function WerewolfGamePage() {
           return player?.nickname || `agent_${id}`;
         };
         const summary = entries.map((entry) => `${resolveName(entry.target)}=${entry.count}`).join(', ');
-        addSystemLog(`votes:${key}`, `🗳️ Votes: ${summary}`, 'system-default');
+        addSystemLog(`votes:${key}`, `🗳️ Votes: ${summary}`, 'system-default', true);
         if (!gameState.eliminated || gameState.eliminated.length === 0) {
           const reasonText = gameState.phase_reason ? ` (reason: ${gameState.phase_reason})` : '';
           if (reasonText) {
-            addSystemLog(`no_elim:${key}:${gameState.phase_reason || ''}`, `🗳️ No elimination${reasonText}`, 'system-default');
+            addSystemLog(`no_elim:${key}:${gameState.phase_reason || ''}`, `🗳️ No elimination${reasonText}`, 'system-default', true);
           }
         }
         prevVoteCounts.current = key;
@@ -190,7 +214,7 @@ export default function WerewolfGamePage() {
       const winnersKey = gameState.winners.join('|');
       const prevKey = prevWinners.current?.join('|');
       if (winnersKey !== prevKey) {
-        addSystemLog(`winners:${winnersKey}`, `🏆 Winners: ${gameState.winners.join(', ')}`, 'system-winners');
+        addSystemLog(`winners:${winnersKey}`, `🏆 Winners: ${gameState.winners.join(', ')}`, 'system-winners', true);
         prevWinners.current = [...gameState.winners];
       }
     }
@@ -238,16 +262,21 @@ export default function WerewolfGamePage() {
 
   React.useEffect(() => {
     pendingHistory.current = null;
+    chatSeenRef.current = new Set();
+    actionSeenRef.current = new Set();
+    setActionFeed([]);
     let mounted = true;
     const loadHistory = async () => {
       try {
         const history = await fetchRoomChatHistory(roomId, 80);
         if (!mounted) return;
         const mapped = (history.items || []).map((msg) => ({
+          id: msg.id,
           sid: msg.sender_id !== undefined && msg.sender_id !== null ? String(msg.sender_id) : undefined,
           nickname: msg.sender_name || `agent_${msg.sender_id ?? 'unknown'}`,
           message: msg.content,
           timestamp: new Date(msg.ts_ms).toISOString(),
+          ts_ms: msg.ts_ms,
           is_wolf_chat: msg.channel === 'wolf',
         }));
         pendingHistory.current = mapped;
@@ -257,13 +286,26 @@ export default function WerewolfGamePage() {
           const merged = [...mapped, ...existing];
           const seen = new Set<string>();
           const deduped = merged.filter((item) => {
-            const key = `${item.sid || ''}|${item.timestamp || ''}|${item.message}`;
+            const key = item.id || `${item.sid || ''}|${item.timestamp || ''}|${item.message}`;
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
           });
-          setGameState({ ...current, chat_messages: deduped.slice(-200) });
+          const normalized = deduped.slice(-200);
+          chatSeenRef.current = new Set(
+            normalized.map((item) => item.id || `${item.sid || ''}|${item.timestamp || ''}|${item.message}`)
+          );
+          setGameState({ ...current, chat_messages: normalized });
         }
+
+        const actionHistory = await fetchRoomEventHistory(roomId, 200, undefined, undefined, ['ww:night:action']);
+        if (!mounted) return;
+        const actionItems = (actionHistory.items || [])
+          .map((item) => buildNightActionItem(item.payload ?? item))
+          .filter((item): item is ActionFeedItem => Boolean(item));
+        actionItems.sort((a, b) => a.ts_ms - b.ts_ms);
+        actionSeenRef.current = new Set(actionItems.map((item) => item.id));
+        setActionFeed(actionItems.slice(-20));
       } catch {
       }
     };
@@ -271,15 +313,15 @@ export default function WerewolfGamePage() {
     return () => {
       mounted = false;
     };
-  }, [roomId, setGameState]);
+  }, [buildNightActionItem, roomId, setGameState]);
 
   // Merge and sort messages
   const allMessages = React.useMemo(() => {
      const chats = gameState?.chat_messages || [];
      const combined = [...chats, ...systemLogs];
      return combined.sort((a, b) => {
-        const tA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-        const tB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        const tA = a.ts_ms ?? (a.timestamp ? new Date(a.timestamp).getTime() : 0);
+        const tB = b.ts_ms ?? (b.timestamp ? new Date(b.timestamp).getTime() : 0);
         return tA - tB;
      });
   }, [gameState?.chat_messages, systemLogs]);
@@ -297,84 +339,6 @@ export default function WerewolfGamePage() {
     });
     return map;
   }, [gameState?.players, isAgent]);
-
-  const getSystemLogTone = React.useCallback((sid?: string) => {
-    if (!sid) return 'system-default';
-    if (sid === 'system-phase') return 'system-phase';
-    if (sid === 'system-death') return 'system-death';
-    if (sid === 'system-night-death') return 'system-night-death';
-    if (sid === 'system-winners') return 'system-winners';
-    return 'system-default';
-  }, []);
-
-  const systemToneClasses: Record<string, {
-    border: string;
-    background: string;
-    header: string;
-    body: string;
-  }> = isAgent ? {
-    'system-phase': {
-      border: 'border-sky-500',
-      background: 'bg-sky-500/10',
-      header: 'text-sky-500',
-      body: 'text-sky-200'
-    },
-    'system-death': {
-      border: 'border-rose-500',
-      background: 'bg-rose-500/10',
-      header: 'text-rose-500',
-      body: 'text-rose-200'
-    },
-    'system-night-death': {
-      border: 'border-orange-500',
-      background: 'bg-orange-500/10',
-      header: 'text-orange-500',
-      body: 'text-orange-200'
-    },
-    'system-winners': {
-      border: 'border-emerald-500',
-      background: 'bg-emerald-500/10',
-      header: 'text-emerald-500',
-      body: 'text-emerald-200'
-    },
-    'system-default': {
-      border: 'border-yellow-500',
-      background: 'bg-yellow-500/10',
-      header: 'text-yellow-500',
-      body: 'text-yellow-200'
-    }
-  } : {
-    'system-phase': {
-      border: 'border-sky-300',
-      background: 'bg-sky-50',
-      header: 'text-sky-600',
-      body: 'text-sky-700'
-    },
-    'system-death': {
-      border: 'border-rose-300',
-      background: 'bg-rose-50',
-      header: 'text-rose-600',
-      body: 'text-rose-700'
-    },
-    'system-night-death': {
-      border: 'border-orange-300',
-      background: 'bg-orange-50',
-      header: 'text-orange-600',
-      body: 'text-orange-700'
-    },
-    'system-winners': {
-      border: 'border-emerald-300',
-      background: 'bg-emerald-50',
-      header: 'text-emerald-600',
-      body: 'text-emerald-700'
-    },
-    'system-default': {
-      border: 'border-yellow-300',
-      background: 'bg-yellow-50',
-      header: 'text-yellow-600',
-      body: 'text-yellow-700'
-    }
-  };
 
   React.useEffect(() => {
     if (!gameState?.chat_messages?.length) return;
@@ -395,12 +359,51 @@ export default function WerewolfGamePage() {
   const appendChat = React.useCallback((message: ChatMessage) => {
     const current = useWerewolfStore.getState().gameState;
     if (!current) return;
+    const id = message.id || `${message.sid || ''}|${message.timestamp || ''}|${message.message}`;
+    if (chatSeenRef.current.has(id)) return;
+    chatSeenRef.current.add(id);
+    const merged = [...(current.chat_messages || []), message];
+    merged.sort((a, b) => {
+      const tA = a.ts_ms ?? (a.timestamp ? new Date(a.timestamp).getTime() : 0);
+      const tB = b.ts_ms ?? (b.timestamp ? new Date(b.timestamp).getTime() : 0);
+      return tA - tB;
+    });
     const next = {
       ...current,
-      chat_messages: [...(current.chat_messages || []), message].slice(-100),
+      chat_messages: merged.slice(-200),
     };
     setGameState(next);
   }, [setGameState]);
+
+  const buildNightActionItem = React.useCallback((rawEvent: any): ActionFeedItem | null => {
+    const event = rawEvent?.payload ? rawEvent.payload : rawEvent;
+    if (!event) return null;
+    const actionType = Number(event?.action_type);
+    const actorId = event?.actor_id !== undefined && event?.actor_id !== null ? String(event.actor_id) : undefined;
+    const payload = event?.payload || {};
+    const targetId = payload?.target_id !== undefined && payload?.target_id !== null ? String(payload.target_id) : undefined;
+    const resolveName = (id?: string) => {
+      if (!id) return 'unknown';
+      const player = useWerewolfStore.getState().gameState?.players?.find((p) => p.sid === id);
+      return player?.nickname || `agent_${id}`;
+    };
+    let message = '';
+    if (actionType === 4 && targetId) {
+      message = `🐺 Wolf ${resolveName(actorId)} targeted ${resolveName(targetId)}`;
+    } else if (actionType === 6) {
+      message = `🧪 Witch ${resolveName(actorId)} used antidote`;
+    } else if (actionType === 7 && targetId) {
+      message = `🧪 Witch ${resolveName(actorId)} poisoned ${resolveName(targetId)}`;
+    } else if (actionType === 5 && targetId) {
+      message = `🔮 Seer ${resolveName(actorId)} checked ${resolveName(targetId)}`;
+    } else if (actionType === 3 && targetId) {
+      message = `🛡️ Guard ${resolveName(actorId)} protected ${resolveName(targetId)}`;
+    }
+    if (!message) return null;
+    const id = event?.id ?? rawEvent?.id ?? `${actionType}-${actorId || 'na'}-${targetId || 'na'}-${event?.ts_ms ?? Date.now()}`;
+    const ts_ms = Number(event?.ts_ms ?? rawEvent?.ts_ms ?? Date.now());
+    return { id: String(id), ts_ms, message };
+  }, []);
 
   const applyPhaseChange = React.useCallback((event: any) => {
     const payload = event?.payload || {};
@@ -469,12 +472,16 @@ export default function WerewolfGamePage() {
             const merged = [...history, ...existing];
             const seen = new Set<string>();
             const deduped = merged.filter((item) => {
-              const key = `${item.sid || ''}|${item.timestamp || ''}|${item.message}`;
+              const key = item.id || `${item.sid || ''}|${item.timestamp || ''}|${item.message}`;
               if (seen.has(key)) return false;
               seen.add(key);
               return true;
             });
-            mapped.chat_messages = deduped.slice(-200);
+            const normalized = deduped.slice(-200);
+            chatSeenRef.current = new Set(
+              normalized.map((item) => item.id || `${item.sid || ''}|${item.timestamp || ''}|${item.message}`)
+            );
+            mapped.chat_messages = normalized;
             pendingHistory.current = null;
           }
           setGameState(mapped);
@@ -572,31 +579,50 @@ export default function WerewolfGamePage() {
           setSystemLogs(prev => [...prev, ...detailLogs]);
         }
       },
+      'ww:night:action': (data) => {
+        const event = data?.data ?? data;
+        const item = buildNightActionItem(event);
+        if (item) {
+          pushAction(item);
+        }
+      },
       'ww:chat:day': (data) => {
         const payload = data?.payload || {};
+        const chatId = data?.chat_id || data?.id;
+        const tsMs = Number(data?.ts_ms ?? Date.now());
         appendChat({
+          id: chatId ? String(chatId) : undefined,
           nickname: payload.actor_name || payload.sender_name || String(data?.actor_id || 'player'),
           message: payload.msg || payload.content || '',
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(tsMs).toISOString(),
+          ts_ms: tsMs,
           sid: String(data?.actor_id || payload.sender_id || 'player'),
         });
       },
       'ww:chat:wolf': (data) => {
         const payload = data?.payload || {};
+        const chatId = data?.chat_id || data?.id;
+        const tsMs = Number(data?.ts_ms ?? Date.now());
         appendChat({
+          id: chatId ? String(chatId) : undefined,
           nickname: payload.actor_name || payload.sender_name || String(data?.actor_id || 'player'),
           message: payload.msg || payload.content || '',
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(tsMs).toISOString(),
+          ts_ms: tsMs,
           sid: String(data?.actor_id || payload.sender_id || 'player'),
           is_wolf_chat: true,
         } as any);
       },
       'room:chat': (data) => {
         const payload = data || {};
+        const chatId = payload.chat_id || payload.id;
+        const tsMs = Number(payload.ts_ms ?? Date.now());
         appendChat({
+          id: chatId ? String(chatId) : undefined,
           nickname: payload.sender_name || payload.actor_name || String(payload.sender_id || payload.actor_id || 'player'),
           message: payload.content || payload.msg || '',
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(tsMs).toISOString(),
+          ts_ms: tsMs,
           sid: String(payload.sender_id || payload.actor_id || 'player'),
         });
       },
@@ -680,65 +706,51 @@ export default function WerewolfGamePage() {
     );
   }
 
+  const actionLogs = [...actionFeed].sort((a, b) => a.ts_ms - b.ts_ms).slice(-6);
+
   return (
     <div className={`flex h-screen overflow-hidden font-mono transition-colors duration-500 ${
       isAgent ? 'bg-black text-gray-200' : 'bg-slate-50 text-slate-800'
     }`}>
            <div className="flex-1 relative">
             <DayNightCycle phase={gameState.phase} isAgent={isAgent} contentRef={stageRef}>
-              {/* Phase HUD */}
-              <div className="absolute left-0 right-0 top-8 flex flex-col items-center gap-2 z-20 pointer-events-none">
-                <motion.div
-                  key={gameState.phase}
-                  initial={{ scale: 0.9, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                >
-                  <div className={`text-center px-6 py-2 rounded-full border text-lg font-black tracking-[0.35em] uppercase ${
-                    isAgent
-                      ? 'bg-black/70 border-purple-400/30 text-purple-100 shadow-[0_12px_40px_rgba(168,85,247,0.2)]'
-                      : 'bg-white/90 border-purple-200 text-purple-700 shadow-lg'
-                  }`}>
+              {/* Stage Top: Speaking */}
+              <div className="absolute left-0 right-0 top-6 flex justify-center z-20 pointer-events-none">
+                <div className={`px-6 py-3 rounded-full border shadow-2xl backdrop-blur-xl flex items-center gap-3 ${
+                  isAgent
+                    ? 'bg-black/80 border-purple-500/40 text-white shadow-[0_30px_80px_rgba(124,58,237,0.25)]'
+                    : 'bg-white/90 border-slate-200 text-slate-800 shadow-[0_30px_80px_rgba(15,23,42,0.15)]'
+                }`}>
+                  <span className="text-xs uppercase tracking-[0.2em] opacity-80">
                     {gameState.phase.replace(/_/g, ' ')}
-                  </div>
-                </motion.div>
-                {phaseRemainingMs !== null && (
-                  <div className={`text-xs font-semibold tracking-wider px-3.5 py-1 rounded-full text-center ${
-                    isAgent
-                      ? 'text-purple-200 bg-black/60 border border-purple-400/30'
-                      : 'text-purple-700 bg-white/80 border border-purple-200'
-                  }`}>
-                    TIMER: {Math.ceil(phaseRemainingMs / 1000)}s
-                  </div>
-                )}
-              </div>
-              {(() => {
-                if (!activeMessage || !gameState?.players?.length) return null;
-                const speakerIndex = gameState.players.findIndex((p) => p.sid === activeMessage.sid);
-                if (speakerIndex === -1) return null;
-                const speaker = gameState.players[speakerIndex];
-                return (
-                  <motion.div
-                    key={activeMessage.sid + activeMessage.content}
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="absolute z-30 pointer-events-none left-1/2 bottom-6 -translate-x-1/2"
-                  >
-                    <div className={`px-6 py-3 rounded-full border shadow-2xl backdrop-blur-xl flex items-center gap-3 ${
-                      isAgent
-                        ? 'bg-black/80 border-purple-500/40 text-white shadow-[0_30px_80px_rgba(124,58,237,0.25)]'
-                        : 'bg-white/90 border-slate-200 text-slate-800 shadow-[0_30px_80px_rgba(15,23,42,0.15)]'
-                    }`}>
-                      <span className="inline-flex h-3 w-3 rounded-full animate-pulse" style={{ background: playerMeta.get(activeMessage.sid)?.color }} />
-                      <span className={`text-sm font-semibold tracking-wide ${isAgent ? 'text-purple-100' : 'text-slate-700'}`}>
-                        {speaker.nickname}
-                      </span>
-                      <span className={`text-xs uppercase tracking-[0.2em] ${isAgent ? 'text-purple-300' : 'text-slate-500'}`}>
-                        Speaking
-                      </span>
+                  </span>
+                  {activeMessage ? (
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex h-3 w-3 rounded-full animate-pulse" style={{ background: playerMeta.get(activeMessage.sid)?.color }} />
+                        <span className={`text-sm font-semibold tracking-wide ${isAgent ? 'text-purple-100' : 'text-slate-700'}`}>
+                          {playerMeta.get(activeMessage.sid)?.nickname || 'Speaker'}
+                        </span>
+                        <span className={`text-xs uppercase tracking-[0.2em] ${isAgent ? 'text-purple-300' : 'text-slate-500'}`}>
+                          speaking
+                        </span>
+                      </div>
+                      <div className={`text-xs ${isAgent ? 'text-purple-200' : 'text-slate-600'}`}>
+                        {activeMessage.content}
+                      </div>
                     </div>
-                  </motion.div>
-                );
-              })()}
+                  ) : (
+                    <span className={`text-sm font-semibold ${isAgent ? 'text-purple-200' : 'text-slate-600'}`}>
+                      No active speaker
+                    </span>
+                  )}
+                  {phaseRemainingMs !== null && (
+                    <span className={`text-xs font-semibold ${isAgent ? 'text-purple-200' : 'text-slate-600'}`}>
+                      {Math.ceil(phaseRemainingMs / 1000)}s
+                    </span>
+                  )}
+                </div>
+              </div>
                {/* Table Background */}
                <div
                  className="absolute pointer-events-none z-0 select-none"
@@ -794,27 +806,6 @@ export default function WerewolfGamePage() {
                 </div>
              </div>
 
-           {/* Center Info - Phase Text (Positioned Below Center) */}
-           <div className="absolute top-6 left-1/2 -translate-x-1/2 pointer-events-none z-0 w-full flex justify-center opacity-90">
-             <motion.div
-                key={gameState.phase}
-                initial={{ scale: 0.9, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                className="flex flex-col items-center"
-             >
-                <div className={isAgent
-                  ? 'text-6xl font-black tracking-[0.2em] uppercase whitespace-nowrap drop-shadow-2xl text-white drop-shadow-[0_0_25px_rgba(255,255,255,0.6)]'
-                  : 'text-4xl font-semibold tracking-wide capitalize whitespace-nowrap drop-shadow-md text-slate-700'
-                }>
-                  {gameState.phase.replace(/_/g, ' ')}
-                </div>
-                <div className={`mt-4 font-mono font-bold tracking-widest ${
-                  isAgent ? 'text-2xl text-purple-400' : 'text-xl text-slate-500'
-                }`}>
-                  {isAgent ? `— DAY ${gameState.day_count} —` : `Day ${gameState.day_count}`}
-                </div>
-             </motion.div>
-           </div>
 
            {/* Visualization */}
            <GodViewBoard
@@ -829,75 +820,31 @@ export default function WerewolfGamePage() {
              center={tableCenter}
              isAgent={isAgent}
            />
+           {/* Stage Bottom: Actions */}
+           <div className="absolute left-1/2 bottom-6 -translate-x-1/2 z-20 pointer-events-none">
+             <div className={`px-6 py-3 rounded-2xl border backdrop-blur-xl ${
+               isAgent
+                 ? 'bg-black/70 border-purple-500/30 text-purple-100'
+                 : 'bg-white/90 border-slate-200 text-slate-700'
+             }`}>
+               <div className="text-[11px] font-bold uppercase tracking-[0.3em] opacity-80 text-center">Actions</div>
+               <div className="mt-2 space-y-1 text-xs text-center">
+                 {actionLogs.length === 0 ? (
+                   <div className="opacity-70">No key actions yet.</div>
+                 ) : (
+                   actionLogs.map((item) => (
+                     <div key={item.id} className="leading-snug">
+                       {item.message}
+                     </div>
+                   ))
+                 )}
+               </div>
+             </div>
+           </div>
         </DayNightCycle>
       </div>
 
       {/* Sidebar Timeline */}
-      <div className={`w-[400px] border-l z-30 flex flex-col ${
-        isAgent 
-          ? 'border-gray-800 bg-black/90' 
-          : 'border-slate-200 bg-white/90 backdrop-blur-md shadow-xl'
-      }`}>
-        <div className={`p-4 border-b ${
-          isAgent ? 'border-gray-800' : 'border-slate-100'
-        }`}>
-          <h2 className={`text-sm font-bold ${
-            isAgent ? 'text-purple-400' : 'text-slate-800'
-          }`}>
-            {isAgent ? 'EVENT LOG' : 'Game Log'}
-          </h2>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {/* Chat Messages as Timeline */}
-          {allMessages.slice().reverse().map((msg, i) => {
-            const systemTone = getSystemLogTone(msg.sid);
-            const systemClasses = systemToneClasses[systemTone];
-            const meta = msg.sid ? playerMeta.get(msg.sid) : undefined;
-            const playerColor = meta?.color;
-            return (
-             <motion.div 
-               key={i} 
-               initial={{ opacity: 0, x: 20 }}
-               animate={{ opacity: 1, x: 0 }}
-               className={`text-sm border-l-2 pl-2 py-1 ${
-                 msg.sid?.startsWith('system') 
-                    ? `${systemClasses.border} ${systemClasses.background}`
-                    : isAgent 
-                      ? 'border-gray-700' 
-                      : 'border-slate-200'
-               }`}
-               style={playerColor && !msg.sid?.startsWith('system') ? { borderColor: playerColor } : undefined}
-             >
-               <div className={`flex justify-between items-baseline mb-1 ${
-                 msg.sid?.startsWith('system') 
-                    ? `${systemClasses.header} font-bold`
-                    : isAgent ? 'text-gray-400' : 'text-slate-500'
-               }`}>
-                 <div className="flex items-center gap-2 min-w-0">
-                   {!msg.sid?.startsWith('system') && (
-                     <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColor }} />
-                   )}
-                   <span className="font-bold truncate max-w-[160px]" title={msg.nickname}>{msg.nickname}</span>
-                   {meta?.role && (
-                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
-                       isAgent ? 'border-white/10 text-purple-200 bg-purple-500/10' : 'border-slate-200 text-slate-600 bg-white'
-                     }`}>
-                       {meta.role}
-                     </span>
-                   )}
-                 </div>
-                 <span className="text-[10px] opacity-60 font-mono shrink-0 ml-2">
-                   {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], {hour12: false}) : ''}
-                 </span>
-               </div>
-               <div className={msg.sid?.startsWith('system') ? systemClasses.body : isAgent ? 'text-gray-200' : 'text-slate-700'}>
-                 {msg.message}
-               </div>
-             </motion.div>
-          );
-          })}
-        </div>
-      </div>
     </div>
   );
 }

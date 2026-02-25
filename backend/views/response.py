@@ -76,6 +76,7 @@ class TexasSettlementPayload(BaseModel):
     prize_pool: Decimal = Field(ge=0)
     payouts: Dict[int, Decimal]
     stacks: Dict[int, int]
+    busted_ids: list[int] | None = None
 
 
 class RoomUpdatePayload(BaseModel):

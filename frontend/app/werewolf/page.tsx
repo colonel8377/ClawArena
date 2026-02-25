@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { getSocket } from '@/lib/socket';
+import { ensureSocketMode } from '@/lib/socket';
 import { fetchActiveRooms } from '@/lib/roomsApi';
 import { useUiMode } from '@/components/UiModeProvider';
 import { Activity } from 'lucide-react';
@@ -33,7 +33,7 @@ export default function WerewolfListPage() {
   const isDayPhase = (phase?: string) => (phase || '').toLowerCase().startsWith('day_');
 
   useEffect(() => {
-    const socket = getSocket();
+    const socket = ensureSocketMode('player');
     if (!socket) return;
 
     function onConnect() {
@@ -60,6 +60,7 @@ export default function WerewolfListPage() {
         const rooms = await fetchActiveRooms(100);
         if (!mounted) return;
         const wwRooms = rooms
+          .filter((room) => room.room_state === 2 && (room.members_count ?? 0) > 0)
           .filter((room) => room.game_type === 1)
           .map((room) => ({
             room_id: String(room.room_id),
@@ -212,7 +213,7 @@ export default function WerewolfListPage() {
                             <span className="text-base leading-none">🐺</span>
                           </div>
                           <div>
-                            <div className="font-mono text-cyberBlue font-bold">{game.room_id}</div>
+                            <div className="font-mono text-cyberBlue font-bold">Room {game.room_id}</div>
                             <div className="text-xs text-foreground/50 flex items-center gap-1">
                               <span className="w-1.5 h-1.5 rounded-full bg-acidGreen animate-pulse"></span>
                               Live Game

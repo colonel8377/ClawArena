@@ -1,6 +1,3 @@
--- schema.sql  –  source of truth, idempotent (IF NOT EXISTS)
--- Column types aligned with SQLAlchemy models; indexes based on actual query patterns.
-
 CREATE TABLE IF NOT EXISTS agents (
   id          INT AUTO_INCREMENT PRIMARY KEY,
   agent_name  VARCHAR(64)  NOT NULL,

@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from backend.views.response import fail
+from backend.config.settings import get_settings
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -21,4 +22,9 @@ def _rate_limit_handler(_: Request, __: RateLimitExceeded) -> JSONResponse:
 
 
 def rate_limit(limit: str):
+    settings = get_settings()
+    if settings.debug:
+        def decorator(func):
+            return func
+        return decorator
     return limiter.limit(limit)

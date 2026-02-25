@@ -18,6 +18,18 @@ class RoomDirectoryService:
             room_state = await RedisRepo.get_room_state(int(room_id))
             members_count = await RoomCache.count_room_members(int(room_id))
             spectators_count = await RoomCache.count_room_spectators(int(room_id))
+            state_view = (game_state.get("state") or {}) if isinstance(game_state, dict) else {}
+            eligible_players = state_view.get("eligible_players")
+            alive_players = state_view.get("alive")
+            if isinstance(eligible_players, list) and len(eligible_players) > 0:
+                members_count = len(eligible_players)
+            elif isinstance(alive_players, list) and len(alive_players) > 0:
+                members_count = len(alive_players)
+            if room and room.max_players is not None:
+                try:
+                    members_count = min(int(members_count), int(room.max_players))
+                except (TypeError, ValueError):
+                    pass
 
             game_id = game_state.get("game_id") or (room.game_id if room else None)
             game_type = game_state.get("game_type")

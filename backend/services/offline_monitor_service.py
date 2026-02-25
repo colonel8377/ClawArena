@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from backend.config.constants import DEFAULT_ENTRY_FEE, GameEventType, GameStatus, GameType, SocketEvent, TexasAction, TexasPhase, WerewolfAction, WerewolfPhase, WerewolfWinner
+from backend.config.constants import DEFAULT_ENTRY_FEE, GameEventType, GameStatus, GameType, RoomState, SocketEvent, TexasAction, TexasPhase, WerewolfAction, WerewolfPhase, WerewolfWinner
 from backend.config.settings import get_settings
 from backend.domain.werewolf.engine import WerewolfEngine
 from backend.domain.texas.engine import TexasEngine
@@ -20,7 +20,9 @@ from backend.services.texas_settlement_service import TexasSettlementService
 from backend.services.werewolf_settlement_service import WerewolfSettlementService
 from backend.services.settlement_emitter import SettlementEmitter
 from backend.utils.money import to_token
+from backend.utils.redis_lock import RedisLock
 from backend.views.response import ok
+from backend.views.errors import DomainError
 from backend.sockets.broadcast import emit_room_event
 from backend.sockets.server import sio
 from backend.utils.log import get_logger
@@ -45,8 +47,11 @@ class _EventEmitter:
 
     @staticmethod
     def resolve_texas(event: dict) -> str | None:
-        if event.get("event_type") == GameEventType.PHASE_CHANGE:
+        event_type = event.get("event_type")
+        if event_type == GameEventType.PHASE_CHANGE:
             return SocketEvent.TX_PHASE_CHANGE
+        if event_type == "hand_result":
+            return SocketEvent.TX_HAND_RESULT
         action_type = event.get("action_type")
         if action_type not in {a.value for a in TexasAction}:
             return None
@@ -85,7 +90,12 @@ class OfflineMonitorService:
                 continue
             engine = WerewolfEngine.from_state(state)
             if engine.phase == WerewolfPhase.FINISHED:
-                await RedisRepo.remove_active_room(room_id)
+                try:
+                    result = await WerewolfSettlementService.settle(engine)
+                    if result.get("status") in {"settled", "already_settled"}:
+                        await RedisRepo.remove_active_room(room_id)
+                except DomainError as exc:
+                    logger.warning("werewolf_settlement_failed room_id=%s error=%s", room_id, exc)
                 continue
 
             events_to_emit: list[dict] = []
@@ -164,78 +174,133 @@ class OfflineMonitorService:
 
         now_ms = int(time.time() * 1000)
         for room_id in rooms:
-            state = await GameStateService.get_state(room_id)
-            if not state or int(state.get("game_type", 0)) != int(GameType.TEXAS):
-                continue
-            engine = TexasEngine.from_state(state)
-            if engine.phase == TexasPhase.FINISHED:
-                await RedisRepo.remove_active_room(room_id)
-                continue
-
-            meta = state.get("meta") or {}
-            turn_started_ms = int(meta.get("turn_started_ms") or now_ms)
-            max_auto_actions = 3
-            actions_taken = 0
-            while True:
-                actor_id = engine.get_state().get("actor_id")
-                if not actor_id:
-                    break
-                presence = await PresenceService.get(int(actor_id))
-                offline_expired = False
-                left_actor = engine.is_left(int(actor_id))
-                if left_actor:
-                    offline_expired = True
-                if presence and presence.get("status") in {"offline", "left"}:
-                    ts_ms = int(presence.get("ts_ms", 0))
-                    offline_expired = now_ms - ts_ms >= settings.offline_kill_seconds * 1000
-
-                idle_expired = now_ms - turn_started_ms >= settings.texas_action_timeout_seconds * 1000
-                if not (offline_expired or idle_expired):
-                    break
-
-                reason = "leave" if left_actor else ("offline" if offline_expired else "timeout")
-                prev_actor = actor_id
-                events = engine.apply_action(
-                    int(actor_id),
-                    int(TexasAction.FOLD),
-                    {"meta": {"auto": True, "reason": reason}},
-                )
-                turn_started_ms = now_ms
-                saved_state = await GameStateService.save_state(
-                    room_id,
-                    engine.dump_state(),
-                    prev_state=state,
-                    public_state=engine.build_public_state(),
-                )
-                state = saved_state
-                timers = TimerService.build(saved_state) or {}
-                for event in events:
-                    event_name = _EventEmitter.resolve_texas(event)
-                    if not event_name:
+            lock_key = f"lock:action:{room_id}"
+            async with RedisLock(lock_key, ttl_ms=3000) as lock:
+                if not lock.acquired:
+                    continue
+                state = await GameStateService.get_state(room_id)
+                if not state or int(state.get("game_type", 0)) != int(GameType.TEXAS):
+                    continue
+                try:
+                    engine = TexasEngine.from_state(state)
+                except DomainError as exc:
+                    if exc.code == 50031:
+                        logger.warning("texas_replay_mismatch_reset room_id=%s", room_id)
+                        sanitized = dict(state)
+                        sanitized["hand_actions"] = []
+                        sanitized["end_votes"] = {}
+                        engine = TexasEngine.from_state(sanitized)
+                        await GameStateService.save_state(
+                            room_id,
+                            engine.dump_state(),
+                            prev_state=state,
+                            public_state=engine.build_public_state(),
+                        )
                         continue
-                    if event_name == SocketEvent.TX_PHASE_CHANGE and timers:
-                        payload = event.get("payload") or {}
-                        payload["timers"] = timers
-                        event["payload"] = payload
-                    await EventService.log_room_event(room_id, event_name, event)
-                    await emit_room_event(sio, room_id, event_name, ok(event), private=False)
-
+                    raise
                 if engine.phase == TexasPhase.FINISHED:
-                    result = await TexasSettlementService.settle(engine)
-                    await SettlementEmitter.emit_texas(sio, room_id, result)
-                    break
-                actions_taken += 1
-                if actions_taken >= max_auto_actions:
-                    logger.warning(
-                        "texas_auto_action_limit room_id=%s actor_id=%s", room_id, actor_id
+                    try:
+                        result = await TexasSettlementService.settle(engine)
+                        await SettlementEmitter.emit_texas(sio, room_id, result)
+                        if result.get("status") in {"settled", "already_settled"}:
+                            await RedisRepo.remove_active_room(room_id)
+                    except DomainError as exc:
+                        logger.warning("texas_settlement_failed room_id=%s error=%s", room_id, exc)
+                    continue
+
+                player_ids = [int(p.get("agent_id")) for p in (engine.players or []) if p.get("agent_id") is not None]
+                if player_ids:
+                    all_offline = True
+                    for agent_id in player_ids:
+                        presence = await PresenceService.get(int(agent_id))
+                        if presence and presence.get("status") not in {"offline", "left"}:
+                            all_offline = False
+                            break
+                    if all_offline:
+                        engine._phase = TexasPhase.FINISHED
+                        event = engine._phase_event(engine._phase_payload({"reason": "all_offline"}))
+                        saved_state = await GameStateService.save_state(
+                            room_id,
+                            engine.dump_state(),
+                            prev_state=state,
+                            public_state=engine.build_public_state(),
+                        )
+                        await EventService.log_room_event(room_id, SocketEvent.TX_PHASE_CHANGE, event)
+                        await emit_room_event(sio, room_id, SocketEvent.TX_PHASE_CHANGE, ok(event), private=False)
+                        result = await TexasSettlementService.settle(engine)
+                        await SettlementEmitter.emit_texas(sio, room_id, result)
+                        continue
+
+                meta = state.get("meta") or {}
+                turn_started_ms = int(meta.get("turn_started_ms") or now_ms)
+                max_auto_actions = 3
+                actions_taken = 0
+                while True:
+                    actor_id = engine.get_state().get("actor_id")
+                    if not actor_id:
+                        break
+                    presence = await PresenceService.get(int(actor_id))
+                    offline_expired = False
+                    left_actor = engine.is_left(int(actor_id))
+                    if left_actor:
+                        offline_expired = True
+                    if presence and presence.get("status") in {"offline", "left"}:
+                        ts_ms = int(presence.get("ts_ms", 0))
+                        offline_expired = now_ms - ts_ms >= settings.offline_kill_seconds * 1000
+
+                    idle_expired = now_ms - turn_started_ms >= settings.texas_action_timeout_seconds * 1000
+                    if not (offline_expired or idle_expired):
+                        break
+
+                    reason = "leave" if left_actor else ("offline" if offline_expired else "timeout")
+                    prev_actor = actor_id
+                    logger.info(
+                        "texas_auto_fold room_id=%s actor_id=%s reason=%s",
+                        room_id,
+                        actor_id,
+                        reason,
                     )
-                    break
-                new_actor = engine.get_state().get("actor_id")
-                if new_actor == prev_actor:
-                    logger.warning("texas_actor_stuck room_id=%s actor_id=%s", room_id, actor_id)
-                    break
-                if idle_expired and not offline_expired:
-                    break
+                    events = engine.apply_action(
+                        int(actor_id),
+                        int(TexasAction.FOLD),
+                        {"meta": {"auto": True, "reason": reason}},
+                    )
+                    turn_started_ms = now_ms
+                    saved_state = await GameStateService.save_state(
+                        room_id,
+                        engine.dump_state(),
+                        prev_state=state,
+                        public_state=engine.build_public_state(),
+                    )
+                    state = saved_state
+                    timers = TimerService.build(saved_state) or {}
+                    for event in events:
+                        event_name = _EventEmitter.resolve_texas(event)
+                        if not event_name:
+                            continue
+                        if event_name == SocketEvent.TX_PHASE_CHANGE and timers:
+                            payload = event.get("payload") or {}
+                            payload["timers"] = timers
+                            event["payload"] = payload
+                        await EventService.log_room_event(room_id, event_name, event)
+                        await emit_room_event(sio, room_id, event_name, ok(event), private=False)
+
+                    if engine.phase == TexasPhase.FINISHED:
+                        result = await TexasSettlementService.settle(engine)
+                        await SettlementEmitter.emit_texas(sio, room_id, result)
+                        break
+                    actions_taken += 1
+                    if actions_taken >= max_auto_actions:
+                        logger.warning(
+                            "texas_auto_action_limit room_id=%s actor_id=%s", room_id, actor_id
+                        )
+                        break
+                    new_actor = engine.get_state().get("actor_id")
+                    if new_actor == prev_actor:
+                        logger.warning("texas_actor_stuck room_id=%s actor_id=%s", room_id, actor_id)
+                        break
+                    if idle_expired and not offline_expired:
+                        break
 
     @staticmethod
     async def check_stale_games() -> None:
@@ -261,6 +326,14 @@ class OfflineMonitorService:
                     for player in players:
                         WalletRepo.unlock_tokens(int(player.agent_id), entry_fee, session=session)
                     GameRepo.update_status(int(game.id), int(GameStatus.ENDED), ended_at=datetime.utcnow(), session=session)
+
+                room_id = int(players[0].room_id) if players else None
+                if room_id:
+                    from backend.services.room_service import RoomService
+
+                    await RoomService.update_state(room_id, int(RoomState.FINISHED))
+                    await RoomService.broadcast_update(room_id, "game_finish")
+                    await RedisRepo.remove_active_room(room_id)
 
                 logger.warning(
                     "stale_game_refunded game_id=%s players=%s entry_fee=%s",

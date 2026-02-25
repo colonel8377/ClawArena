@@ -10,6 +10,7 @@ interface ActionTimelineProps {
   phase?: string;
   currentPlayerSid?: string;
   players: SpectatorPlayer[];
+  compact?: boolean;
 }
 
 const hashString = (value: string) => {
@@ -23,7 +24,7 @@ const hashString = (value: string) => {
 
 const getPlayerHue = (key: string) => (hashString(key) * 47) % 360;
 
-export default function ActionTimeline({ logs, phase, currentPlayerSid, players }: ActionTimelineProps) {
+export default function ActionTimeline({ logs, phase, currentPlayerSid, players, compact = false }: ActionTimelineProps) {
   const { readingMode } = useUiMode();
   const isAgent = readingMode === 'agent';
   const currentPlayer = players.find((p) => p.sid === currentPlayerSid);
@@ -38,34 +39,38 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
     return players.find((p) => trimmed.startsWith(p.nickname));
   }, [players]);
 
+  const visibleLogs = compact ? [...logs].slice(-6) : [...logs].reverse();
+
   return (
     <div className={`h-full flex flex-col backdrop-blur-sm ${
-      isAgent ? 'bg-black/40 border-l border-green-900/30' : 'bg-white/50 border-l border-slate-200'
+      isAgent ? 'bg-black/50 border border-green-900/30' : 'bg-white/70 border border-slate-200'
     }`}>
-      <div className={`p-3 border-b ${
-        isAgent ? 'border-green-900/30' : 'border-slate-100'
-      }`}>
-        <h3 className={`text-sm font-bold uppercase tracking-widest ${
-          isAgent ? 'font-mono text-green-400' : 'font-sans text-slate-700'
-        }`}>Live Action</h3>
-        <div className="mt-2 flex flex-col gap-1">
-          <div className={`text-sm font-semibold ${
-            isAgent ? 'text-emerald-200' : 'text-emerald-700'
-          }`}>
-            Stage: {phase?.toUpperCase() || 'UNKNOWN'}
-          </div>
-          {currentPlayer && (
-            <div className="flex items-center gap-2 text-sm">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColor(currentPlayer.sid) }} />
-              <span className={isAgent ? 'text-emerald-100' : 'text-slate-700'}>
-                Turn: {currentPlayer.nickname}
-              </span>
+      {!compact && (
+        <div className={`p-3 border-b ${
+          isAgent ? 'border-green-900/30' : 'border-slate-100'
+        }`}>
+          <h3 className={`text-sm font-bold uppercase tracking-widest ${
+            isAgent ? 'font-mono text-green-400' : 'font-sans text-slate-700'
+          }`}>Live Action</h3>
+          <div className="mt-2 flex flex-col gap-1">
+            <div className={`text-sm font-semibold ${
+              isAgent ? 'text-emerald-200' : 'text-emerald-700'
+            }`}>
+              Stage: {phase?.toUpperCase() || 'UNKNOWN'}
             </div>
-          )}
+            {currentPlayer && (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColor(currentPlayer.sid) }} />
+                <span className={isAgent ? 'text-emerald-100' : 'text-slate-700'}>
+                  Turn: {currentPlayer.nickname}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {currentPlayer && (
+      {currentPlayer && !compact && (
         <div className={`px-4 py-2 border-b flex items-center gap-2 ${
           isAgent ? 'bg-emerald-500/12 border-emerald-400/25' : 'bg-emerald-50 border-emerald-200'
         }`}>
@@ -76,9 +81,9 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
         </div>
       )}
       
-      <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-transparent">
+      <div className={`flex-1 overflow-y-auto ${compact ? 'p-3' : 'p-4'} space-y-2 scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-transparent`}>
         <AnimatePresence initial={false}>
-          {[...logs].reverse().map((log, i) => {
+          {[...visibleLogs].reverse().map((log, i) => {
             const isChat = log.includes('[CHAT]') || log.startsWith('CHAT:');
             return (
             <motion.div
@@ -86,11 +91,13 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
               key={`${i}-${log.substring(0, 10)}`}
               initial={{ opacity: 0, x: -20, height: 0 }}
               animate={{ opacity: 1, x: 0, height: 'auto' }}
-              className={`text-xs ${isAgent ? 'font-mono' : 'font-sans'}`}
+              className={`${compact ? 'text-[11px]' : 'text-xs'} ${isAgent ? 'font-mono' : 'font-sans'}`}
             >
-              <span className={`mr-2 ${isAgent ? 'text-green-600' : 'text-slate-400'}`}>
-                [{new Date().toLocaleTimeString().split(' ')[0]}]
-              </span>
+              {!compact && (
+                <span className={`mr-2 ${isAgent ? 'text-green-600' : 'text-slate-400'}`}>
+                  [{new Date().toLocaleTimeString().split(' ')[0]}]
+                </span>
+              )}
               {(() => {
                 const player = resolvePlayer(log);
                 const color = player ? playerColor(player.sid) : undefined;
@@ -104,7 +111,7 @@ export default function ActionTimeline({ logs, phase, currentPlayerSid, players 
                       ? (isAgent ? 'text-sky-300' : 'text-sky-700 font-medium')
                       : (isAgent ? 'text-green-300' : 'text-slate-700 font-medium')
               }`}>
-                    {player && (
+                    {player && !compact && (
                       <span className="inline-flex h-2.5 w-2.5 rounded-full mr-2" style={{ background: color }} />
                     )}
                 {log}

@@ -2,7 +2,8 @@ import asyncio
 import json
 import os
 import uuid
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 import httpx
@@ -58,6 +59,19 @@ def _err(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _event_parts(payload: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    data = _ok_data(payload)
+    if isinstance(data, dict) and "event_type" in data and isinstance(data.get("payload"), dict):
+        event = data.get("payload") or {}
+        inner = event.get("payload") if isinstance(event.get("payload"), dict) else event
+        if not isinstance(inner, dict):
+            inner = {}
+        return data, event, inner
+    if isinstance(data, dict):
+        return data, data, data
+    return {}, {}, {}
+
+
 @dataclass
 class Player:
     name: str
@@ -67,6 +81,8 @@ class Player:
     socket: Optional[socketio.AsyncClient] = None
     room_id: Optional[int] = None
     role: int = 1
+    _connect_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _last_connect_attempt: float = 0.0
 
     def label(self) -> str:
         if self.agent_id:
@@ -118,21 +134,37 @@ class Player:
             raise ApiError(f"wallet failed: {data}")
         return data.get("data") or {}
 
-    async def connect(self) -> None:
+    async def connect(self, timeout: float = TIMEOUT) -> None:
         if not self.token and not (self.role == 2 and ALLOW_GUEST_SPECTATOR):
             raise ApiError("missing token")
-        if self.socket and self.socket.connected:
-            return
         self.init_socket()
-        auth: Dict[str, Any] = {"role": self.role, "agent_name": self.name}
-        if self.token:
-            auth["token"] = self.token
-        await self.socket.connect(
-            SOCKET_URL,
-            auth=auth,
-            headers={"User-Agent": USER_AGENT},
-            socketio_path="/socket.io",
-        )
+        async with self._connect_lock:
+            if self.socket and self.socket.connected:
+                return
+            eio_state = getattr(getattr(self.socket, "eio", None), "state", None)
+            if eio_state in ("connected", "connecting"):
+                await self._wait_for_connection(min(timeout, 2.0))
+                return
+            now = time.monotonic()
+            if now - self._last_connect_attempt < 0.5:
+                await asyncio.sleep(0.5 - (now - self._last_connect_attempt))
+            self._last_connect_attempt = time.monotonic()
+            auth: Dict[str, Any] = {"role": self.role, "agent_name": self.name}
+            if self.token:
+                auth["token"] = self.token
+            try:
+                await self.socket.connect(
+                    SOCKET_URL,
+                    auth=auth,
+                    headers={"User-Agent": USER_AGENT},
+                    socketio_path="/socket.io",
+                )
+            except ValueError as exc:
+                if "disconnected" in str(exc) or "connected" in str(exc):
+                    await self._wait_for_connection(min(timeout, 2.0))
+                    return
+                raise
+        await self._wait_for_connection(min(timeout, 2.0))
 
     def init_socket(self) -> None:
         if self.socket is None:
@@ -142,15 +174,43 @@ class Player:
         if self.socket and self.socket.connected:
             await self.socket.disconnect()
 
-    async def reconnect(self) -> None:
-        await self.disconnect()
-        await asyncio.sleep(0.2)
-        await self.connect()
+    async def reconnect(self, timeout: float = TIMEOUT) -> None:
+        async with self._connect_lock:
+            if self.socket and self.socket.connected:
+                await self.socket.disconnect()
+            else:
+                try:
+                    if self.socket:
+                        await self.socket.disconnect()
+                except Exception:
+                    pass
+            await asyncio.sleep(0.2)
+        await self.connect(timeout=timeout)
+
+    async def _wait_for_connection(self, timeout: float = TIMEOUT) -> None:
+        if not self.socket:
+            return
+        start = time.monotonic()
+        while not self.socket.connected and (time.monotonic() - start) < timeout:
+            eio_state = getattr(getattr(self.socket, "eio", None), "state", None)
+            if eio_state == "disconnected":
+                break
+            await asyncio.sleep(0.05)
 
     async def call(self, event: str, payload: Dict[str, Any], timeout: float = TIMEOUT) -> Dict[str, Any]:
         if not self.socket:
             raise ApiError("socket not connected")
-        return await self.socket.call(event, payload, timeout=timeout)
+        if not self.socket.connected:
+            await self.connect(timeout=timeout)
+            await self._wait_for_connection(min(timeout, 2.0))
+        if not self.socket.connected:
+            raise ApiError("socket not connected")
+        try:
+            return await self.socket.call(event, payload, timeout=timeout)
+        except (socketio.exceptions.BadNamespaceError, ValueError):
+            await self.reconnect(timeout=timeout)
+            await self._wait_for_connection(min(timeout, 2.0))
+            return await self.socket.call(event, payload, timeout=timeout)
 
 
 async def http_post(path: str, payload: Dict[str, Any], token: Optional[str] = None) -> Dict[str, Any]:

@@ -3,7 +3,7 @@ from backend.middleware.decorators import socket_handler
 from backend.services.event_service import EventService
 from backend.services.game_state_service import GameStateService
 from backend.sockets.broadcast import emit_room_event
-from backend.sockets.guards import socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
+from backend.sockets.guards import socket_dedupe_action, socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
 from backend.views.errors import DomainError
 from backend.views.requests import RoomChatRequest
 from backend.views.response import ok
@@ -70,6 +70,7 @@ def register(server):
     @socket_validate(RoomChatRequest)
     @socket_require_agent(server)
     @socket_require_room_player(server)
+    @socket_dedupe_action(server)
     @socket_rate_limit(server, "1/3s", key_prefix="chat")
     @socket_handler(server)
     async def room_chat_send(sid, agent_id, payload):
@@ -88,8 +89,9 @@ def register(server):
             "channel": payload.channel,
             "content": payload.content,
             "meta": _build_meta(state or {}, agent_id),
+            "action_id": payload.action_id,
         }
-        await EventService.log_room_event(payload.room_id, SocketEvent.ROOM_CHAT, event_payload)
-        private = payload.channel == ChatChannel.WOLF
-        await emit_room_event(server, payload.room_id, SocketEvent.ROOM_CHAT, ok(event_payload), private=private)
+        envelope = await EventService.log_room_event(payload.room_id, SocketEvent.ROOM_CHAT, event_payload)
+        private = False
+        await emit_room_event(server, payload.room_id, SocketEvent.ROOM_CHAT, ok(envelope), private=private)
         return {"status": "sent"}

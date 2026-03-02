@@ -8,6 +8,8 @@ from backend.config.settings import get_settings
 
 
 class RedisRepo:
+    TEXAS_TURN_DEADLINE_KEY = "texas:turn_deadline"
+
     @staticmethod
     def _json_default(value: Any):
         if isinstance(value, Decimal):
@@ -34,7 +36,7 @@ class RedisRepo:
     @staticmethod
     async def add_system_event(event_id: str, payload: dict) -> None:
         client = get_client()
-        await client.xadd("system:events", {"event_id": event_id, "payload": json.dumps(payload)})
+        await client.xadd("system:events", {"event_id": event_id, "payload": json.dumps(payload, default=RedisRepo._json_default)})
 
     @staticmethod
     async def add_game_event(room_id: int, event_id: str, event_type: str, payload: dict, ts_ms: int) -> str:
@@ -45,7 +47,7 @@ class RedisRepo:
                 "event_id": event_id,
                 "event_type": event_type,
                 "ts": ts_ms,
-                "payload": json.dumps(payload),
+                "payload": json.dumps(payload, default=RedisRepo._json_default),
             },
         )
         return str(message_id)
@@ -102,6 +104,28 @@ class RedisRepo:
         return sorted(int(room_id) for room_id in rooms)
 
     @staticmethod
+    async def set_texas_turn_deadline(room_id: int, deadline_ms: int) -> None:
+        client = get_client()
+        await client.zadd(RedisRepo.TEXAS_TURN_DEADLINE_KEY, {str(room_id): int(deadline_ms)})
+
+    @staticmethod
+    async def remove_texas_turn_deadline(room_id: int) -> None:
+        client = get_client()
+        await client.zrem(RedisRepo.TEXAS_TURN_DEADLINE_KEY, str(room_id))
+
+    @staticmethod
+    async def get_due_texas_rooms(now_ms: int, limit: int = 200) -> list[int]:
+        client = get_client()
+        raw = await client.zrangebyscore(
+            RedisRepo.TEXAS_TURN_DEADLINE_KEY,
+            min="-inf",
+            max=int(now_ms),
+            start=0,
+            num=int(limit),
+        )
+        return [int(room_id) for room_id in raw]
+
+    @staticmethod
     async def add_online_player(sid: str) -> None:
         client = get_client()
         await client.sadd("online:players", sid)
@@ -127,3 +151,18 @@ class RedisRepo:
             "spectators": int(spectators or 0),
             "total": int((players or 0) + (spectators or 0)),
         }
+
+    @staticmethod
+    async def get_last_stream_id(stream: str) -> str | None:
+        client = get_client()
+        items = await client.xrevrange(stream, max="+", min="-", count=1)
+        if not items:
+            return None
+        return str(items[0][0])
+
+    @staticmethod
+    async def set_hand_result_emitted(room_id: int, hand_index: int, ttl_seconds: int = 86400) -> bool:
+        client = get_client()
+        key = f"dedupe:tx:hand_result:{room_id}:{hand_index}"
+        ok = await client.set(key, "1", ex=ttl_seconds, nx=True)
+        return bool(ok)

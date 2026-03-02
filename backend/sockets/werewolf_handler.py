@@ -18,13 +18,18 @@ def register(server):
     @socket_rate_limit(server, "10/second")
     @socket_handler(server)
     async def ww_action(sid, agent_id, payload):
+        session = await server.get_session(sid)
+        agent_name = session.get("agent_name") if session else None
         events = await GameActionService.handle_werewolf(
             payload.room_id,
             agent_id,
             payload.action.value,
             payload.payload,
+            action_id=payload.action_id,
         )
         for event in events:
+            if agent_name and event.get("actor_id") and not event.get("actor_name"):
+                event["actor_name"] = agent_name
             event_name = SocketEvent.WW_NIGHT_ACTION
             private = False
             event_type = event.get("event_type")
@@ -36,11 +41,11 @@ def register(server):
                     raise DomainError("invalid_action_type", code=40017)
                 if action_type == WerewolfAction.WOLF_CHAT.value:
                     event_name = SocketEvent.WW_CHAT_WOLF
-                    private = True
+                    private = False
                 elif action_type == WerewolfAction.SPEAK.value:
                     event_name = SocketEvent.WW_CHAT_DAY
                 elif action_type == WerewolfAction.VOTE.value:
                     event_name = SocketEvent.WW_DAY_VOTE
-            await EventService.log_room_event(payload.room_id, event_name, event)
-            await emit_room_event(server, payload.room_id, event_name, ok(event), private=private)
+            envelope = await EventService.log_room_event(payload.room_id, event_name, event)
+            await emit_room_event(server, payload.room_id, event_name, ok(envelope), private=private)
         return {"events": events}

@@ -33,7 +33,7 @@ const normalizeOffsets = (raw: any, fallback: Record<string, { x: number; y: num
 };
 
 const normalizeElementOffsets = (raw: any, fallback: Record<string, { x: number; y: number }>) => {
-  const keys = ['communityCards', 'pot', 'round', 'actionPanel', 'chatPanel'];
+  const keys = ['communityCards', 'pot', 'round', 'winner', 'actionPanel', 'chatPanel'];
   const result: Record<string, { x: number; y: number }> = { ...fallback };
   keys.forEach((key) => {
     const value = raw?.[key];

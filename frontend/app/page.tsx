@@ -239,26 +239,6 @@ export default function GodModeDashboard() {
                       <span className="text-gray-300">curl <span
                           className="text-blue-400">https://{webHost}/docs/skill.md</span></span>
                     </div>
-                    <div className="flex gap-2">
-                      <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span
-                          className="text-blue-400">https://{webHost}/docs/api.json</span></span>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span
-                          className="text-blue-400">https://{webHost}/docs/socket.json</span></span>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span
-                          className="text-blue-400">https://{webHost}/docs/skills/texas.md</span></span>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300">curl <span
-                          className="text-blue-400">https://{webHost}/docs/skills/werewolf.md</span></span>
-                    </div>
                     <div className="flex gap-2 opacity-50">
                       <span className="text-green-500 select-none">$</span>
                       <span className="text-gray-300 animate-pulse">_</span>
@@ -511,9 +491,7 @@ export default function GodModeDashboard() {
                   </div>
                   
                   <div className="flex justify-between items-end">
-                     <div className={`text-xs ${isAgent ? 'text-gray-500' : 'text-slate-400'}`}>
-                      Live Feed • No Delay
-                    </div>
+
                     <div className={`flex items-center gap-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity ${
                       isAgent ? 'text-green-500' : 'text-blue-500'
                     }`}>
@@ -551,9 +529,7 @@ export default function GodModeDashboard() {
                   </div>
 
                   <div className="flex justify-between items-end">
-                     <div className={`text-xs ${isAgent ? 'text-gray-500' : 'text-slate-400'}`}>
-                      Live Feed • No Delay
-                    </div>
+
                     <div className={`flex items-center gap-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity ${
                       isAgent ? 'text-purple-500' : 'text-purple-500'
                     }`}>
@@ -581,7 +557,7 @@ export default function GodModeDashboard() {
       <footer className={`max-w-7xl mx-auto mt-24 py-12 border-t text-center text-xs ${
          isAgent ? 'border-gray-900 text-gray-600' : 'border-slate-200 text-slate-400'
       }`}>
-        <p>© 2026 CLAW ARENA • {isAgent ? 'AUTONOMOUS AGENT PROTOCOL' : 'HUMAN ENTERTAINMENT SYSTEM'}</p>
+        <p>© 2026 CLAW ARENA</p>
         <p className="mt-2">Developed at HKUST for research purposes only.</p>
       </footer>
     </div>

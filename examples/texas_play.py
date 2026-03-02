@@ -7,6 +7,7 @@ from typing import Any, Dict
 from shared import (
     Player,
     _err,
+    _event_parts,
     _ok_data,
     attach_basic_handlers,
     log_system,
@@ -22,7 +23,7 @@ FOLD_CHANCE = float(os.getenv("TEXAS_FOLD_CHANCE", "0"))
 EDGE_CASES = os.getenv("TEXAS_EDGE_CASES", "0").lower() not in {"0", "false", "no", "off"}
 REFRESH_MIN_SECONDS = float(os.getenv("TEXAS_REFRESH_MIN_SECONDS", "6.5"))
 REFRESH_DELAY_SECONDS = float(os.getenv("TEXAS_REFRESH_DELAY_SECONDS", "0.1"))
-HAND_RESULT_PAUSE_SECONDS = float(os.getenv("TEXAS_HAND_RESULT_PAUSE_SECONDS", "2"))
+HAND_RESULT_PAUSE_SECONDS = float(os.getenv("TEXAS_HAND_RESULT_PAUSE_SECONDS", "3"))
 SETTLEMENT_PAUSE_SECONDS = float(os.getenv("TEXAS_SETTLEMENT_PAUSE_SECONDS", "10"))
 
 _HAND_COUNTS: Dict[int, int] = {}
@@ -108,7 +109,13 @@ def _get_state(game_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _merge_phase_state(data: Dict[str, Any]) -> Dict[str, Any]:
-    payload = data.get("payload") or {}
+    if isinstance(data, dict) and "event_type" in data and isinstance(data.get("payload"), dict):
+        data = data.get("payload") or {}
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    if not payload and isinstance(data, dict):
+        payload = data
     if "actor_id" not in payload and data.get("actor_id") is not None:
         payload["actor_id"] = data.get("actor_id")
     if "phase" not in payload and data.get("phase") is not None:
@@ -139,7 +146,7 @@ async def _send_edge_cases(player: Player, state: Dict[str, Any]) -> None:
         return
 
     # Invalid channel for Texas (should be room-only).
-    payload = {"room_id": player.room_id, "channel": "day", "content": "invalid channel"}
+    payload = {"room_id": player.room_id, "channel": "day", "content": "invalid channel", "action_id": new_action_id()}
     try:
         res = await player.call("room:chat:send", payload)
         err = _err(res)
@@ -250,7 +257,10 @@ async def _maybe_chat(player: Player) -> None:
         "let's go",
     ])
     try:
-        res = await player.call("room:chat:send", {"room_id": player.room_id, "channel": "room", "content": content})
+        res = await player.call(
+            "room:chat:send",
+            {"room_id": player.room_id, "channel": "room", "content": content, "action_id": new_action_id()},
+        )
         if res.get("ok"):
             _log(player, f"chat sent: {content}")
         else:
@@ -353,15 +363,15 @@ async def main() -> None:
 
             @player.socket.on("tx:phase:change")
             async def _on_phase(payload, _player=player):
-                data = _ok_data(payload)
-                room_id = data.get("room_id")
+                data, event, inner = _event_parts(payload)
+                room_id = data.get("room_id") or event.get("room_id")
                 if room_id:
                     _player.room_id = room_id
-                state = _merge_phase_state(data)
+                state = _merge_phase_state(event or data)
                 if _player.agent_id:
                     last_state[_player.agent_id] = state
                 _log(_player, f"tx:phase:change phase={state.get('phase')} actor_id={state.get('actor_id')}")
-                if data.get("phase") == "preflop":
+                if state.get("phase") == "preflop":
                     hand_count = _HAND_COUNTS.get(_player.agent_id, 0) + 1
                     _HAND_COUNTS[_player.agent_id] = hand_count
                     _log(_player, f"hand {hand_count}/{PLAY_HANDS}")
@@ -372,16 +382,15 @@ async def main() -> None:
 
             @player.socket.on("tx:settlement")
             async def _on_settlement(payload, _player=player):
-                data = _ok_data(payload)
-                payouts = data.get("payouts") or {}
+                data, event, inner = _event_parts(payload)
+                payouts = inner.get("payouts") or {}
                 summary = _winner_summary(payouts, players)
-                _log(_player, f"tx:settlement prize_pool={data.get('prize_pool')} payouts={payouts} {summary}")
+                _log(_player, f"tx:settlement prize_pool={inner.get('prize_pool')} payouts={payouts} {summary}")
                 settlement_event.set()
 
             @player.socket.on("tx:hand:result")
             async def _on_hand_result(payload, _player=player):
-                data = _ok_data(payload)
-                hand_payload = data.get("payload") or {}
+                data, event, hand_payload = _event_parts(payload)
                 payouts = hand_payload.get("payouts") or {}
                 hand_index = hand_payload.get("hand_index")
                 summary = _winner_summary(payouts, players)
@@ -395,38 +404,38 @@ async def main() -> None:
 
             @player.socket.on("tx:bet")
             async def _on_bet(payload, _player=player):
-                data = _ok_data(payload)
-                _log(_player, f"tx:bet actor_id={data.get('actor_id')} amount={data.get('amount')}")
+                data, event, inner = _event_parts(payload)
+                _log(_player, f"tx:bet actor_id={event.get('actor_id')} amount={inner.get('amount')}")
                 asyncio.create_task(_request_state_refresh(_player))
 
             @player.socket.on("tx:check")
             async def _on_check(payload, _player=player):
-                data = _ok_data(payload)
-                _log(_player, f"tx:check actor_id={data.get('actor_id')}")
+                data, event, _inner = _event_parts(payload)
+                _log(_player, f"tx:check actor_id={event.get('actor_id')}")
                 asyncio.create_task(_request_state_refresh(_player))
 
             @player.socket.on("tx:call")
             async def _on_call(payload, _player=player):
-                data = _ok_data(payload)
-                _log(_player, f"tx:call actor_id={data.get('actor_id')}")
+                data, event, _inner = _event_parts(payload)
+                _log(_player, f"tx:call actor_id={event.get('actor_id')}")
                 asyncio.create_task(_request_state_refresh(_player))
 
             @player.socket.on("tx:fold")
             async def _on_fold(payload, _player=player):
-                data = _ok_data(payload)
-                _log(_player, f"tx:fold actor_id={data.get('actor_id')}")
+                data, event, _inner = _event_parts(payload)
+                _log(_player, f"tx:fold actor_id={event.get('actor_id')}")
                 asyncio.create_task(_request_state_refresh(_player))
 
             @player.socket.on("tx:raise")
             async def _on_raise(payload, _player=player):
-                data = _ok_data(payload)
-                _log(_player, f"tx:raise actor_id={data.get('actor_id')} amount={data.get('amount')}")
+                data, event, inner = _event_parts(payload)
+                _log(_player, f"tx:raise actor_id={event.get('actor_id')} amount={inner.get('amount')}")
                 asyncio.create_task(_request_state_refresh(_player))
 
             @player.socket.on("tx:all_in")
             async def _on_all_in(payload, _player=player):
-                data = _ok_data(payload)
-                _log(_player, f"tx:all_in actor_id={data.get('actor_id')} amount={data.get('amount')}")
+                data, event, inner = _event_parts(payload)
+                _log(_player, f"tx:all_in actor_id={event.get('actor_id')} amount={inner.get('amount')}")
                 asyncio.create_task(_request_state_refresh(_player))
 
             @player.socket.on("system:error")
@@ -472,18 +481,17 @@ async def main() -> None:
 
             @spectator.socket.on("room:update")
             async def _on_room_update(payload, _player=spectator):
-                data = _ok_data(payload)
-                _log(_player, f"room:update (spectator) type={data.get('type')} members={data.get('members_count')}")
+                data, event, inner = _event_parts(payload)
+                _log(_player, f"room:update (spectator) type={inner.get('type')} members={inner.get('members_count')}")
 
             @spectator.socket.on("room:chat")
             async def _on_room_chat(payload, _player=spectator):
-                data = _ok_data(payload)
-                _log(_player, f"room:chat (spectator) sender={data.get('sender_name')} content={data.get('content')}")
+                data, event, inner = _event_parts(payload)
+                _log(_player, f"room:chat (spectator) sender={inner.get('sender_name')} content={inner.get('content')}")
 
             @spectator.socket.on("tx:hand:result")
             async def _on_hand_result(payload, _player=spectator):
-                data = _ok_data(payload)
-                hand_payload = data.get("payload") or {}
+                data, event, hand_payload = _event_parts(payload)
                 payouts = hand_payload.get("payouts") or {}
                 hand_index = hand_payload.get("hand_index")
                 summary = _winner_summary(payouts, players)
@@ -550,11 +558,11 @@ async def main() -> None:
 
                         @player.socket.on("tx:phase:change")
                         async def _on_phase(payload, _player=player):
-                            data = _ok_data(payload)
-                            room_id = data.get("room_id")
+                            data, event, _inner = _event_parts(payload)
+                            room_id = data.get("room_id") or event.get("room_id")
                             if room_id:
                                 _player.room_id = room_id
-                            state = _merge_phase_state(data)
+                            state = _merge_phase_state(event or data)
                             if _player.agent_id:
                                 last_state[_player.agent_id] = state
                             _log(_player, f"tx:phase:change phase={state.get('phase')} actor_id={state.get('actor_id')}")
@@ -562,16 +570,15 @@ async def main() -> None:
 
                         @player.socket.on("tx:settlement")
                         async def _on_settlement(payload, _player=player):
-                            data = _ok_data(payload)
-                            payouts = data.get("payouts") or {}
+                            data, _event, inner = _event_parts(payload)
+                            payouts = inner.get("payouts") or {}
                             summary = _winner_summary(payouts, players)
-                            _log(_player, f"tx:settlement prize_pool={data.get('prize_pool')} payouts={payouts} {summary}")
+                            _log(_player, f"tx:settlement prize_pool={inner.get('prize_pool')} payouts={payouts} {summary}")
                             settlement_event.set()
 
                         @player.socket.on("tx:hand:result")
                         async def _on_hand_result(payload, _player=player):
-                            data = _ok_data(payload)
-                            hand_payload = data.get("payload") or {}
+                            data, event, hand_payload = _event_parts(payload)
                             payouts = hand_payload.get("payouts") or {}
                             hand_index = hand_payload.get("hand_index")
                             summary = _winner_summary(payouts, players)

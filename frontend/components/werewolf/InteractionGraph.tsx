@@ -6,13 +6,15 @@ import { getWerewolfSeatPosition } from './layoutUtils';
 import type { AnchoredCenter } from '@/hooks/useAnchoredCenter';
 
 interface InteractionGraphProps {
-  votes: Record<string, string>; // voter_sid -> target_sid
   players: { sid: string }[];
   center?: AnchoredCenter;
   isAgent?: boolean;
+  seatRadius?: number;
+  lineRadius?: number;
+  voteCounts?: Record<string, number>;
 }
 
-export default function InteractionGraph({ votes, players, center, isAgent = true }: InteractionGraphProps) {
+export default function InteractionGraph({ players, center, isAgent = true, seatRadius, lineRadius: _lineRadius, voteCounts }: InteractionGraphProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const [size, setSize] = React.useState({ width: 0, height: 0 });
 
@@ -43,60 +45,63 @@ export default function InteractionGraph({ votes, players, center, isAgent = tru
   const getPlayerIndex = (sid: string) => players.findIndex((p) => p.sid === sid);
 
   const hasSize = size.width > 0 && size.height > 0;
-  const hasVotes = Object.keys(votes || {}).length > 0;
+  const hasVotes = voteCounts && Object.keys(voteCounts).length > 0;
 
   const centerX = center?.pixel?.x ?? size.width / 2;
   const centerY = center?.pixel?.y ?? size.height / 2;
   const minDim = Math.min(size.width, size.height);
-  const seatRadius = Math.min(300, Math.max(180, minDim / 2 - 100));
-  const lineRadius = Math.max(160, seatRadius - 60);
-
-  const arrowColor = isAgent ? '#ef4444' : 'rgb(244, 63, 94)';
-  const arrowOpacity = isAgent ? 1 : 0.6;
-  const markerId = isAgent ? 'arrowhead-agent' : 'arrowhead-human';
+  const computedSeatRadius = Math.min(300, Math.max(180, minDim / 2 - 100));
+  const finalSeatRadius = typeof seatRadius === 'number' && Number.isFinite(seatRadius)
+    ? seatRadius
+    : computedSeatRadius;
+  const ringCore = isAgent ? 'rgba(245, 158, 11, 0.75)' : 'rgba(245, 158, 11, 0.7)';
+  const ringGlow = isAgent ? 'rgba(245, 158, 11, 0.25)' : 'rgba(245, 158, 11, 0.22)';
+  const ringRadius = 48;
 
   return (
     <div ref={containerRef} className="absolute inset-0 w-full h-full pointer-events-none z-10">
       <svg className="absolute inset-0 w-full h-full">
-      <defs>
-        <marker
-          id={markerId}
-          markerWidth="10"
-          markerHeight="7"
-          refX="9"
-          refY="3.5"
-          orient="auto"
-        >
-          <polygon points="0 0, 10 3.5, 0 7" fill={arrowColor} fillOpacity={arrowOpacity} />
-        </marker>
-      </defs>
-      {hasVotes && hasSize && Object.entries(votes).map(([voterSid, targetSid]) => {
-        const voterIdx = getPlayerIndex(voterSid);
-        const targetIdx = getPlayerIndex(targetSid);
-
-        if (voterIdx === -1 || targetIdx === -1) return null;
-
-        const start = getWerewolfSeatPosition(voterIdx, players.length, lineRadius);
-        const end = getWerewolfSeatPosition(targetIdx, players.length, lineRadius);
-
-        return (
-          <motion.line
-            key={`${voterSid}-${targetSid}`}
-            initial={{ pathLength: 0, opacity: 0 }}
-            animate={{ pathLength: 1, opacity: 1 }}
-            transition={{ duration: 0.5 }}
-            x1={centerX + start.x}
-            y1={centerY + start.y}
-            x2={centerX + end.x}
-            y2={centerY + end.y}
-            stroke={arrowColor}
-            strokeOpacity={arrowOpacity}
-            strokeWidth="2"
-            markerEnd={`url(#${markerId})`}
-            strokeDasharray="5,5"
-          />
-        );
-      })}
+      {hasVotes && hasSize && (() => {
+        const entries = Object.entries(voteCounts || {})
+          .map(([target, count]) => ({ target, count: Number(count) || 0 }))
+          .filter((entry) => entry.count > 0);
+        if (entries.length === 0) return null;
+        const maxCount = Math.max(...entries.map((entry) => entry.count));
+        const topTargets = entries.filter((entry) => entry.count === maxCount).map((entry) => entry.target);
+        return topTargets.map((targetSid) => {
+          const targetIdx = getPlayerIndex(String(targetSid));
+          if (targetIdx === -1) return null;
+          const pos = getWerewolfSeatPosition(targetIdx, players.length, finalSeatRadius);
+          const cx = centerX + pos.x;
+          const cy = centerY + pos.y;
+          return (
+            <g key={`vote-highlight-${targetSid}`}>
+              <motion.circle
+                initial={{ opacity: 0, r: ringRadius - 6 }}
+                animate={{ opacity: 1, r: ringRadius }}
+                transition={{ duration: 0.35 }}
+                cx={cx}
+                cy={cy}
+                r={ringRadius}
+                stroke={ringGlow}
+                strokeWidth="10"
+                fill="none"
+              />
+              <motion.circle
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.35 }}
+                cx={cx}
+                cy={cy}
+                r={ringRadius}
+                stroke={ringCore}
+                strokeWidth="2.5"
+                fill="none"
+              />
+            </g>
+          );
+        });
+      })()}
       </svg>
     </div>
   );

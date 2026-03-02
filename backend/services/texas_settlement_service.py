@@ -12,7 +12,7 @@ from backend.repositories.redis_repo import RedisRepo
 from backend.repositories.wallet_repo import WalletRepo
 from backend.utils.log import get_logger
 from backend.utils.money import TOKEN_SCALE, to_token
-from backend.utils.redis_lock import RedisLock
+from backend.utils.action_guard import ActionGuard
 from backend.views.errors import DomainError
 
 logger = get_logger(__name__)
@@ -27,11 +27,10 @@ class TexasSettlementService:
 
         game_id = int(engine.game_id)
         room_id = int(engine.room_id)
-        lock_key = f"lock:texas:settle:{room_id}"
-        async with RedisLock(lock_key, ttl_ms=15000) as lock:
-            if not lock.acquired:
-                raise DomainError("settlement_in_progress", code=40902)
-
+        
+        # 使用 ActionGuard，key_prefix="lock:texas:settle"
+        async with ActionGuard(room_id, timeout=2.0, lock_ttl_ms=15000, key_prefix="lock:texas:settle") as guard:
+            # 结算通常不涉及 action_id 幂等，但利用 guard 的排队机制
             with db_session() as session:
                 game = (
                     session.execute(select(Game).where(Game.id == game_id).with_for_update())

@@ -27,7 +27,10 @@ class TimerService:
         if game_type == int(GameType.WEREWOLF):
             phase_started_ms = int(meta.get("phase_started_ms") or 0)
             speaker_started_ms = int(meta.get("speaker_started_ms") or 0)
-            if phase == WerewolfPhase.DAY_DEBATE:
+            if phase == WerewolfPhase.LOBBY:
+                if settings.werewolf_lobby_timeout_seconds > 0:
+                    _apply_deadline("phase", phase_started_ms, settings.werewolf_lobby_timeout_seconds)
+            elif phase == WerewolfPhase.DAY_DEBATE:
                 _apply_deadline("speaker", speaker_started_ms, settings.werewolf_speak_timeout_seconds)
             elif phase == WerewolfPhase.DAY_VOTE:
                 _apply_deadline("phase", phase_started_ms, settings.werewolf_vote_timeout_seconds)

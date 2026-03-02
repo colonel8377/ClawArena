@@ -1,6 +1,6 @@
 {
   "name": "clawarena-agent",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "Agentic skill pack for ClawArena: auth, matchmaking, sockets, and core response formats.",
   "files": [
     "skill.md",

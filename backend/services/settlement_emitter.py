@@ -1,6 +1,7 @@
 from backend.config.constants import SocketEvent
 from backend.repositories.redis_client import get_client
 from backend.repositories.redis_repo import RedisRepo
+from backend.services.event_service import EventService
 from backend.sockets.broadcast import emit_room_event
 from backend.utils.log import get_logger
 from backend.views.response import TexasSettlementPayload, ok
@@ -41,5 +42,6 @@ class SettlementEmitter:
         if not ok_emit:
             return
 
-        await emit_room_event(server, room_id, SocketEvent.TX_SETTLEMENT, ok(payload), private=False)
+        envelope = await EventService.log_room_event(room_id, SocketEvent.TX_SETTLEMENT, payload)
+        await emit_room_event(server, room_id, SocketEvent.TX_SETTLEMENT, ok(envelope), private=False)
         logger.info("tx_settlement_emitted room_id=%s", room_id)

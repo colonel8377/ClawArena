@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { ensureSocketMode } from '@/lib/socket';
 import { unwrapSocketPayload } from '@/lib/stateAdapters';
-import { getBotToken } from '@/lib/antiBot';
 
 type EventHandler = (data: any) => void;
 
@@ -25,12 +24,31 @@ export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorS
     ])
   );
 
+  // Keep track of the latest events object to avoid stale closures without re-subscribing
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+
   useEffect(() => {
     const socket = ensureSocketMode('spectator');
     if (!socket) return;
     socketRef.current = socket;
+    pendingUpdates.current.clear();
 
     const activeSocket = socket;
+    const expectedRoomId = Number(tableId);
+    const resolveRoomId = (payload: any) => {
+      const candidates = [
+        payload?.room_id,
+        payload?.roomId,
+        payload?.payload?.room_id,
+        payload?.payload?.roomId,
+      ];
+      for (const candidate of candidates) {
+        const value = Number(candidate);
+        if (Number.isFinite(value) && value > 0) return value;
+      }
+      return null;
+    };
 
     // Join logic
     const joinRoom = () => {
@@ -48,12 +66,23 @@ export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorS
 
     activeSocket.on('connect', joinRoom);
 
+    // Store the actual handlers we bind so we can unbind them specifically
+    const boundHandlers: Record<string, (data: any) => void> = {};
+
     // Event binding with RAF throttling
-    Object.entries(events).forEach(([eventName, handler]) => {
-      activeSocket.on(eventName, (data: any) => {
+    Object.keys(eventsRef.current).forEach((eventName) => {
+      const wrappedHandler = (data: any) => {
         const payload = unwrapSocketPayload(data);
+        const payloadRoomId = resolveRoomId(payload);
+        
+        // Strict room check to prevent cross-talk
+        if (payloadRoomId && Number.isFinite(expectedRoomId) && payloadRoomId !== expectedRoomId) {
+          return;
+        }
+
         if (!coalesceEvents.current.has(eventName)) {
-          handler(payload);
+          // Always call the latest handler
+          eventsRef.current[eventName]?.(payload);
           return;
         }
 
@@ -62,27 +91,33 @@ export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorS
         if (!rafRef.current) {
           rafRef.current = requestAnimationFrame(() => {
             pendingUpdates.current.forEach((data, evt) => {
-              if (events[evt]) {
-                events[evt](data);
-              }
+              eventsRef.current[evt]?.(data);
             });
             pendingUpdates.current.clear();
             rafRef.current = null;
           });
         }
-      });
+      };
+
+      boundHandlers[eventName] = wrappedHandler;
+      activeSocket.on(eventName, wrappedHandler);
     });
 
     return () => {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
-      
-      activeSocket.emit('room:leave', {});
+      const roomId = Number(tableId);
+      activeSocket.emit('room:leave', {
+        room_id: Number.isFinite(roomId) && roomId > 0 ? roomId : undefined,
+        role: 2,
+      });
       
       activeSocket.off('connect', joinRoom);
-      Object.keys(events).forEach((eventName) => {
-        activeSocket.off(eventName);
+      
+      // Cleanup ONLY our specific handlers
+      Object.entries(boundHandlers).forEach(([eventName, handler]) => {
+        activeSocket.off(eventName, handler);
       });
     };
   }, [namespace, tableId]); // Re-run if these change

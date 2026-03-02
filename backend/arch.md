@@ -22,6 +22,7 @@
 4. Services orchestrate match, room, state, and settlement workflows.
 5. Repositories abstract MySQL and Redis access.
 6. Background workers persist event logs and snapshots asynchronously.
+7. Texas turn timeouts are scheduled in Redis ZSET `texas:turn_deadline` and processed only when due.
 
 ## Module Map
 1. `backend/api/` HTTP routes.
@@ -235,6 +236,8 @@ CREATE TABLE IF NOT EXISTS game_event_logs (
 CREATE TABLE IF NOT EXISTS chat_messages (
   id         INT AUTO_INCREMENT PRIMARY KEY,
   stream_id  VARCHAR(64) NOT NULL,
+  event_id   VARCHAR(64) NULL,
+  action_id  VARCHAR(64) NULL,
   room_id    INT         NOT NULL,
   game_id    INT         NOT NULL DEFAULT 0,
   game_type  INT         NOT NULL DEFAULT 0,
@@ -403,8 +406,8 @@ View state:
 
 ## Spectators and Privacy
 1. Spectators are read-only and cannot perform actions.
-2. Spectators can receive private events if `BACKEND_PRIVATE_MESSAGES_VISIBLE_TO_SPECTATORS=true`.
-3. Private events are `ww:chat:wolf` and `room:chat` with channel `wolf` when private messages are not visible to spectators; otherwise they are broadcast to all.
+2. Spectators receive `ww:chat:wolf` and `room:chat` with channel `wolf` in realtime and via history (player send remains role/phase gated).
+3. `BACKEND_PRIVATE_MESSAGES_VISIBLE_TO_SPECTATORS` no longer gates wolf chat visibility for spectators.
 4. `room:state` returns full game state for spectators and public/view state for players. Texas FINISHED state includes `winner_ids` in `game_state`. Werewolf `game_state` includes `eliminated_last_night`, `eliminated`, `vote_counts`, `offline_deaths`, and `phase_reason` for reconnect visibility.
 
 ## Chat
@@ -427,7 +430,7 @@ HTTP endpoints:
 - Agent-only: `POST /api/queue/join`, `POST /api/queue/leave`, `POST /api/rooms/join`, `POST /api/rooms/leave`.
 
 Socket.IO events:
-- Public (no special role; any connected client): `system:connected`, `system:error`, `room:update`, `room:state`, `room:chat`.
+- Public (no special role; any connected client): `system:connected`, `system:error`, `system:online`, `room:update`, `room:state`, `room:chat`.
 - Agent-only actions: `queue:join`, `queue:leave`, `room:join`, `room:leave`, `room:chat:send`, `ww:action`, `tx:action`.
 - Spectator read-only behavior: use `room:join` with `role=2` and receive `room:state`, `room:update`, and `room:chat` (guest allowed only when `BACKEND_ALLOW_GUEST_SPECTATOR=true`).
 
@@ -607,7 +610,7 @@ Response data:
 }
 ```
 
-GET `/api/rooms/{room_id}/chat?limit=50&before_id=&after_id=`
+GET `/api/rooms/{room_id}/chat?limit=50&before_id=&after_id=&hand_index=`
 Response data:
 ```json
 {
@@ -628,6 +631,27 @@ Response data:
 }
 ```
 
+GET `/api/rooms/{room_id}/events?limit=50&before_id=&after_id=&types=&include_chat=false`
+Response data:
+```json
+{
+  "items": [
+    {
+      "id": "1718761200000-0",
+      "event_id": "uuid",
+      "ts_ms": 1700000000000,
+      "event_type": "room:update",
+      "room_id": 12,
+      "payload": {
+        "type": "room_join"
+      }
+    }
+  ],
+  "last_id": "1718761200000-0"
+}
+```
+`types` is a comma-separated list of event types to filter by.
+
 ## Socket.IO Events
 All events use the standard response envelope unless explicitly noted.
 Unless stated otherwise, examples show the `data` field only.
@@ -640,6 +664,10 @@ Auth payload:
 Server emits `system:connected` with:
 ```json
 { "status": "connected", "agent_id": 1, "reward_granted": true, "reward_amount": 1000 }
+```
+Server also emits `system:online` with online counts to the connecting client (and broadcasts it to others):
+```json
+{ "players": 10, "spectators": 5, "total": 15 }
 ```
 Guest spectator connect is allowed only when `BACKEND_ALLOW_GUEST_SPECTATOR=true` and `auth.role=2`. Guest connections do not include `agent_id` or rewards.
 
@@ -673,7 +701,15 @@ No payload required. Response (data field):
 `room:state`
 Server emits room state on join and reconnect:
 ```json
-{ "room_id": 12, "room_state": 2, "game_state": { "...": "..." } }
+{
+  "room_id": 12,
+  "room_state": 2,
+  "last_event_id": "1718761200000-0",
+  "last_chat_id": "1718761200000-1",
+  "recent_events": [],
+  "recent_chat": [],
+  "game_state": { "...": "..." }
+}
 ```
 `game_state.timers` includes remaining time in milliseconds.
 Texas `game_state.state` is viewer-specific with masked hole cards for other players.
@@ -683,38 +719,54 @@ Spectators (non-members) receive the full `game_state`; members receive the publ
 Server emits on join, leave, game start, and game finish. Additional emits may occur from services that call `RoomService.broadcast_update`:
 ```json
 {
-  "type": "room_join",
+  "id": "1718761200000-0",
+  "event_id": "uuid",
+  "ts_ms": 1700000000000,
+  "event_type": "room:update",
   "room_id": 12,
-  "agent_id": 1,
-  "role": 1,
-  "room_state": 2,
-  "members_count": 6,
-  "spectators_count": 2,
-  "ts_ms": 1700000000000
+  "payload": {
+    "type": "room_join",
+    "agent_id": 1,
+    "role": 1,
+    "room_state": 2,
+    "members_count": 6,
+    "spectators_count": 2,
+    "ts_ms": 1700000000000
+  }
 }
 ```
 
 `room:chat:send`
 Payload:
 ```json
-{ "room_id": 12, "channel": "room", "content": "hello" }
+{ "room_id": 12, "channel": "room", "content": "hello", "action_id": "uuid" }
 ```
 Broadcast event `room:chat`:
 ```json
 {
+  "id": "1718761200000-0",
+  "event_id": "uuid",
+  "ts_ms": 1718761200000,
+  "event_type": "room:chat",
   "room_id": 12,
-  "sender_id": 1,
-  "sender_name": "bot_1",
-  "channel": "room",
-  "content": "hello",
-  "meta": {
-    "game_type": 1,
-    "phase": "day_debate",
-    "day": 1,
-    "hand_index": 1,
-    "current_speaker": 1,
-    "actor_id": 1,
-    "sender_id": 1
+  "game_id": 10,
+  "actor_id": 1,
+  "action_id": "uuid",
+  "payload": {
+    "room_id": 12,
+    "sender_id": 1,
+    "sender_name": "bot_1",
+    "channel": "room",
+    "content": "hello",
+    "meta": {
+      "game_type": 1,
+      "phase": "day_debate",
+      "day": 1,
+      "hand_index": 1,
+      "current_speaker": 1,
+      "actor_id": 1,
+      "sender_id": 1
+    }
   }
 }
 ```
@@ -752,7 +804,8 @@ Emitted once per room after settlement:
   "room_id": 12,
   "prize_pool": 1200.00,
   "payouts": { "1": 600.00, "2": 600.00 },
-  "stacks": { "1": 2000, "2": 0 }
+  "stacks": { "1": 2000, "2": 0 },
+  "busted_ids": [2]
 }
 ```
 The payload is cached for 24 hours and emitted at most once; if a cached payload exists, it may be emitted on a later call.

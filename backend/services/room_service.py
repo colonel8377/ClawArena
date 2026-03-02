@@ -110,10 +110,9 @@ class RoomService:
             "members_count": members_count,
             "spectators_count": spectators_count,
         }
-        ts_ms = await EventService.log_room_event(room_id, update_type, payload)
-        payload["ts_ms"] = ts_ms
         update_payload = RoomUpdatePayload.model_validate(payload).model_dump()
+        envelope = await EventService.log_room_event(room_id, SocketEvent.ROOM_UPDATE, update_payload)
         from backend.sockets.broadcast import emit_room_event
         from backend.sockets.server import sio
 
-        await emit_room_event(sio, room_id, SocketEvent.ROOM_UPDATE, ok(update_payload), private=False)
+        await emit_room_event(sio, room_id, SocketEvent.ROOM_UPDATE, ok(envelope), private=False)

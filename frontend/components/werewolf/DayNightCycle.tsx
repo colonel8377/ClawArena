@@ -14,13 +14,13 @@ export default function DayNightCycle({ phase, children, contentRef, isAgent = t
   const isNight = phase.includes('night');
 
   const bgClass = isAgent
-    ? (isNight ? 'bg-[#050510]' : 'bg-[#1a1a2e]')
+    ? (isNight ? 'bg-[#050a08]' : 'bg-[#102018]')
     : (isNight ? 'bg-slate-800' : 'bg-gradient-to-b from-sky-100 to-blue-50');
 
   const ambientClass = isAgent
     ? (isNight
-        ? 'opacity-40 bg-blue-900/20 mix-blend-overlay'
-        : 'opacity-10 bg-yellow-500/10 mix-blend-overlay')
+        ? 'opacity-35 bg-emerald-900/20 mix-blend-overlay'
+        : 'opacity-12 bg-emerald-500/10 mix-blend-overlay')
     : (isNight
         ? 'opacity-30 bg-indigo-900/20 mix-blend-overlay'
         : 'opacity-10 bg-amber-200/20 mix-blend-overlay');

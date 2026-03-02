@@ -105,8 +105,52 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
   const board = isNested ? [] : extractCardCodes(boardSource).slice(0, 5);
   const currentBet = Math.max(0, ...Object.values(bets).map((value) => toNumber(value)));
   const actorId = inner.actor_id ?? inner.actorId;
-  const dealerPosition = seatOrder.length > 0 ? handIndex % seatOrder.length : undefined;
+  
+  // Calculate dealer position based on eligible (active) players rotation
+  // This matches backend TexasEngine logic where rotation is based on eligible players
+  let dealerPosition: number | undefined;
+  let sbPosition: number | undefined;
+  let bbPosition: number | undefined;
+  const activeCount = active.length;
+
+  if (activeCount > 0) {
+    const sbIndexInActive = handIndex % activeCount;
+    // In Heads-up (2 players), Dealer is SB. In 3+ players, Dealer is before SB.
+    const dealerIndexInActive = activeCount === 2 
+      ? sbIndexInActive 
+      : (sbIndexInActive - 1 + activeCount) % activeCount;
+      
+    const dealerPlayer = active[dealerIndexInActive];
+    if (dealerPlayer) {
+      const dealerId = toNumber(dealerPlayer.agent_id ?? dealerPlayer.id ?? dealerPlayer.sid);
+      dealerPosition = seatOrder.findIndex(p => toNumber(p.agent_id ?? p.id ?? p.sid) === dealerId);
+    }
+
+    // Determine SB and BB positions relative to active players
+    const sbPlayer = active[sbIndexInActive];
+    if (sbPlayer) {
+      const sbId = toNumber(sbPlayer.agent_id ?? sbPlayer.id ?? sbPlayer.sid);
+      sbPosition = seatOrder.findIndex(p => toNumber(p.agent_id ?? p.id ?? p.sid) === sbId);
+    }
+
+    const bbIndexInActive = (sbIndexInActive + 1) % activeCount;
+    const bbPlayer = active[bbIndexInActive];
+    if (bbPlayer) {
+      const bbId = toNumber(bbPlayer.agent_id ?? bbPlayer.id ?? bbPlayer.sid);
+      bbPosition = seatOrder.findIndex(p => toNumber(p.agent_id ?? p.id ?? p.sid) === bbId);
+    }
+  }
+
+  if (dealerPosition === -1 || dealerPosition === undefined) {
+    // Fallback if something goes wrong
+    dealerPosition = seatOrder.length > 0 ? handIndex % seatOrder.length : undefined;
+  }
+
   const timers = gameState.timers && typeof gameState.timers === 'object' ? gameState.timers : undefined;
+  const winnerSource = inner.winner_ids ?? gameState.winner_ids;
+  const winnerIds = Array.isArray(winnerSource)
+    ? winnerSource.map((id: any) => toString(id))
+    : (inner.winner_id ?? gameState.winner_id ? [toString(inner.winner_id ?? gameState.winner_id)] : undefined);
 
   return {
     game_id: toString(gameState.game_id ?? ''),
@@ -116,11 +160,14 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
     community_cards: board,
     players: mappedPlayers,
     dealer_position: dealerPosition,
+    sb_position: sbPosition,
+    bb_position: bbPosition,
     current_player: actorId !== undefined && actorId !== null ? toString(actorId) : undefined,
     hand_number: handIndex,
     hand_actions: handActions,
     small_blind: smallBlind,
     big_blind: bigBlind,
+    winners: winnerIds,
     timers,
   };
 };

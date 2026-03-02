@@ -9,11 +9,12 @@ import type { AnchoredCenter } from '@/hooks/useAnchoredCenter';
 import { getSeatSlotIndices, getSeatSlotPositions, TOTAL_SLOTS } from '@/components/texas/seatPositions';
 
 type SlotOffsets = Record<number, { x: number; y: number }>;
-type ElementOffsets = Record<'communityCards' | 'pot' | 'round' | 'actionPanel' | 'chatPanel', { x: number; y: number }>;
+type ElementOffsets = Record<'communityCards' | 'pot' | 'round' | 'winner' | 'actionPanel' | 'chatPanel', { x: number; y: number }>;
 
 const BASE_STAGE_WIDTH = 1200;
 const BASE_STAGE_HEIGHT = 820;
-const ELEMENT_KEYS: Array<keyof ElementOffsets> = ['communityCards', 'pot', 'round', 'actionPanel', 'chatPanel'];
+const TABLE_SHIFT_X = -12;
+const ELEMENT_KEYS: Array<keyof ElementOffsets> = ['communityCards', 'pot', 'round', 'winner', 'actionPanel', 'chatPanel'];
 
 const buildOffsets = (raw: any, fallback?: SlotOffsets): SlotOffsets => {
   const next: SlotOffsets = fallback ? { ...fallback } : {};
@@ -41,6 +42,7 @@ const buildElementOffsets = (raw: any, fallback?: ElementOffsets): ElementOffset
       communityCards: { x: 0, y: 0 },
       pot: { x: 0, y: 0 },
       round: { x: 0, y: 0 },
+      winner: { x: 0, y: 0 },
       actionPanel: { x: 0, y: 0 },
       chatPanel: { x: 0, y: 0 }
     };
@@ -438,6 +440,7 @@ export default function TexasLayoutEditorPage() {
         <div
           className="absolute left-1/2 top-1/2"
           style={{
+            left: `calc(50% + ${TABLE_SHIFT_X}px)`,
             width: BASE_STAGE_WIDTH,
             height: BASE_STAGE_HEIGHT,
             transform: `translate(-50%, -50%) scale(${scale})`,
@@ -454,8 +457,19 @@ export default function TexasLayoutEditorPage() {
               }}
               onPointerDown={(event) => startElementDrag('round', event, elementOffsets.round.x, elementOffsets.round.y)}
             >
-              <div className="px-4 py-1 rounded-full text-[12px] font-bold tracking-wide border bg-black/70 border-emerald-400/40 text-emerald-100">
+              <div className="px-5 py-2 rounded-full text-sm font-bold tracking-wide border bg-black/70 border-emerald-400/40 text-emerald-100">
                 Round 1: PREFLOP
+              </div>
+            </div>
+            <div
+              className="absolute left-1/2 top-12 z-40 pointer-events-auto"
+              style={{
+                transform: `translate(-50%, 0) translate(${elementOffsets.winner.x}px, ${elementOffsets.winner.y}px)`
+              }}
+              onPointerDown={(event) => startElementDrag('winner', event, elementOffsets.winner.x, elementOffsets.winner.y)}
+            >
+              <div className="px-6 py-2 rounded-full border text-sm font-bold tracking-wide bg-amber-500/15 border-amber-300/60 text-amber-100 shadow-[0_0_24px_rgba(251,191,36,0.45)]">
+                WINNER: Seat 1 +120
               </div>
             </div>
             <CommunityCards

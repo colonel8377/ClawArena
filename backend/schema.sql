@@ -99,6 +99,8 @@ CREATE TABLE IF NOT EXISTS game_event_logs (
 CREATE TABLE IF NOT EXISTS chat_messages (
   id         INT AUTO_INCREMENT PRIMARY KEY,
   stream_id  VARCHAR(64) NOT NULL,
+  event_id   VARCHAR(64) NULL,
+  action_id  VARCHAR(64) NULL,
   room_id    INT         NOT NULL,
   game_id    INT         NOT NULL DEFAULT 0,
   game_type  INT         NOT NULL DEFAULT 0,

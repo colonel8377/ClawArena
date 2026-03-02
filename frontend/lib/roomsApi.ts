@@ -21,6 +21,8 @@ export type RoomChatMessage = {
   sender_name?: string | null;
   content: string;
   ts_ms: number;
+  event_id?: string | null;
+  action_id?: string | null;
   hand_index?: number | null;
   phase?: string | null;
 };
@@ -32,8 +34,14 @@ export type RoomChatHistory = {
 
 export type RoomEvent = {
   id: string;
+  event_id: string;
   event_type: string;
   ts_ms: number;
+  room_id: number;
+  game_id?: number;
+  actor_id?: number | null;
+  action_id?: string | null;
+  cause_id?: string | null;
   payload: any;
 };
 

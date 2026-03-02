@@ -2,12 +2,13 @@ from backend.services.room_state_service import RoomStateService
 from backend.middleware.decorators import socket_handler
 from backend.views.requests import RoomJoinRequest
 from backend.config.constants import RoomRole, SocketEvent
-from backend.sockets.guards import socket_rate_limit, socket_validate, validate_response, socket_require_role, socket_require_agent
+from backend.sockets.guards import socket_rate_limit, socket_validate, validate_response, socket_require_role
 from backend.views.response import RoomJoinResponse, RoomLeaveResponse, RoomStatePayload, RoomUpdatePayload, ok
 from backend.sockets.broadcast import join_room, leave_room, emit_room_event
 from backend.services.event_service import EventService
 from backend.repositories.redis_repo import RedisRepo
 from backend.repositories.kset.room_repo import RoomCache
+from backend.repositories.kv.kv_repo import KvRepo
 
 
 def register(server):
@@ -29,11 +30,6 @@ def register(server):
                 to=sid,
             )
             room_state = await RedisRepo.get_room_state(payload.room_id)
-            ts_ms = await EventService.log_room_event(
-                payload.room_id,
-                "room_join",
-                {"agent_id": None, "role": int(payload.role)},
-            )
             members_count = await RoomCache.count_room_members(payload.room_id)
             spectators_count = await RoomCache.count_room_spectators(payload.room_id)
             update_payload = RoomUpdatePayload(
@@ -44,9 +40,9 @@ def register(server):
                 room_state=room_state,
                 members_count=members_count,
                 spectators_count=spectators_count,
-                ts_ms=ts_ms,
             ).model_dump()
-            await emit_room_event(server, payload.room_id, SocketEvent.ROOM_UPDATE, ok(update_payload), private=False)
+            envelope = await EventService.log_room_event(payload.room_id, SocketEvent.ROOM_UPDATE, update_payload)
+            await emit_room_event(server, payload.room_id, SocketEvent.ROOM_UPDATE, ok(envelope), private=False)
             return validate_response(RoomJoinResponse, {"status": "joined", "room_id": payload.room_id, "role": int(RoomRole.SPECTATOR), "role_label": "spectator"})
 
         if is_spectator:
@@ -65,11 +61,6 @@ def register(server):
             to=sid,
         )
         room_state = await RedisRepo.get_room_state(payload.room_id)
-        ts_ms = await EventService.log_room_event(
-            payload.room_id,
-            "room_join",
-            {"agent_id": int(agent_id), "role": int(payload.role)},
-        )
         members_count = await RoomCache.count_room_members(payload.room_id)
         spectators_count = await RoomCache.count_room_spectators(payload.room_id)
         update_payload = RoomUpdatePayload(
@@ -80,36 +71,60 @@ def register(server):
             room_state=room_state,
             members_count=members_count,
             spectators_count=spectators_count,
-            ts_ms=ts_ms,
         ).model_dump()
-        await emit_room_event(server, payload.room_id, SocketEvent.ROOM_UPDATE, ok(update_payload), private=False)
+        envelope = await EventService.log_room_event(payload.room_id, SocketEvent.ROOM_UPDATE, update_payload)
+        await emit_room_event(server, payload.room_id, SocketEvent.ROOM_UPDATE, ok(envelope), private=False)
         return validate_response(RoomJoinResponse, result)
 
     @server.on(SocketEvent.ROOM_LEAVE)
-    @socket_require_agent(server)
     @socket_rate_limit(server, "10/minute")
     @socket_handler(server)
-    async def room_leave(sid, agent_id, data):
-        result = await RoomService.leave(agent_id)
-        if result.get("room_id"):
-            await leave_room(server, sid, result["room_id"])
-            room_state = await RedisRepo.get_room_state(result["room_id"])
-            ts_ms = await EventService.log_room_event(
-                result["room_id"],
-                "room_leave",
-                {"agent_id": agent_id},
-            )
-            members_count = await RoomCache.count_room_members(result["room_id"])
-            spectators_count = await RoomCache.count_room_spectators(result["room_id"])
-            update_payload = RoomUpdatePayload(
-                type="room_leave",
-                room_id=result["room_id"],
-                agent_id=agent_id,
-                role=None,
-                room_state=room_state,
-                members_count=members_count,
-                spectators_count=spectators_count,
-                ts_ms=ts_ms,
-            ).model_dump()
-            await emit_room_event(server, result["room_id"], SocketEvent.ROOM_UPDATE, ok(update_payload), private=False)
-        return validate_response(RoomLeaveResponse, result)
+    async def room_leave(sid, payload):
+        payload_data = payload or {}
+        if not isinstance(payload_data, dict):
+            payload_data = {}
+        payload_room_id = payload_data.get("room_id")
+        payload_role = payload_data.get("role")
+        role_value = None
+        if payload_role is not None:
+            try:
+                role_value = int(payload_role)
+            except Exception:
+                role_value = None
+
+        session = await server.get_session(sid)
+        agent_id = session.get("agent_id") if session else None
+
+        if agent_id is not None:
+            try:
+                current_room_id = await KvRepo.get_agent_room(int(agent_id))
+            except Exception:
+                current_room_id = None
+            if role_value == int(RoomRole.SPECTATOR) and payload_room_id:
+                if not current_room_id or int(payload_room_id) != int(current_room_id):
+                    await leave_room(server, sid, int(payload_room_id))
+                    return validate_response(RoomLeaveResponse, {"status": "left", "room_id": int(payload_room_id)})
+
+            result = await RoomService.leave(int(agent_id))
+            if result.get("room_id"):
+                await leave_room(server, sid, result["room_id"])
+                room_state = await RedisRepo.get_room_state(result["room_id"])
+                members_count = await RoomCache.count_room_members(result["room_id"])
+                spectators_count = await RoomCache.count_room_spectators(result["room_id"])
+                update_payload = RoomUpdatePayload(
+                    type="room_leave",
+                    room_id=result["room_id"],
+                    agent_id=agent_id,
+                    role=None,
+                    room_state=room_state,
+                    members_count=members_count,
+                    spectators_count=spectators_count,
+                ).model_dump()
+                envelope = await EventService.log_room_event(result["room_id"], SocketEvent.ROOM_UPDATE, update_payload)
+                await emit_room_event(server, result["room_id"], SocketEvent.ROOM_UPDATE, ok(envelope), private=False)
+            return validate_response(RoomLeaveResponse, result)
+
+        if payload_room_id:
+            await leave_room(server, sid, int(payload_room_id))
+            return validate_response(RoomLeaveResponse, {"status": "left", "room_id": int(payload_room_id)})
+        return validate_response(RoomLeaveResponse, {"status": "left", "room_id": None})

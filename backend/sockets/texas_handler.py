@@ -1,6 +1,7 @@
 from backend.config.constants import GameEventType, SocketEvent, TexasAction
 from backend.middleware.decorators import socket_handler
 from backend.services.event_service import EventService
+from backend.repositories.redis_repo import RedisRepo
 from backend.services.game_action_service import GameActionService
 from backend.sockets.broadcast import emit_room_event
 from backend.sockets.guards import socket_dedupe_action, socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
@@ -23,6 +24,7 @@ def register(server):
             agent_id,
             payload.action.value,
             payload.payload,
+            action_id=payload.action_id,
         )
         for event in events:
             event_type = event.get("event_type")
@@ -31,11 +33,16 @@ def register(server):
                 event_name = SocketEvent.TX_PHASE_CHANGE
             elif event_type == "hand_result":
                 event_name = SocketEvent.TX_HAND_RESULT
+                hand_index = event.get("payload", {}).get("hand_index")
+                if hand_index is not None:
+                    ok_emit = await RedisRepo.set_hand_result_emitted(payload.room_id, int(hand_index))
+                    if not ok_emit:
+                        continue
             else:
                 if action_type not in {a.value for a in TexasAction}:
                     raise DomainError("invalid_action_type", code=40027)
                 action_name = TexasAction(action_type).name.lower()
                 event_name = f"tx:{action_name}"
-            await EventService.log_room_event(payload.room_id, event_name, event)
-            await emit_room_event(server, payload.room_id, event_name, ok(event), private=False)
+            envelope = await EventService.log_room_event(payload.room_id, event_name, event)
+            await emit_room_event(server, payload.room_id, event_name, ok(envelope), private=False)
         return {"events": events}

@@ -17,19 +17,19 @@ logger = get_logger(__name__)
 
 class EventService:
     @staticmethod
-    async def log_room_event(room_id: int, event_type: str, payload: dict) -> int:
+    async def log_room_event(room_id: int, event_type: str, payload: dict) -> dict:
         event_id = uuid.uuid4().hex
         ts_ms = int(time.time() * 1000)
         stream_id = await RedisRepo.add_game_event(room_id, event_id, event_type, payload, ts_ms)
-        if payload is not None:
-            payload["event_id"] = event_id
-            payload["ts_ms"] = ts_ms
-            payload["id"] = stream_id
+
         actor_id = None
         actor_name = None
+        action_id = None
         if payload:
-            actor_id = payload.get("actor_id") or payload.get("agent_id")
-            actor_name = payload.get("actor_name") or payload.get("agent_name")
+            actor_id = payload.get("actor_id") or payload.get("sender_id") or payload.get("agent_id")
+            actor_name = payload.get("actor_name") or payload.get("sender_name") or payload.get("agent_name")
+            action_id = payload.get("action_id")
+
         if event_type in {SocketEvent.ROOM_CHAT, SocketEvent.WW_CHAT_DAY, SocketEvent.WW_CHAT_WOLF}:
             try:
                 if event_type == SocketEvent.ROOM_CHAT:
@@ -37,7 +37,7 @@ class EventService:
                     meta = payload.get("meta") if payload else {}
                     hand_index = meta.get("hand_index") if isinstance(meta, dict) else None
                     phase = meta.get("phase") if isinstance(meta, dict) else None
-                    chat_id = await ChatHistoryService.append(
+                    await ChatHistoryService.append(
                         room_id=room_id,
                         game_id=int(payload.get("game_id", 0) if payload else 0),
                         game_type=int(payload.get("game_type", 0) if payload else 0),
@@ -48,11 +48,13 @@ class EventService:
                         hand_index=hand_index,
                         phase=phase,
                         ts_ms=ts_ms,
+                        event_id=event_id,
+                        action_id=action_id,
                     )
                 else:
                     inner = payload.get("payload") if payload else {}
                     channel = ChatChannel.WOLF if event_type == SocketEvent.WW_CHAT_WOLF else ChatChannel.DAY
-                    chat_id = await ChatHistoryService.append(
+                    await ChatHistoryService.append(
                         room_id=room_id,
                         game_id=int(payload.get("game_id", 0) if payload else 0),
                         game_type=int(GameType.WEREWOLF),
@@ -61,11 +63,12 @@ class EventService:
                         sender_name=payload.get("actor_name") if payload else None,
                         content=str(inner.get("msg") or inner.get("content") or ""),
                         ts_ms=ts_ms,
+                        event_id=event_id,
+                        action_id=action_id,
                     )
-                if payload is not None:
-                    payload["chat_id"] = chat_id
             except Exception as exc:
                 logger.warning("chat_history_enqueue_failed room_id=%s error=%s", room_id, exc)
+
         try:
             await enqueue_task(
                 "persist_game_event",
@@ -90,7 +93,19 @@ class EventService:
                     )
         except Exception as exc:
             logger.warning("event_enqueue_failed event_id=%s error=%s", event_id, exc)
-        return ts_ms
+
+        return {
+            "id": str(stream_id),
+            "event_id": event_id,
+            "ts_ms": ts_ms,
+            "event_type": event_type,
+            "room_id": int(payload.get("room_id", room_id)) if payload else int(room_id),
+            "game_id": int(payload.get("game_id", 0)) if payload else 0,
+            "actor_id": actor_id,
+            "action_id": action_id,
+            "cause_id": payload.get("cause_id") if payload else None,
+            "payload": payload,
+        }
 
     @staticmethod
     async def list_room_events(
@@ -156,11 +171,19 @@ class EventService:
                     continue
 
             ts_ms = int(data.get("ts") or 0)
+            event_id = data.get("event_id")
+            actor_id = payload.get("actor_id") or payload.get("sender_id") or payload.get("agent_id")
             items.append(
                 {
                     "id": msg_id,
-                    "event_type": event_type,
+                    "event_id": event_id,
                     "ts_ms": ts_ms,
+                    "event_type": event_type,
+                    "room_id": int(payload.get("room_id", room_id)),
+                    "game_id": int(payload.get("game_id", 0)),
+                    "actor_id": actor_id,
+                    "action_id": payload.get("action_id"),
+                    "cause_id": payload.get("cause_id"),
                     "payload": payload,
                 }
             )

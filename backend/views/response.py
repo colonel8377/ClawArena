@@ -68,6 +68,10 @@ class RoomStatePayload(BaseModel):
     room_id: int = Field(ge=1)
     room_state: int | None = None
     game_state: Dict[str, Any] | None = None
+    last_event_id: str | None = None
+    last_chat_id: str | None = None
+    recent_events: list[Dict[str, Any]] | None = None
+    recent_chat: list[Dict[str, Any]] | None = None
 
 
 class TexasSettlementPayload(BaseModel):
@@ -87,7 +91,7 @@ class RoomUpdatePayload(BaseModel):
     room_state: int | None = None
     members_count: int | None = None
     spectators_count: int | None = None
-    ts_ms: int
+    ts_ms: int | None = None
 
 
 _DISPLAY_SCALE = Decimal("0.01")

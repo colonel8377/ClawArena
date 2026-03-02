@@ -1,5 +1,7 @@
 import time
 
+from backend.config.constants import GameType, TexasPhase
+from backend.config.settings import get_settings
 from backend.repositories.redis_repo import RedisRepo
 
 
@@ -19,7 +21,29 @@ class GameStateService:
         await RedisRepo.set_game_state(room_id, state)
         if public_state is not None:
             await RedisRepo.set_game_public_state(room_id, public_state)
+        await GameStateService._update_texas_deadline(state)
         return state
+
+    @staticmethod
+    async def _update_texas_deadline(state: dict | None) -> None:
+        if not state:
+            return
+        if int(state.get("game_type", 0)) != int(GameType.TEXAS):
+            return
+        room_id = int(state.get("room_id", 0))
+        if room_id <= 0:
+            return
+        phase = state.get("phase")
+        if phase == TexasPhase.FINISHED:
+            await RedisRepo.remove_texas_turn_deadline(room_id)
+            return
+        meta = state.get("meta") or {}
+        turn_started_ms = int(meta.get("turn_started_ms") or 0)
+        if not turn_started_ms:
+            turn_started_ms = int(time.time() * 1000)
+        timeout_seconds = int(get_settings().texas_action_timeout_seconds)
+        deadline_ms = turn_started_ms + timeout_seconds * 1000
+        await RedisRepo.set_texas_turn_deadline(room_id, deadline_ms)
 
     @staticmethod
     def _apply_meta(state: dict, prev_state: dict | None) -> dict:

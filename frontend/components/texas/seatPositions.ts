@@ -22,6 +22,8 @@ const DEFAULT_SLOT_OFFSETS: Record<number, { x: number; y: number }> = {
   11: { x: 47.322265625, y: -115.666015625 }
 };
 
+const SEAT_CENTER_SHIFT_X = 16;
+
 const coerceSlotOffsets = (raw: any, fallback: Record<number, { x: number; y: number }>) => {
   const result: Record<number, { x: number; y: number }> = { ...fallback };
   if (!raw || typeof raw !== 'object') return result;
@@ -60,7 +62,7 @@ const buildBaseSlots = (stageSize?: SeatStageSize) => {
     const t = TOTAL_SLOTS <= 1 ? 0.5 : slotIndex / (TOTAL_SLOTS - 1);
     const angle = arcStart + t * arc;
     return {
-      x: radiusX * Math.cos(angle),
+      x: radiusX * Math.cos(angle) + SEAT_CENTER_SHIFT_X,
       y: radiusY * Math.sin(angle) + yOffset
     };
   });

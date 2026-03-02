@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     offline_kill_seconds: int = 60
     room_state_ttl_seconds: int = 604800
     action_id_ttl_seconds: int = 300
+    werewolf_all_offline_seconds: int = 0
+    werewolf_lobby_timeout_seconds: int = 60
     werewolf_offline_death_seconds: int = 180
     texas_action_timeout_seconds: int = 30
     werewolf_phase_timeout_seconds: int = 45

@@ -9,6 +9,8 @@ class ChatMessage(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     stream_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     room_id: Mapped[int] = mapped_column(Integer, nullable=False)
     game_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     game_type: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

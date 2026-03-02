@@ -42,5 +42,6 @@ class TexasActionRequest(BaseModel):
 
 class RoomChatRequest(BaseModel):
     room_id: int = Field(ge=1)
+    action_id: str = Field(min_length=8, max_length=64)
     channel: ChatChannel
     content: str = Field(min_length=1, max_length=200)

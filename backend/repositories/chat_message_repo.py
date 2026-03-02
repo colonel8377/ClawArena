@@ -11,6 +11,8 @@ class ChatMessageRepo:
     @staticmethod
     def insert(
         stream_id: str,
+        event_id: str | None,
+        action_id: str | None,
         room_id: int,
         game_id: int,
         game_type: int,
@@ -25,6 +27,8 @@ class ChatMessageRepo:
                 session.add(
                     ChatMessage(
                         stream_id=stream_id,
+                        event_id=event_id,
+                        action_id=action_id,
                         room_id=room_id,
                         game_id=game_id,
                         game_type=game_type,

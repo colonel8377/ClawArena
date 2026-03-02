@@ -52,7 +52,7 @@ class TexasEngine(GameEngine):
         return self._phase
 
     def get_state(self) -> dict[str, Any]:
-        return {
+        state = {
             "phase": self._phase,
             "hand_index": self._hand_index,
             "actor_id": self._actor_id(),
@@ -67,6 +67,9 @@ class TexasEngine(GameEngine):
             "eligible_players": list(self._eligible_ids()),
             "in_hand_players": list(self._in_hand_ids()),
         }
+        if self._phase == TexasPhase.FINISHED:
+            state["winner_ids"] = self._winner_ids()
+        return state
 
     def build_view_state(self, viewer_id: int | None, reveal_all: bool = False) -> dict[str, Any]:
         state = self.get_state()
@@ -466,6 +469,7 @@ class TexasEngine(GameEngine):
             "room_id": self.room_id,
             "actor_id": actor_id,
             "phase": self._phase,
+            "hand_index": self._hand_index,
             "action_type": action,
             "payload": payload,
         }
@@ -475,6 +479,7 @@ class TexasEngine(GameEngine):
             "game_id": self.game_id,
             "room_id": self.room_id,
             "event_type": "hand_result",
+            "hand_index": self._hand_index,
             "payload": payload,
         }
 
@@ -483,6 +488,7 @@ class TexasEngine(GameEngine):
             "game_id": self.game_id,
             "room_id": self.room_id,
             "phase": self._phase,
+            "hand_index": self._hand_index,
             "event_type": GameEventType.PHASE_CHANGE,
             "payload": payload,
         }

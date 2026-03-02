@@ -3,7 +3,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SpectatorPlayer } from '@/store/types';
-import { getSeatPosition } from '@/components/texas/seatPositions';
 import type { AnchoredCenter } from '@/hooks/useAnchoredCenter';
 
 interface ChipStreamProps {
@@ -11,7 +10,9 @@ interface ChipStreamProps {
   center?: AnchoredCenter;
   seatAnchors?: Record<string, { x: number; y: number }>;
   potAnchor?: { x: number; y: number } | null;
+  paidMap?: Record<string, number>;
   settlement?: { id: string; payouts: Record<string, number> } | null;
+  handNumber?: number | null;
 }
 
 interface FlyingChip {
@@ -29,70 +30,71 @@ const defaultCenter: AnchoredCenter = {
   stageSize: { width: 0, height: 0 }
 };
 
-export default function ChipStream({ players, center = defaultCenter, seatAnchors, potAnchor, settlement }: ChipStreamProps) {
+export default function ChipStream({ players, center = defaultCenter, seatAnchors, potAnchor, paidMap, settlement, handNumber }: ChipStreamProps) {
   const [chips, setChips] = useState<FlyingChip[]>([]);
   const prevBets = useRef<Record<string, number>>({});
+  const pendingBets = useRef<Record<string, number>>({});
   const lastSettlementId = useRef<string | null>(null);
-  const seatOrigin = center.pixel.x !== 0 || center.pixel.y !== 0
-    ? center.pixel
-    : {
-        x: center.stageSize.width / 2,
-        y: center.stageSize.height / 2
-      };
   const potPosition = React.useMemo(() => {
     if (potAnchor) {
       return { x: potAnchor.x, y: potAnchor.y };
     }
-    const stageHeight = center.stageSize.height || 0;
-    const top = stageHeight ? Math.max(stageHeight * 0.35, 80) : 0;
-    return {
-      x: seatOrigin.x,
-      y: top
-    };
-  }, [center.stageSize.height, potAnchor, seatOrigin.x]);
+    return null;
+  }, [potAnchor]);
+
+  useEffect(() => {
+    prevBets.current = {};
+    pendingBets.current = {};
+    setChips([]);
+  }, [handNumber]);
 
   useEffect(() => {
     players.forEach((p, index) => {
       const oldBet = prevBets.current[p.sid] || 0;
-      const newBet = p.current_bet || 0;
+      const paidValue = paidMap && Number.isFinite(paidMap[p.sid]) ? Number(paidMap[p.sid]) : undefined;
+      const newBet = paidValue !== undefined ? paidValue : (p.current_bet || 0);
 
       if (newBet > oldBet) {
         const diff = newBet - oldBet;
-        const anchor = seatAnchors?.[p.sid];
-        const offset = anchor ?? (() => {
-          const seat = getSeatPosition(index, players.length, center.stageSize);
-          return { x: seatOrigin.x + seat.x, y: seatOrigin.y + seat.y };
-        })();
-        
-        const newChip: FlyingChip = {
-          id: `${p.sid}-${Date.now()}-${Math.random()}`,
-          from: { x: offset.x, y: offset.y },
-          to: potPosition,
-          amount: diff,
-          color: 'bg-yellow-400', // Default chip color
-          kind: 'bet',
-        };
-
-        setChips((prev) => [...prev, newChip]);
+        pendingBets.current[p.sid] = (pendingBets.current[p.sid] || 0) + diff;
       }
       prevBets.current[p.sid] = newBet;
     });
-  }, [players, center, potPosition, seatOrigin.x, seatOrigin.y, seatAnchors]);
+
+    if (!potPosition) return;
+    Object.entries(pendingBets.current).forEach(([sid, amount]) => {
+      const anchor = seatAnchors?.[sid];
+      if (!anchor) return;
+      const newChip: FlyingChip = {
+        id: `${sid}-${Date.now()}-${Math.random()}`,
+        from: { x: anchor.x, y: anchor.y },
+        to: potPosition,
+        amount,
+        color: 'bg-yellow-400',
+        kind: 'bet',
+      };
+      setChips((prev) => [...prev, newChip]);
+      delete pendingBets.current[sid];
+    });
+  }, [players, potPosition, seatAnchors, paidMap]);
 
   useEffect(() => {
     if (!settlement?.id || settlement.id === lastSettlementId.current) return;
     lastSettlementId.current = settlement.id;
     const payouts = settlement.payouts || {};
+    if (!potPosition) return;
     const payoutEntries = Object.entries(payouts)
       .filter(([, amount]) => Number(amount) > 0);
     if (payoutEntries.length === 0) return;
 
     const newChips: FlyingChip[] = [];
-    payoutEntries.forEach(([sid, rawAmount], index) => {
+    payoutEntries.forEach(([sid, rawAmount], idx) => {
       const amount = Number(rawAmount) || 0;
       const anchor = seatAnchors?.[sid];
-      const fallbackSeat = getSeatPosition(index, players.length, center.stageSize);
-      const target = anchor ?? { x: seatOrigin.x + fallbackSeat.x, y: seatOrigin.y + fallbackSeat.y };
+      if (!anchor) return;
+      
+      const target = anchor;
+      
       const chipCount = Math.min(4, Math.max(1, Math.round(Math.log10(Math.max(1, amount)))));
       for (let i = 0; i < chipCount; i += 1) {
         newChips.push({
@@ -108,7 +110,7 @@ export default function ChipStream({ players, center = defaultCenter, seatAnchor
     if (newChips.length > 0) {
       setChips((prev) => [...prev, ...newChips]);
     }
-  }, [settlement, seatAnchors, potPosition, players.length, center.stageSize, seatOrigin.x, seatOrigin.y]);
+  }, [settlement, seatAnchors, potPosition]);
 
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">

@@ -15,10 +15,10 @@ export default function EventTicker({ message, tone = 'action' }: EventTickerPro
   if (!message) return null;
 
   const toneClass = tone === 'win'
-    ? (isAgent ? 'bg-emerald-500/20 text-emerald-100 border-emerald-400/40' : 'bg-emerald-100 text-emerald-700 border-emerald-200')
+    ? (isAgent ? 'bg-emerald-500/20 text-emerald-100 border-emerald-400/40' : 'bg-sky-100 text-sky-700 border-sky-200')
     : tone === 'system'
-      ? (isAgent ? 'bg-purple-500/20 text-purple-100 border-purple-400/40' : 'bg-purple-100 text-purple-700 border-purple-200')
-      : (isAgent ? 'bg-black/70 text-emerald-100 border-emerald-400/30' : 'bg-white/90 text-emerald-700 border-emerald-200');
+      ? (isAgent ? 'bg-emerald-500/15 text-emerald-100 border-emerald-400/30' : 'bg-sky-100 text-sky-700 border-sky-200')
+      : (isAgent ? 'bg-black/70 text-emerald-100 border-emerald-400/30' : 'bg-white/90 text-sky-700 border-sky-200');
 
   return (
     <div className="absolute left-0 right-0 top-6 z-40 pointer-events-none flex justify-center">

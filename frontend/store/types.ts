@@ -17,6 +17,8 @@ export interface TexasGameState {
   community_cards: string[];
   players: SpectatorPlayer[];
   dealer_position?: number;
+  sb_position?: number;
+  bb_position?: number;
   current_player?: string; // SID of current actor
   small_blind?: number;
   big_blind?: number;
@@ -61,6 +63,8 @@ export interface WerewolfGameState {
 
 export interface ChatMessage {
   id?: string;
+  event_id?: string;
+  action_id?: string;
   sid?: string;
   nickname: string;
   message: string;

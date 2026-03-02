@@ -2,7 +2,11 @@ import sys
 import os
 import re
 
-from backend.utils import log
+import logging
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+log = logging.getLogger(__name__)
 
 def main():
     log.info(f"Current Working Directory: {os.getcwd()}")
@@ -70,6 +74,15 @@ def main():
             
             new_content = content
             
+            # --- 0. Generic <host> Placeholder Replacement ---
+            # Replace https://<host> with https://{target_backend_domain}
+            # This is useful for template files that use <host> as a placeholder.
+            if "<host>" in new_content:
+                new_content = new_content.replace("https://<host>", f"https://{target_backend_domain}")
+                # Also replace bare <host> if it exists (though usually it's part of a URL)
+                new_content = new_content.replace("<host>", target_backend_domain)
+                log.info(f"  Replaced <host> -> {target_backend_domain}")
+
             # --- 1. Backend Domain Replacement ---
             
             # Replace wss://<backend_domain>

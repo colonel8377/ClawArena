@@ -41,6 +41,8 @@ class ChatHistoryService:
         hand_index: int | None = None,
         phase: str | None = None,
         ts_ms: int | None = None,
+        event_id: str | None = None,
+        action_id: str | None = None,
     ) -> str:
         settings = get_settings()
         ts_ms = int(ts_ms or time.time() * 1000)
@@ -54,6 +56,10 @@ class ChatHistoryService:
             "content": content,
             "ts_ms": ts_ms,
         }
+        if event_id:
+            payload["event_id"] = event_id
+        if action_id:
+            payload["action_id"] = action_id
         if hand_index is not None:
             payload["hand_index"] = int(hand_index)
         if phase is not None:
@@ -64,6 +70,8 @@ class ChatHistoryService:
             await enqueue_task(
                 "persist_chat_message",
                 stream_id=stream_id,
+                event_id=event_id,
+                action_id=action_id,
                 room_id=room_id,
                 game_id=game_id,
                 game_type=game_type,
@@ -86,6 +94,7 @@ class ChatHistoryService:
         after_id: str | None = None,
         agent_id: int | None = None,
         hand_index: int | None = None,
+        allow_private_override: bool | None = None,
     ) -> dict[str, Any]:
         client = get_client()
         stream = ChatHistoryService._stream_key(room_id)
@@ -123,7 +132,11 @@ class ChatHistoryService:
 
         allow_private = False
         settings = get_settings()
-        if settings.private_messages_visible_to_spectators:
+        if allow_private_override is True:
+            allow_private = True
+        elif allow_private_override is False:
+            allow_private = False
+        elif settings.private_messages_visible_to_spectators:
             allow_private = True
         elif agent_id:
             allow_private = await RoomCache.is_room_member(room_id, agent_id)
@@ -144,6 +157,8 @@ class ChatHistoryService:
                     "sender_name": payload.get("sender_name"),
                     "content": payload.get("content") or "",
                     "ts_ms": int(payload.get("ts_ms") or 0),
+                    "event_id": payload.get("event_id"),
+                    "action_id": payload.get("action_id"),
                     "hand_index": payload.get("hand_index"),
                     "phase": payload.get("phase"),
                 }

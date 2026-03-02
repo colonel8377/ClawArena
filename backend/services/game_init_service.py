@@ -17,7 +17,7 @@ from backend.services.game_state_service import GameStateService
 from backend.services.room_service import RoomService
 from backend.utils.log import get_logger
 from backend.utils.money import to_token
-from backend.utils.redis_lock import RedisLock
+from backend.utils.action_guard import ActionGuard
 from backend.views.errors import DomainError
 
 logger = get_logger(__name__)
@@ -26,11 +26,9 @@ logger = get_logger(__name__)
 class GameInitService:
     @staticmethod
     async def start_game(room_id: int, game_type: int) -> dict:
-        lock_key = f"lock:room:{room_id}"
-        async with RedisLock(lock_key, ttl_ms=8000) as lock:
-            if not lock.acquired:
-                raise DomainError("room_start_in_progress", code=40901)
-
+        # 使用 ActionGuard 替代 RedisLock，允许 5 秒排队等待
+        # key_prefix="lock:room" 对应原来的 lock:room:{room_id}
+        async with ActionGuard(room_id, timeout=5.0, lock_ttl_ms=8000, key_prefix="lock:room"):
             room = RoomRepo.get_by_id(room_id)
             if not room:
                 raise DomainError("room_not_found", code=40402)
@@ -99,7 +97,6 @@ class GameInitService:
                 engine.dump_state(),
                 public_state=engine.build_public_state(),
             )
-            await EventService.log_room_event(room_id, "game_start", {"game_id": game.id, "game_type": game_type})
             await RoomService.broadcast_update(room_id, "game_start")
 
             logger.info("game_start room_id=%s game_id=%s game_type=%s", room_id, game.id, game_type)

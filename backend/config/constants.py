@@ -78,6 +78,7 @@ class GameEventType(StrEnum):
 class WerewolfWinner(StrEnum):
     VILLAGERS = "villagers"
     WOLVES = "wolves"
+    NO_CONTEST = "no_contest"
 
 
 class WerewolfNightActionKey(StrEnum):

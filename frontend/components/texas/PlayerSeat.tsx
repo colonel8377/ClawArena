@@ -127,6 +127,7 @@ export default function PlayerSeat({
   const top = `${baseY + offset.y - bottomNudge - 150 + (debugLayout ? debugOffset.y : 0)}px`;
   const isFolded = player.status === 'folded';
   const isActive = player.status === 'active' || player.status === 'allin';
+  const isTrulyActiveTurn = isCurrentTurn && player.status === 'active';
   const showCards = player.status !== 'out' && player.status !== 'sitout' && player.status !== 'busted' && player.status !== 'folded';
   const cardList = showCards
     ? ((player.hole_cards && player.hole_cards.length > 0)
@@ -226,9 +227,9 @@ export default function PlayerSeat({
               className={isFolded ? 'opacity-50 grayscale' : ''}
             >
               {parsed ? (
-                 <PlayingCard rank={parsed.rank} suit={parsed.suit} compact showRank className="w-10 h-14 text-xs shadow-lg" />
+                 <PlayingCard rank={parsed.rank} suit={parsed.suit} className="w-20 h-28 text-base shadow-2xl" />
               ) : (
-                 <PlayingCard rank="A" suit="spades" hidden compact className="w-10 h-14 text-xs shadow-lg" />
+                 <PlayingCard rank="A" suit="spades" hidden className="w-20 h-28 text-base shadow-2xl" />
               )}
             </motion.div>
           );
@@ -237,13 +238,13 @@ export default function PlayerSeat({
 
       {/* Avatar + Blinds/Dealer */}
       <div className="relative flex items-center justify-center">
-        {isCurrentTurn && (
-          <div className={`absolute -inset-4 rounded-full blur-xl animate-pulse ${
+        {isTrulyActiveTurn && (
+          <div className={`absolute -inset-4 rounded-full blur-xl ${
             isAgent ? 'bg-emerald-400/22' : 'bg-emerald-300/32'
           }`} />
         )}
         {(isSmallBlind || isBigBlind) && (
-          <div className={`absolute -inset-2 rounded-full blur-lg animate-pulse ${
+          <div className={`absolute -inset-2 rounded-full blur-lg ${
             isSmallBlind
               ? (isAgent ? 'bg-cyan-400/25' : 'bg-amber-300/25')
               : (isAgent ? 'bg-fuchsia-400/25' : 'bg-orange-300/25')
@@ -253,12 +254,16 @@ export default function PlayerSeat({
           <div
             ref={avatarRef}
             className={`relative w-16 h-16 rounded-full border-2 ${
-            isSmallBlind
-              ? (isAgent ? 'border-cyan-300 shadow-[0_0_24px_rgba(34,211,238,0.55)]' : 'border-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.25)]')
-              : isBigBlind
-                ? (isAgent ? 'border-fuchsia-300 shadow-[0_0_24px_rgba(217,70,239,0.55)]' : 'border-orange-400 shadow-[0_0_18px_rgba(249,115,22,0.25)]')
-                : (isActive ? 'border-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.35)]' : 'border-slate-500/60')
-          } ${isAgent ? 'bg-[#0b0b14]/90' : 'bg-slate-900/90'} ${isWinner ? (isAgent ? 'ring-4 ring-amber-300/80 shadow-[0_0_30px_rgba(251,191,36,0.65)]' : 'ring-4 ring-amber-400/70 shadow-[0_0_22px_rgba(251,191,36,0.4)]') : ''} flex items-center justify-center overflow-hidden z-10 transition-all duration-300 ${isSmallBlind || isBigBlind || isCurrentTurn ? 'scale-110' : ''}`}
+            isTrulyActiveTurn
+              ? (isAgent ? 'border-emerald-300 shadow-[0_0_30px_rgba(52,211,153,0.65)]' : 'border-sky-500 shadow-[0_0_25px_rgba(14,165,233,0.55)]')
+              : isSmallBlind
+                ? (isAgent ? 'border-cyan-500/70' : 'border-amber-400/70')
+                : isBigBlind
+                  ? (isAgent ? 'border-fuchsia-500/70' : 'border-orange-400/70')
+                  : isDealer
+                    ? (isAgent ? 'border-emerald-500/70' : 'border-sky-400/70')
+                    : (isActive ? 'border-slate-400/60' : 'border-slate-600/40')
+          } ${isAgent ? 'bg-[#0b0b14]/90' : 'bg-slate-900/90'} ${isWinner ? (isAgent ? 'ring-4 ring-amber-300/80 shadow-[0_0_30px_rgba(251,191,36,0.65)]' : 'ring-4 ring-amber-400/70 shadow-[0_0_22px_rgba(251,191,36,0.4)]') : ''} flex items-center justify-center overflow-hidden z-10 transition-all duration-300`}
           >
             <span className="text-2xl">{avatar}</span>
           </div>
@@ -266,7 +271,11 @@ export default function PlayerSeat({
         {(isDealer || isSmallBlind || isBigBlind) && (
           <div className="absolute top -right-6 flex flex-col gap-1 items-end z-30">
             {isDealer && (
-              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${isAgent ? 'bg-sky-500/20 text-sky-100 border border-sky-400/60 shadow-[0_0_14px_rgba(56,189,248,0.6)]' : 'bg-emerald-100 text-emerald-700 border border-emerald-200'}`}>
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${
+                isAgent
+                  ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-400/60 shadow-[0_0_14px_rgba(16,185,129,0.5)]'
+                  : 'bg-sky-100 text-sky-700 border border-sky-200'
+              }`}>
                 D
               </div>
             )}
@@ -285,12 +294,12 @@ export default function PlayerSeat({
       </div>
 
       <div className={`text-[10px] uppercase tracking-[0.24em] ${
-        isAgent ? 'text-emerald-200/80' : 'text-emerald-700/80'
+        isAgent ? 'text-emerald-200/80' : 'text-sky-700/80'
       }`}>
         {nameLabel}
       </div>
 
-      {(isCurrentTurn || isSpeaking || statusLabel) && (
+      {(statusLabel || isTrulyActiveTurn) && (
         <div className={`-mt-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest shadow-lg border ${
           statusLabel
             ? (player.status === 'busted'
@@ -298,24 +307,22 @@ export default function PlayerSeat({
               : player.status === 'sitout'
                 ? (isAgent ? 'bg-slate-500/20 text-slate-100 border-slate-400/40' : 'bg-slate-100 text-slate-700 border-slate-200')
                 : (isAgent ? 'bg-amber-500/20 text-amber-100 border-amber-400/40' : 'bg-amber-100 text-amber-700 border-amber-200'))
-            : isSpeaking
-              ? (isAgent ? 'bg-emerald-400/25 text-emerald-100 border-emerald-300/40' : 'bg-emerald-100 text-emerald-700 border-emerald-200')
-              : (isAgent ? 'bg-emerald-500/20 text-emerald-100 border-emerald-400/40' : 'bg-emerald-100 text-emerald-700 border-emerald-200')
+            : (isAgent ? 'bg-emerald-500/20 text-emerald-100 border-emerald-400/40' : 'bg-sky-100 text-sky-700 border-sky-200')
         }`}>
-          {statusLabel || (isSpeaking ? 'ACTION' : 'TURN')}
+          {statusLabel || 'TURN'}
         </div>
       )}
 
       {/* Info Box */}
-      <div className={`w-full rounded-3xl border px-6 py-2.5 text-center backdrop-blur-md ${
-        isAgent ? 'bg-black/70 border-emerald-500/20' : 'bg-white/90 border-slate-200 shadow-sm'
+      <div className={`w-full rounded-3xl border px-10 py-1 text-center backdrop-blur-md ${
+        isAgent ? 'bg-black/70 border-emerald-500/20' : 'bg-white/90 border-sky-200 shadow-sm'
       }`}>
-        <div className="mt-1 flex items-center justify-center gap-3 text-[12px] font-mono">
-          <div className={`flex items-center gap-1 ${isAgent ? 'text-emerald-300' : 'text-emerald-600'}`}>
+        <div className="mt-1 flex items-center justify-center gap-3 text-[12px] font-mono flex-nowrap whitespace-nowrap">
+          <div className={`flex items-center gap-1 whitespace-nowrap ${isAgent ? 'text-emerald-300' : 'text-sky-600'}`}>
             <span>LEFT</span>
             <span>🪙{formatChips(player.chips)}</span>
           </div>
-          <div className={`flex items-center gap-1 ${isAgent ? 'text-amber-200' : 'text-amber-700'}`}>
+          <div className={`flex items-center gap-1 whitespace-nowrap ${isAgent ? 'text-emerald-200' : 'text-blue-700'}`}>
             <span>IN</span>
             <span>🪙{formatChips(totalPaid)}</span>
           </div>

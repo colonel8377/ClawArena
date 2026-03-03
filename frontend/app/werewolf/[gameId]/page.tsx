@@ -28,6 +28,19 @@ const getRoleName = (role?: WerewolfPlayer['role']) => {
   return role.role;
 };
 
+type WerewolfEvent = {
+  event_type?: string;
+  payload?: Record<string, unknown>;
+  id?: string;
+  action_id?: string;
+  event_id?: string;
+  ts_ms?: number;
+  actor_id?: string | number;
+  actor_name?: string;
+  phase?: string;
+  meta?: Record<string, unknown>;
+};
+
 const BACKFILL_INTERVAL_MS = 5000;
 const WEREWOLF_EVENT_TYPES = [
   'ww:night:action',
@@ -84,8 +97,7 @@ const toDedupeId = (value: unknown): string | number | undefined => {
   return undefined;
 };
 
-const toStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+
 
 const resolveEnvelopePayload = (rawEvent: unknown) => {
   const record = getRecord(rawEvent);
@@ -445,12 +457,12 @@ export default function WerewolfGamePage() {
     return null;
   }, [buildDaySpeakActionItem, buildDayVoteActionItem, buildNightActionItem]);
 
-  const applyPhaseChange = React.useCallback((event: any) => {
-    const inner = event?.payload ?? event;
-    const payload = inner?.payload || {};
+  const applyPhaseChange = React.useCallback((event: { payload?: unknown }) => {
+    const inner = (event?.payload ?? event) as Record<string, unknown>;
+    const payload = (inner?.payload ?? inner) as Record<string, unknown>;
     const current = useWerewolfStore.getState().gameState;
     if (!current) return;
-    const alive = Array.isArray(payload.alive) ? payload.alive.map((id: any) => String(id)) : [];
+    const alive = Array.isArray(payload.alive) ? payload.alive.map((id: string | number) => String(id)) : [];
     const voteCountsRaw = payload.vote_counts && typeof payload.vote_counts === 'object' ? payload.vote_counts : undefined;
     const voteCounts: Record<string, number> | undefined = voteCountsRaw
       ? Object.entries(voteCountsRaw).reduce<Record<string, number>>((acc, [target, count]) => {
@@ -459,12 +471,12 @@ export default function WerewolfGamePage() {
         }, {})
       : undefined;
     const eliminated = Array.isArray(payload.eliminated)
-      ? payload.eliminated.map((id: any) => String(id))
+      ? payload.eliminated.map((id: string | number) => String(id))
       : undefined;
     const offlineDeaths = Array.isArray(payload.offline_deaths)
-      ? payload.offline_deaths.map((id: any) => String(id))
+      ? payload.offline_deaths.map((id: string | number) => String(id))
       : undefined;
-    const phaseReason = payload.reason ?? payload?.meta?.reason ?? undefined;
+    const phaseReason = payload.reason ?? (payload?.meta && typeof payload.meta === 'object' && 'reason' in payload.meta ? (payload.meta as { reason?: string }).reason : undefined);
     const updatedPlayers = current.players.map((player) => {
       if (!alive.length) return player;
       return {
@@ -476,25 +488,25 @@ export default function WerewolfGamePage() {
     const nextState = {
       ...current,
       phase,
-      day_count: payload.day ?? current.day_count,
+      day_count: (payload.day ?? current.day_count) as number,
       current_speaker: payload.current_speaker ? String(payload.current_speaker) : current.current_speaker,
       players: updatedPlayers,
       winners: payload.winner ? [String(payload.winner)] : current.winners,
-      timers: payload.timers ?? current.timers,
+      timers: (payload.timers ?? current.timers) as Record<string, number>,
       vote_counts: voteCounts ?? (payload.phase ? undefined : current.vote_counts),
       eliminated: eliminated ?? (payload.phase ? undefined : current.eliminated),
       offline_deaths: offlineDeaths ?? (payload.phase ? undefined : current.offline_deaths),
-      phase_reason: phaseReason ?? (payload.phase ? undefined : current.phase_reason),
+      phase_reason: (phaseReason ?? (payload.phase ? undefined : current.phase_reason)) as string | undefined,
     };
     setGameState(nextState);
   }, [setGameState]);
 
-  const applyVoteUpdate = React.useCallback((event: any) => {
+  const applyVoteUpdate = React.useCallback((event: { payload?: unknown }) => {
     const current = useWerewolfStore.getState().gameState;
     if (!current) return;
-    const inner = event?.payload ?? event;
+    const inner = (event?.payload ?? event) as Record<string, unknown>;
     const actorId = inner?.actor_id;
-    const targetId = inner?.payload?.target_id;
+    const targetId = (inner?.payload as Record<string, unknown>)?.target_id;
     if (!actorId || !targetId) return;
     const nextVotes = { ...(current.votes || {}) };
     nextVotes[String(actorId)] = String(targetId);
@@ -729,7 +741,7 @@ export default function WerewolfGamePage() {
     if (newLogs.length > 0) {
       setSystemLogs(prev => [...prev, ...newLogs]);
     }
-  }, [gameState]);
+  }, [gameState, pushAction, resolveDisplayName, resolveDisplayNameFromValue, resolveWinnerLabel]);
 
   React.useEffect(() => {
     if (!gameState?.timers) {
@@ -1028,7 +1040,7 @@ export default function WerewolfGamePage() {
     }, []);
   }, [resolveChatPhase]);
 
-  const seedRecentEvents = React.useCallback((items: any[] | null | undefined) => {
+  const seedRecentEvents = React.useCallback((items: WerewolfEvent[] | null | undefined) => {
     if (!Array.isArray(items) || items.length === 0) return;
     items.forEach((envelope) => {
       if (envelope?.event_type === 'ww:phase:change') {
@@ -1036,7 +1048,7 @@ export default function WerewolfGamePage() {
         if (envelope?.id) trackLastEventId(envelope.id);
         return;
       }
-      if (!['ww:night:action', 'ww:day:vote', 'ww:chat:day'].includes(envelope?.event_type)) return;
+      if (!envelope?.event_type || !['ww:night:action', 'ww:day:vote', 'ww:chat:day'].includes(envelope.event_type)) return;
       const item = buildActionFeedItem(envelope);
       if (item) pushAction(item);
       if (envelope?.id) trackLastEventId(envelope.id);
@@ -1125,7 +1137,7 @@ export default function WerewolfGamePage() {
         if (data?.last_chat_id) lastChatIdRef.current = String(data.last_chat_id);
         if (mapped) {
           const history = pendingHistory.current;
-          const recent = mapRecentChatItems(data?.recent_chat);
+          const recent = mapRecentChatItems(data?.recent_chat as unknown[] | null | undefined);
           const existing = (mapped.chat_messages || [])
             .map((msg) => ({
               ...msg,
@@ -1156,29 +1168,29 @@ export default function WerewolfGamePage() {
           setGameState(mapped);
           setLoadStatus('ready');
         }
-        if (data?.recent_events) seedRecentEvents(data.recent_events);
+        if (data?.recent_events) seedRecentEvents(data.recent_events as WerewolfEvent[]);
         backfillRoomEvents();
         backfillRoomChat();
       },
       'room:update': (data) => {
-        if (data?.id) trackLastEventId(data.id);
-        if (data?.payload?.type === 'game_finish') {
+        if (data?.id) trackLastEventId(String(data.id));
+        if ((data?.payload as any)?.type === 'game_finish') {
           setLoadStatus('ended');
         }
       },
       'ww:day:vote': (data) => {
-        if (data?.id) trackLastEventId(data.id);
+        if (data?.id) trackLastEventId(String(data.id));
         applyVoteUpdate(data);
         const item = buildActionFeedItem(data);
         if (item) pushAction(item);
       },
       'ww:phase:change': (data) => {
-        if (data?.id) trackLastEventId(data.id);
+        if (data?.id) trackLastEventId(String(data.id));
         applyPhaseChange(data);
         // Detailed results are derived from room state to keep action logs consistent.
       },
       'ww:night:action': (data) => {
-        if (data?.id) trackLastEventId(data.id);
+        if (data?.id) trackLastEventId(String(data.id));
         const item = buildActionFeedItem(data);
         if (item) {
           pushAction(item);
@@ -1186,20 +1198,20 @@ export default function WerewolfGamePage() {
       },
       'ww:chat:day': (data) => {
         const envelope = data?.event_type ? data : null;
-        const inner = envelope?.payload ?? data;
-        const payload = inner?.payload || {};
+        const inner = (envelope?.payload ?? data) as WerewolfEvent;
+        const payload = (inner?.payload || {}) as Record<string, any>;
         const content = String(payload.msg || payload.content || '').trim();
         const meta = payload?.meta || {};
         const isTimeout = meta?.reason === 'timeout' || meta?.auto === true;
         if (!content && !isTimeout) return;
         const chatId = envelope?.event_id || inner?.event_id || envelope?.id || inner?.id;
         const tsMs = Number(envelope?.ts_ms ?? inner?.ts_ms ?? Date.now());
-        if (envelope?.id) trackLastChatId(envelope.id);
+        if (envelope?.id) trackLastChatId(String(envelope.id));
         if (content) {
           appendChat({
             id: chatId ? String(chatId) : undefined,
-            event_id: envelope?.event_id || inner?.event_id,
-            action_id: envelope?.action_id || inner?.action_id,
+            event_id: (envelope?.event_id || inner?.event_id) as string | undefined,
+            action_id: (envelope?.action_id || inner?.action_id) as string | undefined,
             nickname: inner?.actor_name || payload.actor_name || payload.sender_name || String(inner?.actor_id || 'player'),
             message: content,
             timestamp: new Date(tsMs).toISOString(),
@@ -1213,13 +1225,13 @@ export default function WerewolfGamePage() {
       },
       'ww:chat:wolf': (data) => {
         const envelope = data?.event_type ? data : null;
-        const inner = envelope?.payload ?? data;
-        const payload = inner?.payload || {};
+        const inner = (envelope?.payload ?? data) as WerewolfEvent;
+        const payload = (inner?.payload || {}) as Record<string, any>;
         const content = String(payload.msg || payload.content || '').trim();
         if (!content) return;
         const chatId = envelope?.event_id || inner?.event_id || envelope?.id || inner?.id;
         const tsMs = Number(envelope?.ts_ms ?? inner?.ts_ms ?? Date.now());
-        if (envelope?.id) trackLastChatId(envelope.id);
+        if (envelope?.id) trackLastChatId(String(envelope.id));
         appendChat({
           id: chatId ? String(chatId) : undefined,
           event_id: envelope?.event_id || inner?.event_id,
@@ -1231,20 +1243,20 @@ export default function WerewolfGamePage() {
           sid: String(inner?.actor_id || payload.sender_id || 'player'),
           is_wolf_chat: true,
           phase: inner?.phase || payload?.phase,
-        } as any);
+        } as ChatMessage);
       },
       'room:chat': (data) => {
         const envelope = data?.event_type ? data : null;
-        const payload = envelope?.payload ?? data?.payload ?? data ?? {};
+        const payload = (envelope?.payload ?? data?.payload ?? data ?? {}) as Record<string, any>;
         const content = String(payload.content || payload.msg || '').trim();
         if (!content) return;
         const chatId = envelope?.event_id || envelope?.id || payload?.event_id || payload?.id;
         const tsMs = Number(envelope?.ts_ms ?? payload?.ts_ms ?? Date.now());
-        if (envelope?.id) trackLastChatId(envelope.id);
+        if (envelope?.id) trackLastChatId(String(envelope.id));
         appendChat({
           id: chatId ? String(chatId) : undefined,
-          event_id: envelope?.event_id || payload?.event_id,
-          action_id: envelope?.action_id || payload?.action_id,
+          event_id: (envelope?.event_id || payload?.event_id) as string | undefined,
+          action_id: (envelope?.action_id || payload?.action_id) as string | undefined,
           nickname: payload.sender_name || payload.actor_name || String(payload.sender_id || payload.actor_id || 'player'),
           message: content,
           timestamp: new Date(tsMs).toISOString(),
@@ -1267,7 +1279,7 @@ export default function WerewolfGamePage() {
     };
     const interval = setInterval(tick, BACKFILL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [backfillRoomChat, backfillRoomEvents, gameState?.phase]);
+  }, [backfillRoomChat, backfillRoomEvents, gameState]);
 
   React.useEffect(() => {
     const timeout = setTimeout(() => {

@@ -18,7 +18,7 @@ export default function BroadcastHud({
   const isAgent = readingMode === 'agent';
   const phaseLabel = phase ? phase.replace(/_/g, ' ') : 'Unknown';
   const turnLabel = currentPlayerName ? `${currentPlayerName} to act` : 'Waiting for action';
-  const timerLabel = turnRemainingMs !== null ? `(${Math.ceil(turnRemainingMs / 1000)}s)` : '';
+  const timerLabel = turnRemainingMs !== null && turnRemainingMs !== undefined ? `(${Math.ceil(turnRemainingMs / 1000)}s)` : '';
 
   return (
     <div className={`px-5 py-2 rounded-full border backdrop-blur-md shadow-lg ${

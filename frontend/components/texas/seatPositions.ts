@@ -24,20 +24,29 @@ const DEFAULT_SLOT_OFFSETS: Record<number, { x: number; y: number }> = {
 
 const SEAT_CENTER_SHIFT_X = 16;
 
-const coerceSlotOffsets = (raw: any, fallback: Record<number, { x: number; y: number }>) => {
-  const result: Record<number, { x: number; y: number }> = { ...fallback };
+interface SlotOffset {
+  x: number;
+  y: number;
+}
+
+interface SlotOffsetsConfig {
+  [key: string]: SlotOffset;
+}
+
+const coerceSlotOffsets = (raw: SlotOffsetsConfig | null | undefined, fallback: Record<number, SlotOffset>) => {
+  const result: Record<number, SlotOffset> = { ...fallback };
   if (!raw || typeof raw !== 'object') return result;
   Object.entries(raw).forEach(([key, value]) => {
     const idx = Number(key);
-    const x = Number((value as any)?.x);
-    const y = Number((value as any)?.y);
+    const x = Number(value?.x);
+    const y = Number(value?.y);
     if (!Number.isFinite(idx) || !Number.isFinite(x) || !Number.isFinite(y)) return;
     result[idx] = { x, y };
   });
   return result;
 };
 
-const SLOT_OFFSETS = coerceSlotOffsets((seatLayout as any)?.slotOffsets, DEFAULT_SLOT_OFFSETS);
+const SLOT_OFFSETS = coerceSlotOffsets(seatLayout?.slotOffsets, DEFAULT_SLOT_OFFSETS);
 
 const buildBaseSlots = (stageSize?: SeatStageSize) => {
   const width = stageSize?.width || 1200;

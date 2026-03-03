@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
-import { ensureSocketMode } from '@/lib/socket';
+import { ensureSocketMode, getSocket } from '@/lib/socket';
 import { unwrapSocketPayload } from '@/lib/stateAdapters';
 
-type EventHandler = (data: any) => void;
+type EventHandler = (data: Record<string, unknown>) => void;
 
 interface UseSpectatorSocketProps {
   namespace: string;
@@ -14,7 +14,7 @@ interface UseSpectatorSocketProps {
 export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorSocketProps) {
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
   const rafRef = useRef<number | null>(null);
-  const pendingUpdates = useRef<Map<string, any>>(new Map());
+  const pendingUpdates = useRef<Map<string, Record<string, unknown>>>(new Map());
   const coalesceEvents = useRef<Set<string>>(
     new Set([
       'room:state',
@@ -36,12 +36,12 @@ export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorS
 
     const activeSocket = socket;
     const expectedRoomId = Number(tableId);
-    const resolveRoomId = (payload: any) => {
+    const resolveRoomId = (payload: Record<string, unknown>) => {
       const candidates = [
         payload?.room_id,
         payload?.roomId,
-        payload?.payload?.room_id,
-        payload?.payload?.roomId,
+        (payload?.payload as Record<string, unknown>)?.room_id,
+        (payload?.payload as Record<string, unknown>)?.roomId,
       ];
       for (const candidate of candidates) {
         const value = Number(candidate);
@@ -67,11 +67,11 @@ export function useSpectatorSocket({ namespace, tableId, events }: UseSpectatorS
     activeSocket.on('connect', joinRoom);
 
     // Store the actual handlers we bind so we can unbind them specifically
-    const boundHandlers: Record<string, (data: any) => void> = {};
+    const boundHandlers: Record<string, (data: Record<string, unknown>) => void> = {};
 
     // Event binding with RAF throttling
     Object.keys(eventsRef.current).forEach((eventName) => {
-      const wrappedHandler = (data: any) => {
+      const wrappedHandler = (data: Record<string, unknown>) => {
         const payload = unwrapSocketPayload(data);
         const payloadRoomId = resolveRoomId(payload);
         

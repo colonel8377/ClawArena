@@ -16,7 +16,7 @@ const BASE_STAGE_HEIGHT = 820;
 const TABLE_SHIFT_X = -12;
 const ELEMENT_KEYS: Array<keyof ElementOffsets> = ['communityCards', 'pot', 'round', 'winner', 'actionPanel', 'chatPanel'];
 
-const buildOffsets = (raw: any, fallback?: SlotOffsets): SlotOffsets => {
+const buildOffsets = (raw: SlotOffsets | null | undefined, fallback?: SlotOffsets): SlotOffsets => {
   const next: SlotOffsets = fallback ? { ...fallback } : {};
   for (let i = 0; i < TOTAL_SLOTS; i += 1) {
     if (!next[i]) next[i] = { x: 0, y: 0 };
@@ -24,8 +24,8 @@ const buildOffsets = (raw: any, fallback?: SlotOffsets): SlotOffsets => {
   if (!raw || typeof raw !== 'object') return next;
   Object.entries(raw).forEach(([key, value]) => {
     const idx = Number(key);
-    const x = Number((value as any)?.x);
-    const y = Number((value as any)?.y);
+    const x = Number(value?.x);
+    const y = Number(value?.y);
     if (!Number.isFinite(idx) || idx < 0 || idx >= TOTAL_SLOTS) return;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     next[idx] = { x, y };
@@ -35,7 +35,7 @@ const buildOffsets = (raw: any, fallback?: SlotOffsets): SlotOffsets => {
 
 const zeroOffsets = () => buildOffsets({});
 
-const buildElementOffsets = (raw: any, fallback?: ElementOffsets): ElementOffsets => {
+const buildElementOffsets = (raw: ElementOffsets | null | undefined, fallback?: ElementOffsets): ElementOffsets => {
   const base: ElementOffsets = fallback
     ? { ...fallback }
     : {
@@ -49,24 +49,24 @@ const buildElementOffsets = (raw: any, fallback?: ElementOffsets): ElementOffset
   if (!raw || typeof raw !== 'object') return base;
   ELEMENT_KEYS.forEach((key) => {
     const value = raw[key];
-    const x = Number((value as any)?.x);
-    const y = Number((value as any)?.y);
+    const x = Number(value?.x);
+    const y = Number(value?.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     base[key] = { x, y };
   });
   return base;
 };
 
-const zeroElementOffsets = (): ElementOffsets => buildElementOffsets({});
+const zeroElementOffsets = (): ElementOffsets => buildElementOffsets({} as ElementOffsets);
 
 export default function TexasLayoutEditorPage() {
   const [mounted, setMounted] = React.useState(false);
   const [playerCount, setPlayerCount] = React.useState(12);
   const [mirrorMode, setMirrorMode] = React.useState(true);
   const [status, setStatus] = React.useState<string | null>(null);
-  const [slotOffsets, setSlotOffsets] = React.useState<SlotOffsets>(() => buildOffsets((seatLayout as any)?.slotOffsets));
+  const [slotOffsets, setSlotOffsets] = React.useState<SlotOffsets>(() => buildOffsets(seatLayout.slotOffsets));
   const [elementOffsets, setElementOffsets] = React.useState<ElementOffsets>(() =>
-    buildElementOffsets((seatLayout as any)?.elementOffsets)
+    buildElementOffsets(seatLayout.elementOffsets)
   );
   const stageRef = React.useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = React.useState({ width: 0, height: 0 });

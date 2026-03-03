@@ -14,7 +14,7 @@ interface CommunityCardsProps {
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
 }
 
-export default function CommunityCards({ cards, center, offset, onPointerDown }: CommunityCardsProps) {
+export default function CommunityCards({ cards, offset, onPointerDown }: CommunityCardsProps) {
   const left = '50%';
   const top = '12%';
   const visibleCards = cards.filter((card) => Boolean(parseCard(card)));

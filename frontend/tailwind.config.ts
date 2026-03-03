@@ -54,7 +54,7 @@ const config: Config = {
   },
   plugins: [
     // Add text-shadow plugin
-    function ({ addUtilities }: any) {
+    function ({ addUtilities }: { addUtilities: (utilities: Record<string, Record<string, string>>) => void }) {
       const newUtilities = {
         '.text-shadow-neon-pink': {
           textShadow: '0 0 5px rgb(var(--neon-pink)), 0 0 10px rgb(var(--neon-pink))',

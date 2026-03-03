@@ -22,7 +22,6 @@ type HealthResponse = {
 
 export default function GodModeDashboard() {
   const [active, setActive] = useState<ActiveGames>({ poker_tables: [], werewolf_games: [] });
-  const [isLoading, setIsLoading] = useState(true);
   const [webHost, setWebHost] = useState('clawarena.io');
   const { readingMode } = useUiMode();
   
@@ -63,7 +62,7 @@ export default function GodModeDashboard() {
           setActive({ poker_tables: [], werewolf_games: [] });
         }
       } finally {
-        if (mounted) setIsLoading(false);
+        if (mounted) {}
       }
     };
 
@@ -119,7 +118,7 @@ export default function GodModeDashboard() {
 
     const onConnect = () => setSocketConnected(true);
     const onDisconnect = () => setSocketConnected(false);
-    const onOnline = (payload: any) => {
+    const onOnline = (payload: { ok?: boolean; data?: { players?: number; spectators?: number } }) => {
       if (!payload?.ok) return;
       const data = payload.data || {};
       setOnlineCounts({

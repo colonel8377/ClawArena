@@ -35,7 +35,7 @@ export const getSocket = (): Socket | null => {
     reconnectionAttempts: Infinity,
     timeout: 15000,
     transports: ['websocket', 'polling'],
-    auth: buildSocketAuth(resolvedToken),
+    auth: buildSocketAuth(resolvedToken || undefined),
   });
 
   // Ensure reconnect attempts always carry the latest token.

@@ -24,26 +24,26 @@ const extractCardCodes = (value: unknown): string[] => {
   return [`${rank}${suit}`];
 };
 
-export const unwrapSocketPayload = <T = any>(payload: any): T => {
+export const unwrapSocketPayload = <T>(payload: { ok?: boolean; data?: T } | T): T => {
   if (payload && typeof payload === 'object' && 'ok' in payload && 'data' in payload) {
     return payload.data as T;
   }
   return payload as T;
 };
 
-export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
-  const gameState = roomState?.game_state ?? roomState?.gameState ?? roomState;
+export const mapTexasRoomState = (roomState: Record<string, unknown>): TexasGameState | null => {
+  const gameState = (roomState?.game_state ?? roomState?.gameState ?? roomState) as Record<string, any>;
   if (!gameState) return null;
-  const inner = gameState.state && typeof gameState.state === 'object' ? gameState.state : gameState;
+  const inner = (gameState.state && typeof gameState.state === 'object' ? gameState.state : gameState) as Record<string, any>;
   const smallBlind = toNumber(inner.small_blind ?? gameState.small_blind ?? 1, 1);
   const bigBlind = toNumber(inner.big_blind ?? gameState.big_blind ?? 2, 2);
   const playersRaw = Array.isArray(gameState.players) ? gameState.players : [];
   const stacks = inner.stacks || gameState.stacks || {};
   const bets = inner.bets || {};
   const statuses = inner.statuses || {};
-  const leftPlayers = new Set<number>((gameState.left_players || inner.left_players || []).map((id: any) => toNumber(id)));
-  const eligiblePlayers = new Set<number>((inner.eligible_players || gameState.eligible_players || []).map((id: any) => toNumber(id)));
-  const inHandPlayers = new Set<number>((inner.in_hand_players || gameState.in_hand_players || []).map((id: any) => toNumber(id)));
+  const leftPlayers = new Set<number>((gameState.left_players || inner.left_players || []).map((id: number | string) => toNumber(id)));
+  const eligiblePlayers = new Set<number>((inner.eligible_players || gameState.eligible_players || []).map((id: number | string) => toNumber(id)));
+  const inHandPlayers = new Set<number>((inner.in_hand_players || gameState.in_hand_players || []).map((id: number | string) => toNumber(id)));
   const handIndex = toNumber(inner.hand_index ?? gameState.hand_index ?? 0, 0);
   const seatOrder = [...playersRaw].sort((a, b) => toNumber(a.seat) - toNumber(b.seat));
 
@@ -61,7 +61,7 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
   const holeCards = Array.isArray(inner.hole_cards) ? inner.hole_cards : [];
   const handActions = Array.isArray(gameState.hand_actions) ? gameState.hand_actions : [];
   const holeMap: Record<number, string[]> = {};
-  holeCards.forEach((cards: any, idx: number) => {
+  holeCards.forEach((cards: unknown, idx: number) => {
     const player = handOrder[idx];
     if (!player) return;
     const id = toNumber(player.agent_id ?? player.id ?? player.sid);
@@ -146,10 +146,10 @@ export const mapTexasRoomState = (roomState: any): TexasGameState | null => {
     dealerPosition = seatOrder.length > 0 ? handIndex % seatOrder.length : undefined;
   }
 
-  const timers = gameState.timers && typeof gameState.timers === 'object' ? gameState.timers : undefined;
+  const timers = gameState.timers && typeof gameState.timers === 'object' ? gameState.timers as Record<string, number> : undefined;
   const winnerSource = inner.winner_ids ?? gameState.winner_ids;
   const winnerIds = Array.isArray(winnerSource)
-    ? winnerSource.map((id: any) => toString(id))
+    ? winnerSource.map((id) => toString(id))
     : (inner.winner_id ?? gameState.winner_id ? [toString(inner.winner_id ?? gameState.winner_id)] : undefined);
 
   return {
@@ -180,12 +180,12 @@ export const normalizeWerewolfPhase = (phase: string): string => {
   return phase;
 };
 
-export const mapWerewolfRoomState = (roomState: any): WerewolfGameState | null => {
-  const gameState = roomState?.game_state ?? roomState?.gameState ?? roomState;
+export const mapWerewolfRoomState = (roomState: Record<string, unknown>): WerewolfGameState | null => {
+  const gameState = (roomState?.game_state ?? roomState?.gameState ?? roomState) as Record<string, any>;
   if (!gameState) return null;
   const playersRaw = Array.isArray(gameState.players) ? gameState.players : [];
   const roles = gameState.roles || {};
-  const alive = new Set<number>((gameState.alive || []).map((id: any) => toNumber(id)));
+  const alive = new Set<number>((gameState.alive || []).map((id: string | number) => toNumber(id)));
   const votesRaw = gameState.votes && typeof gameState.votes === 'object' ? gameState.votes : {};
   const votes: Record<string, string> = {};
   Object.entries(votesRaw).forEach(([voter, target]) => {
@@ -197,13 +197,13 @@ export const mapWerewolfRoomState = (roomState: any): WerewolfGameState | null =
     voteCounts[toString(target)] = toNumber(count, 0);
   });
   const eliminated = Array.isArray(gameState.eliminated)
-    ? gameState.eliminated.map((id: any) => toString(id))
+    ? gameState.eliminated.map((id: number | string) => toString(id))
     : undefined;
   const eliminatedLastNight = Array.isArray(gameState.eliminated_last_night)
-    ? gameState.eliminated_last_night.map((id: any) => toString(id))
+    ? gameState.eliminated_last_night.map((id: number | string) => toString(id))
     : (gameState.eliminated_last_night ? [toString(gameState.eliminated_last_night)] : undefined);
   const offlineDeaths = Array.isArray(gameState.offline_deaths)
-    ? gameState.offline_deaths.map((id: any) => toString(id))
+    ? gameState.offline_deaths.map((id: number | string) => toString(id))
     : undefined;
   const phaseReason = toString(gameState.reason ?? gameState.phase_reason ?? '', '');
   const phaseForced = Boolean(gameState.phase_forced ?? false);
@@ -235,9 +235,9 @@ export const mapWerewolfRoomState = (roomState: any): WerewolfGameState | null =
   const phaseRaw = toString(gameState.phase ?? 'lobby');
   const phase = normalizeWerewolfPhase(phaseRaw);
   const winnerIds = Array.isArray(gameState.winner_ids)
-    ? gameState.winner_ids.map((id: any) => toString(id))
+    ? gameState.winner_ids.map((id: number | string) => toString(id))
     : (gameState.winner ? [toString(gameState.winner)] : undefined);
-  const timers = gameState.timers && typeof gameState.timers === 'object' ? gameState.timers : undefined;
+  const timers = gameState.timers && typeof gameState.timers === 'object' ? gameState.timers as Record<string, number> : undefined;
 
   return {
     game_id: toString(gameState.game_id ?? ''),

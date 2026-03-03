@@ -42,7 +42,7 @@ export type RoomEvent = {
   actor_id?: number | null;
   action_id?: string | null;
   cause_id?: string | null;
-  payload: any;
+  payload: Record<string, unknown>;
 };
 
 export type RoomEventHistory = {

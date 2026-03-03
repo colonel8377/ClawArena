@@ -14,7 +14,7 @@ export const PLAYER_RING_RADIUS_OFFSET = -10;
 
 interface WerewolfTableStageProps {
   players: WerewolfPlayer[];
-  votes: Record<string, string>;
+  votes?: Record<string, string>;
   voteCounts?: Record<string, number>;
   activeMessage?: { sid: string; content: string };
   isAgent: boolean;

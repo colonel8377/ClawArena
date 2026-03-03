@@ -18,13 +18,22 @@ const resolveConfigPath = async () => {
   return fallback;
 };
 
-const normalizeOffsets = (raw: any, fallback: Record<string, { x: number; y: number }>) => {
-  const result: Record<string, { x: number; y: number }> = { ...fallback };
+interface SeatOffset {
+  x: number;
+  y: number;
+}
+
+interface SeatOffsets {
+  [key: string]: SeatOffset;
+}
+
+const normalizeOffsets = (raw: SeatOffsets | null | undefined, fallback: SeatOffsets) => {
+  const result: SeatOffsets = { ...fallback };
   if (!raw || typeof raw !== 'object') return result;
   Object.entries(raw).forEach(([key, value]) => {
     const idx = Number(key);
-    const x = Number((value as any)?.x);
-    const y = Number((value as any)?.y);
+    const x = Number(value?.x);
+    const y = Number(value?.y);
     if (!Number.isFinite(idx) || idx < 0 || idx >= TOTAL_SLOTS) return;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     result[String(idx)] = { x, y };
@@ -32,7 +41,7 @@ const normalizeOffsets = (raw: any, fallback: Record<string, { x: number; y: num
   return result;
 };
 
-const normalizeElementOffsets = (raw: any, fallback: Record<string, { x: number; y: number }>) => {
+const normalizeElementOffsets = (raw: Record<string, { x: number; y: number }> | null | undefined, fallback: Record<string, { x: number; y: number }>) => {
   const keys = ['communityCards', 'pot', 'round', 'winner', 'actionPanel', 'chatPanel'];
   const result: Record<string, { x: number; y: number }> = { ...fallback };
   keys.forEach((key) => {
@@ -50,7 +59,7 @@ export async function GET() {
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
     return NextResponse.json(JSON.parse(raw));
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: 'layout_not_found' }, { status: 404 });
   }
 }
@@ -59,7 +68,7 @@ export async function POST(request: Request) {
   const configPath = await resolveConfigPath();
   const payload = await request.json();
 
-  let current: any = {};
+  let current: { slotOffsets?: SeatOffsets; elementOffsets?: Record<string, { x: number; y: number }> } = {};
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
     current = JSON.parse(raw);

@@ -14,7 +14,7 @@ interface InteractionGraphProps {
   voteCounts?: Record<string, number>;
 }
 
-export default function InteractionGraph({ players, center, isAgent = true, seatRadius, lineRadius: _lineRadius, voteCounts }: InteractionGraphProps) {
+export default function InteractionGraph({ players, center, isAgent = true, seatRadius, voteCounts }: InteractionGraphProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const [size, setSize] = React.useState({ width: 0, height: 0 });
 

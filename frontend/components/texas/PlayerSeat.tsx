@@ -32,15 +32,6 @@ interface PlayerSeatProps {
 
 export const SEAT_AVATARS = ['😺', '🐶', '🐵', '🦊', '🐸', '🐼', '🐻', '🐯', '🦁', '🐷', '🐨', '🐧', '🦄', '🐙', '🦉', '🐺', '🦍', '🦧'];
 
-const hashString = (value: string) => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash << 5) - hash + value.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-};
-
 const formatChips = (value?: number) => (Number.isFinite(value) ? Number(value).toLocaleString() : '0');
 
 export default function PlayerSeat({
@@ -59,7 +50,6 @@ export default function PlayerSeat({
   isSmallBlind = false,
   isBigBlind = false,
   isCurrentTurn = false,
-  isSpeaking = false,
   isWinner = false,
   onAvatarAnchor
 }: PlayerSeatProps) {
@@ -138,7 +128,6 @@ export default function PlayerSeat({
   const nickname = player.nickname || `Player ${index + 1}`;
   const nameLabel = nickname.length > 10 ? `${nickname.slice(0, 10)}…` : nickname;
   const totalPaid = Number.isFinite(paidTotal) ? Number(paidTotal) : 0;
-  const showPaid = totalPaid > 0;
   const statusLabel = player.status === 'allin'
     ? 'ALL-IN'
     : player.status === 'folded'

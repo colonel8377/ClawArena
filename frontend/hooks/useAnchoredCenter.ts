@@ -107,8 +107,8 @@ export function useAnchoredCenter<TStage extends HTMLElement = HTMLDivElement, T
 
     const resizeObserver = 'ResizeObserver' in window ? new ResizeObserver(schedule) : null;
     if (resizeObserver) {
-      observedStage && resizeObserver.observe(observedStage);
-      observedAnchor && resizeObserver.observe(observedAnchor);
+      if (observedStage) resizeObserver.observe(observedStage);
+      if (observedAnchor) resizeObserver.observe(observedAnchor);
     }
 
     return () => {

@@ -24,13 +24,9 @@ interface FlyingChip {
   kind: 'bet' | 'payout';
 }
 
-const defaultCenter: AnchoredCenter = {
-  percent: { left: '50%', top: '50%' },
-  pixel: { x: 0, y: 0 },
-  stageSize: { width: 0, height: 0 }
-};
 
-export default function ChipStream({ players, center = defaultCenter, seatAnchors, potAnchor, paidMap, settlement, handNumber }: ChipStreamProps) {
+
+export default function ChipStream({ players, seatAnchors, potAnchor, paidMap, settlement, handNumber }: ChipStreamProps) {
   const [chips, setChips] = useState<FlyingChip[]>([]);
   const prevBets = useRef<Record<string, number>>({});
   const pendingBets = useRef<Record<string, number>>({});
@@ -49,7 +45,7 @@ export default function ChipStream({ players, center = defaultCenter, seatAnchor
   }, [handNumber]);
 
   useEffect(() => {
-    players.forEach((p, index) => {
+    players.forEach((p) => {
       const oldBet = prevBets.current[p.sid] || 0;
       const paidValue = paidMap && Number.isFinite(paidMap[p.sid]) ? Number(paidMap[p.sid]) : undefined;
       const newBet = paidValue !== undefined ? paidValue : (p.current_bet || 0);
@@ -88,7 +84,7 @@ export default function ChipStream({ players, center = defaultCenter, seatAnchor
     if (payoutEntries.length === 0) return;
 
     const newChips: FlyingChip[] = [];
-    payoutEntries.forEach(([sid, rawAmount], idx) => {
+    payoutEntries.forEach(([sid, rawAmount]) => {
       const amount = Number(rawAmount) || 0;
       const anchor = seatAnchors?.[sid];
       if (!anchor) return;

@@ -19,6 +19,50 @@ import seatLayout from '@/config/texasSeatLayout.json';
 
 type ActionItem = { id: string; kind: 'action'; action: string; message: string; phase?: string; handIndex: number; actorId?: string; ts_ms?: number; stream_id?: string };
 type ChatItem = { id: string; kind: 'chat'; message: string; phase?: string; handIndex: number; senderId?: string; ts_ms?: number; stream_id?: string };
+type TexasEvent = {
+  event_type?: string;
+  payload?: {
+    hand_index?: number;
+    amount?: number;
+    phase?: string;
+    stacks?: Record<string, number>;
+    bets?: Record<string, number>;
+    pot?: number;
+    board?: unknown[];
+    actor_id?: string | number;
+    winner_ids?: (string | number)[];
+    winner_id?: string | number;
+    timers?: unknown;
+    payouts?: Record<string, number>;
+    sender_id?: string | number;
+    sender_name?: string;
+    actor_name?: string;
+    content?: string;
+    msg?: string;
+    [key: string]: unknown;
+  };
+  id?: string;
+  action_id?: string;
+  event_id?: string;
+  ts_ms?: number;
+  actor_id?: string | number;
+  next_actor_id?: string | number;
+  hand_index?: number;
+  amount?: number;
+  phase?: string;
+  payouts?: Record<string, number>;
+  sender_id?: string | number;
+  sender_name?: string;
+  actor_name?: string;
+  content?: string;
+  msg?: string;
+  chat_id?: string;
+  meta?: {
+    hand_index?: number;
+    phase?: string;
+    [key: string]: unknown;
+  };
+};
 const BASE_STAGE_WIDTH = 1200;
 const BASE_STAGE_HEIGHT = 820;
 const TICKER_DURATION_MS = 1400;
@@ -61,6 +105,11 @@ const resolveDedupeId = (...candidates: Array<string | number | null | undefined
   return null;
 };
 
+interface SeatLayoutConfig {
+  slotOffsets: Record<string, { x: number; y: number }>;
+  elementOffsets: Record<string, { x: number; y: number }>;
+}
+
 export default function TexasTablePage() {
   const { tableId } = useParams() as { tableId: string };
   const searchParams = useSearchParams();
@@ -93,7 +142,7 @@ export default function TexasTablePage() {
   const lastActionTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [ticker, setTicker] = React.useState<{ message: string; tone?: 'action' | 'win' | 'system' } | null>(null);
   const [layoutNonce, setLayoutNonce] = React.useState(0);
-  const [layoutConfig, setLayoutConfig] = React.useState<any>(seatLayout as any);
+  const [layoutConfig, setLayoutConfig] = React.useState<SeatLayoutConfig>(seatLayout);
   const refreshRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevHandRef = React.useRef<number | null>(null);
   const prevPlayerStatusRef = React.useRef<Record<string, string>>({});
@@ -111,8 +160,8 @@ export default function TexasTablePage() {
   const backfillChatRef = React.useRef(false);
   const initialEventsRef = React.useRef(false);
   const initialChatRef = React.useRef(false);
-  const layoutConfigRef = React.useRef<any>(layoutConfig);
-  const elementOffsets = layoutConfig?.elementOffsets || {};
+  const layoutConfigRef = React.useRef<SeatLayoutConfig>(layoutConfig);
+  const elementOffsets = React.useMemo(() => layoutConfig?.elementOffsets || {}, [layoutConfig]);
   const getElementOffset = React.useCallback((key: string, fallbackKey?: string) => {
     const raw = elementOffsets?.[key] ?? (fallbackKey ? elementOffsets?.[fallbackKey] : undefined);
     const x = Number(raw?.x);
@@ -177,16 +226,8 @@ export default function TexasTablePage() {
     return SEAT_AVATARS[Math.abs(hash) % SEAT_AVATARS.length];
   }, []);
 
-  const ACTION_LABELS: Record<number, string> = {
-    1: 'fold',
-    2: 'check',
-    3: 'call',
-    4: 'bet',
-    5: 'raise',
-    6: 'all-in',
-    7: 'vote_end',
-  };
-  const EVENT_ACTION_LABELS: Record<string, string> = {
+
+  const EVENT_ACTION_LABELS: Record<string, string> = React.useMemo(() => ({
     'tx:fold': 'fold',
     'tx:check': 'check',
     'tx:call': 'call',
@@ -196,9 +237,9 @@ export default function TexasTablePage() {
     'tx:vote_end': 'vote_end',
     'tx:hand:result': 'hand_result',
     'tx:settlement': 'settlement',
-  };
-  const SYSTEM_ACTIONS = new Set(['hand_result', 'settlement']);
-  const TEXAS_EVENT_TYPES = [
+  }), []);
+  const SYSTEM_ACTIONS = React.useMemo(() => new Set(['hand_result', 'settlement']), []);
+  const TEXAS_EVENT_TYPES = React.useMemo(() => [
     'tx:fold',
     'tx:check',
     'tx:call',
@@ -209,7 +250,7 @@ export default function TexasTablePage() {
     'tx:hand:result',
     'tx:settlement',
     'tx:phase:change',
-  ];
+  ], []);
 
   const normalizePhase = React.useCallback((phase?: string | null) => {
     if (!phase) return null;
@@ -233,7 +274,7 @@ export default function TexasTablePage() {
   const appendActionItem = React.useCallback(
     (
       actionLabel: string,
-      event: any,
+      event: TexasEvent,
       handIndex: number,
       options?: { eventId?: string | null; actionId?: string | null; streamId?: string | null; tsMs?: number }
     ) => {
@@ -257,13 +298,14 @@ export default function TexasTablePage() {
           : Object.keys(payouts);
         if (winnerIds.length > 0) {
           const label = winnerIds.length > 1 ? 'WINNERS' : 'WINNER';
-          message = `🏆 ${label}: ${winnerIds.map((id: any) => getAvatarForSid(String(id))).join(' · ')}`;
+          message = `🏆 ${label}: ${winnerIds.map((id: string | number) => getAvatarForSid(String(id))).join(' · ')}`;
         } else {
           message = actionLabel === 'hand_result' ? '🏆 HAND RESULT' : '🏁 SETTLEMENT';
         }
       } else {
         const avatar = getAvatarForSid(actorId);
-        message = `${avatar} ${actionLabel}${amount !== undefined ? ` ${amount}` : ''}`;
+        const displayAction = actionLabel.replace(/_/g, ' ').toUpperCase();
+        message = `${avatar} ${displayAction}${amount !== undefined ? ` ${amount}` : ''}`;
       }
       setActionItems((prev) => [
         ...prev,
@@ -280,7 +322,7 @@ export default function TexasTablePage() {
         }
       ]);
     },
-    [buildActionKey, getAvatarForSid]
+    [buildActionKey, getAvatarForSid, normalizePhase]
   );
 
   const appendChatEntry = React.useCallback(
@@ -305,7 +347,7 @@ export default function TexasTablePage() {
         return next;
       });
     },
-    [getAvatarForSid]
+    [getAvatarForSid, normalizePhase]
   );
 
   const trackLastEventId = React.useCallback((candidate?: string | null) => {
@@ -347,7 +389,7 @@ export default function TexasTablePage() {
     };
   }, []);
 
-  const applyLocalAction = React.useCallback((actionLabel: string, event: any) => {
+  const applyLocalAction = React.useCallback((actionLabel: string, event: { actor_id?: string | number; payload?: { amount?: number }; amount?: number }) => {
     const allowed = new Set(['fold', 'check', 'call', 'bet', 'raise', 'all-in', 'all_in']);
     if (!allowed.has(actionLabel)) return;
     const current = useTexasStore.getState().gameState;
@@ -466,7 +508,7 @@ export default function TexasTablePage() {
       const items = (history.items || [])
         .filter((item) => EVENT_ACTION_LABELS[item.event_type])
         .map((item) => {
-          const event = item.payload || {};
+          const event = (item.payload || {}) as TexasEvent;
           const eventHand = Number(event?.payload?.hand_index ?? event?.hand_index ?? event?.meta?.hand_index);
           const actionLabel = EVENT_ACTION_LABELS[item.event_type];
           const isSystem = actionLabel ? SYSTEM_ACTIONS.has(actionLabel) : false;
@@ -485,7 +527,7 @@ export default function TexasTablePage() {
             ts_ms: item.ts_ms
           };
         })
-        .filter(Boolean) as Array<{ id: string; event_type: string; event: any; event_id?: string; action_id?: string; ts_ms?: number }>;
+        .filter(Boolean) as Array<{ id: string; event_type: string; event: TexasEvent; event_id?: string; action_id?: string; ts_ms?: number }>;
       items.sort((a, b) => {
         const tA = Number(a.ts_ms ?? a.event?.ts_ms ?? 0);
         const tB = Number(b.ts_ms ?? b.event?.ts_ms ?? 0);
@@ -506,7 +548,7 @@ export default function TexasTablePage() {
       });
     } catch {
     }
-  }, [EVENT_ACTION_LABELS, TEXAS_EVENT_TYPES, appendActionItem, tableId, trackLastEventId]);
+  }, [SYSTEM_ACTIONS, EVENT_ACTION_LABELS, TEXAS_EVENT_TYPES, appendActionItem, tableId, trackLastEventId]);
 
   React.useEffect(() => {
     if (!gameState) return;
@@ -564,7 +606,7 @@ export default function TexasTablePage() {
       });
       return changed ? next : prev;
     });
-  }, [clearLog, gameState, loadActionHistoryForHand, loadChatHistoryForHand, resetHistory]);
+  }, [clearLog, gameState, getAvatarForSid, loadActionHistoryForHand, loadChatHistoryForHand, resetHistory, handStartHand, handStartStacks]);
 
   React.useEffect(() => {
     const node = stageContainerRef.current;
@@ -603,10 +645,10 @@ export default function TexasTablePage() {
     setVictoryBanner(null);
   }, [tableId, reset]);
 
-  const applyPhaseChange = React.useCallback((event: any) => {
+  const applyPhaseChange = React.useCallback((event: TexasEvent) => {
     const envelope = event?.event_type ? event : null;
     const inner = envelope?.payload ?? event;
-    const payload = inner?.payload || {};
+    const payload = (inner?.payload || {}) as NonNullable<TexasEvent['payload']>;
     if (envelope?.id) trackLastEventId(envelope.id);
     const current = useTexasStore.getState().gameState;
     if (!current) return;
@@ -636,22 +678,22 @@ export default function TexasTablePage() {
       ...current,
       phase: payload.phase || current.phase,
       pot: payload.pot ?? current.pot,
-      community_cards: payload.board || current.community_cards,
+      community_cards: (payload.board as string[]) || current.community_cards,
       current_bet: Number.isFinite(currentBet) ? currentBet : current.current_bet,
       current_player: payload.actor_id ? String(payload.actor_id) : current.current_player,
       hand_number: payload.hand_index ?? current.hand_number,
-      timers: payload.timers ?? current.timers,
+      timers: (payload.timers as Record<string, number> | undefined) ?? current.timers,
       winners: Array.isArray(payload.winner_ids)
-        ? payload.winner_ids.map((id: any) => String(id))
+        ? payload.winner_ids.map((id: string | number) => String(id))
         : (payload.winner_id ? [String(payload.winner_id)] : (shouldClearWinners ? [] : current.winners)),
       players: updatedPlayers,
     });
   }, [resetHistory, setGameState, trackLastEventId]);
 
-  const handleHandResult = React.useCallback((event: any) => {
+  const handleHandResult = React.useCallback((event: TexasEvent) => {
     const envelope = event?.event_type ? event : null;
     const inner = envelope?.payload ?? event;
-    const payload = inner?.payload || inner || {};
+    const payload = (inner?.payload || inner || {}) as NonNullable<TexasEvent['payload']>;
     if (envelope?.id) trackLastEventId(envelope.id);
     const actionId = envelope?.action_id || inner?.action_id;
     const eventId = envelope?.event_id || inner?.event_id;
@@ -667,30 +709,25 @@ export default function TexasTablePage() {
         actionId: actionId ? String(actionId) : undefined,
         eventId: eventId ? String(eventId) : undefined,
         streamId: streamId ? String(streamId) : undefined,
-        tsMs,
+        tsMs: tsMs as number | undefined,
       });
     }
     const payouts = payload?.payouts || {};
     const winners = Array.isArray(payload.winner_ids)
-      ? payload.winner_ids.map((id: any) => String(id))
+      ? payload.winner_ids.map((id: string | number) => String(id))
       : Object.keys(payouts);
     if (!winners || winners.length === 0) return;
     const current = useTexasStore.getState().gameState;
     if (current) {
       setGameState({ ...current, winners });
     }
-    const topWinner = winners[0];
-    const topAmount = payouts[topWinner];
-    const winnerName = getAvatarForSid(String(topWinner));
-    const message = winners.length > 1
-      ? `WINNERS: ${winners.map((id) => getAvatarForSid(String(id))).join(' · ')}`
-      : `WINNER: ${winnerName}${topAmount !== undefined ? ` +${topAmount}` : ''}`;
-    setSettlementPulse({ id: `${Date.now()}`, payouts });
-  }, [appendActionItem, getAvatarForSid, setGameState, trackLastEventId]);
 
-  const handleSettlement = React.useCallback((event: any) => {
+    setSettlementPulse({ id: `${Date.now()}`, payouts });
+  }, [appendActionItem, setGameState, trackLastEventId]);
+
+  const handleSettlement = React.useCallback((event: TexasEvent) => {
     const envelope = event?.event_type ? event : null;
-    const payload = envelope?.payload ?? event;
+    const payload = (envelope?.payload ?? event) as TexasEvent;
     if (envelope?.id) trackLastEventId(envelope.id);
     const actionId = envelope?.action_id || payload?.action_id;
     const eventId = envelope?.event_id || payload?.event_id;
@@ -706,7 +743,7 @@ export default function TexasTablePage() {
         actionId: actionId ? String(actionId) : undefined,
         eventId: eventId ? String(eventId) : undefined,
         streamId: streamId ? String(streamId) : undefined,
-        tsMs,
+        tsMs: tsMs as number | undefined,
       });
     }
     const payouts = payload?.payouts || {};
@@ -728,10 +765,10 @@ export default function TexasTablePage() {
     setLoadStatus('ended');
   }, [appendActionItem, getAvatarForSid, setGameState, trackLastEventId]);
 
-  const logTexasAction = React.useCallback((actionLabel: string, event: any) => {
+  const logTexasAction = React.useCallback((actionLabel: string, event: TexasEvent) => {
     const envelope = event?.event_type ? event : null;
     const inner = envelope?.payload ?? event;
-    const payload = inner?.payload || {};
+    const payload = (inner?.payload || {}) as TexasEvent['payload'];
     if (envelope?.id) trackLastEventId(envelope.id);
     const actorId = inner?.actor_id ? String(inner.actor_id) : '';
     const nextActorId = inner?.next_actor_id ?? payload?.next_actor_id;
@@ -783,18 +820,18 @@ export default function TexasTablePage() {
       eventId: eventId ? String(eventId) : undefined,
       actionId: actionId ? String(actionId) : undefined,
       streamId: streamId ? String(streamId) : undefined,
-      tsMs
+      tsMs: tsMs as number | undefined
     });
     applyLocalAction(actionLabel, inner);
     requestRoomState();
   }, [addLog, appendActionItem, applyLocalAction, getAvatarForSid, requestRoomState, setGameState, trackLastEventId]);
 
-  const logTexasChat = React.useCallback((data: any) => {
+  const logTexasChat = React.useCallback((data: TexasEvent) => {
     const envelope = data?.event_type ? data : null;
-    const inner = envelope?.payload ?? data;
+    const inner = (envelope?.payload ?? data) as TexasEvent;
     if (envelope?.id) trackLastChatId(envelope.id);
     const senderId = inner?.sender_id ?? inner?.actor_id ?? inner?.sender_name ?? inner?.actor_name;
-    const sender = getAvatarForSid(senderId);
+    const sender = getAvatarForSid(senderId ? String(senderId) : undefined);
     const content = inner?.content || inner?.msg;
     if (!content) return;
     addLog(`💬 ${sender}: ${content}`);
@@ -818,13 +855,13 @@ export default function TexasTablePage() {
         phase: inner?.meta?.phase ?? inner?.phase ?? undefined,
         sender_id: inner?.sender_id ?? inner?.actor_id ?? inner?.sender_name ?? null,
         content,
-        ts_ms: tsMs,
+        ts_ms: tsMs as number | undefined,
       },
       handIndex
     );
   }, [addLog, appendChatEntry, getAvatarForSid, trackLastChatId]);
 
-  const seedRecentEvents = React.useCallback((items: any[] | null | undefined) => {
+  const seedRecentEvents = React.useCallback((items: TexasEvent[] | null | undefined) => {
     if (!Array.isArray(items) || items.length === 0) return;
     const currentHand = useTexasStore.getState().gameState?.hand_number;
     items.forEach((envelope) => {
@@ -841,10 +878,11 @@ export default function TexasTablePage() {
         return;
       }
       const eventType = envelope?.event_type;
+      if (!eventType) return;
       const actionLabel = EVENT_ACTION_LABELS[eventType];
       if (!actionLabel) return;
-      const inner = envelope?.payload ?? envelope;
-      const payload = inner?.payload || {};
+      const inner = (envelope?.payload ?? envelope) as TexasEvent;
+      const payload = (inner?.payload || {}) as NonNullable<TexasEvent['payload']>;
       const handIndex = Number(payload?.hand_index ?? inner?.hand_index ?? inner?.meta?.hand_index);
       const isSystem = SYSTEM_ACTIONS.has(actionLabel);
       if (!Number.isFinite(handIndex) && !isSystem) {
@@ -866,9 +904,9 @@ export default function TexasTablePage() {
       });
       if (streamId) trackLastEventId(String(streamId));
     });
-  }, [EVENT_ACTION_LABELS, appendActionItem, applyPhaseChange, handleHandResult, handleSettlement, trackLastEventId]);
+  }, [EVENT_ACTION_LABELS, SYSTEM_ACTIONS, appendActionItem, applyPhaseChange, handleHandResult, handleSettlement, trackLastEventId]);
 
-  const seedRecentChat = React.useCallback((items: any[] | null | undefined) => {
+  const seedRecentChat = React.useCallback((items: TexasEvent[] | null | undefined) => {
     if (!Array.isArray(items) || items.length === 0) return;
     items.forEach((entry) => {
       const handIndex = Number(entry?.hand_index ?? entry?.meta?.hand_index);
@@ -911,23 +949,23 @@ export default function TexasTablePage() {
       const items = history.items || [];
       items.forEach((item) => {
         if (item.event_type === 'tx:phase:change') {
-          applyPhaseChange(item);
+          applyPhaseChange(item as TexasEvent);
           if (item.id) trackLastEventId(item.id);
           return;
         }
         if (item.event_type === 'tx:hand:result') {
-          handleHandResult(item);
+          handleHandResult(item as TexasEvent);
           if (item.id) trackLastEventId(item.id);
           return;
         }
         if (item.event_type === 'tx:settlement') {
-          handleSettlement(item);
+          handleSettlement(item as TexasEvent);
           if (item.id) trackLastEventId(item.id);
           return;
         }
         const actionLabel = EVENT_ACTION_LABELS[item.event_type];
         if (!actionLabel) return;
-        const event = item.payload || {};
+        const event = (item.payload || {}) as TexasEvent;
         const eventHand = Number(event?.payload?.hand_index ?? event?.hand_index ?? event?.meta?.hand_index);
         const isSystem = SYSTEM_ACTIONS.has(actionLabel);
         if (!Number.isFinite(eventHand) && !isSystem) {
@@ -1007,17 +1045,17 @@ export default function TexasTablePage() {
         }
         if (data?.last_event_id) lastEventIdRef.current = String(data.last_event_id);
         if (data?.last_chat_id) lastChatIdRef.current = String(data.last_chat_id);
-        if (data?.recent_events) seedRecentEvents(data.recent_events);
-        if (data?.recent_chat) seedRecentChat(data.recent_chat);
-        const handNumber = Number(mapped?.hand_number ?? data?.game_state?.hand_index ?? 0);
+        if (data?.recent_events) seedRecentEvents(data.recent_events as TexasEvent[]);
+        if (data?.recent_chat) seedRecentChat(data.recent_chat as TexasEvent[]);
+        const handNumber = Number(mapped?.hand_number ?? (data?.game_state as Record<string, unknown>)?.hand_index ?? 0);
         if (Number.isFinite(handNumber)) {
           backfillRoomEvents(handNumber);
           backfillRoomChat(handNumber);
         }
       },
       'room:update': (data) => {
-        if (data?.id) trackLastEventId(data.id);
-        if (data?.payload?.type === 'game_finish') {
+        if (data?.id) trackLastEventId(String(data.id));
+        if ((data?.payload as Record<string, unknown>)?.type === 'game_finish') {
           setLoadStatus('ended');
         }
       },
@@ -1153,7 +1191,7 @@ export default function TexasTablePage() {
       const scale = stageScale || 1;
       const dx = (event.clientX - drag.startX) / (scale || 1);
       const dy = (event.clientY - drag.startY) / (scale || 1);
-      setLayoutConfig((prev: any) => {
+      setLayoutConfig((prev: SeatLayoutConfig) => {
         const base = prev || {};
         const nextOffsets = { ...(base.elementOffsets || {}) };
         nextOffsets.winner = { x: drag.originX + dx, y: drag.originY + dy };
@@ -1169,7 +1207,7 @@ export default function TexasTablePage() {
       const dy = (event.clientY - drag.startY) / (scale || 1);
       const baseOffsets = layoutConfigRef.current?.elementOffsets || {};
       const nextOffsets = { ...baseOffsets, winner: { x: drag.originX + dx, y: drag.originY + dy } };
-      setLayoutConfig((prev: any) => ({ ...(prev || {}), elementOffsets: nextOffsets }));
+      setLayoutConfig((prev: SeatLayoutConfig) => ({ ...(prev || {}), elementOffsets: nextOffsets }));
       void persistElementOffsets(nextOffsets);
     };
     window.addEventListener('pointermove', handleMove);

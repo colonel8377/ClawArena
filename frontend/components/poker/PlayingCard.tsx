@@ -40,7 +40,7 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     return 'drop-shadow-[0_1px_0_rgba(255,255,255,0.25)]';
   };
 
-  const getBorderColor = (_suit: Suit): string => 'border-slate-200';
+  const getBorderColor = (): string => 'border-slate-200';
 
   if (hidden) {
     return (
@@ -67,7 +67,7 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
     <div
       className={`
         relative w-20 h-28 
-        bg-[#f7f6f2] border-2 ${getBorderColor(suit)}
+        bg-[#f7f6f2] border-2 ${getBorderColor()}
         rounded-lg overflow-hidden
         shadow-[0_6px_16px_rgba(0,0,0,0.25)]
         ring-1 ring-black/5
@@ -97,16 +97,12 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
         </div>
         
         {/* Center suit symbol (consistent for all ranks) */}
-        {!compact && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className={`text-5xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
-              {getSuitSymbol(suit)}
-            </div>
-          </div>
-        )}
-        
+        <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-5xl ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
+          {getSuitSymbol(suit)}
+        </div>
+
         {/* Bottom-right rank and suit (rotated) */}
-        <div className="absolute bottom-2 right-2 flex flex-col items-end rotate-180 leading-none">
+        <div className="absolute bottom-2 right-2 flex flex-col items-end leading-none transform rotate-180">
           {showRank && (
             <div className={`${compact ? 'text-[13px]' : 'text-[20px]'} font-bold tracking-tight ${getSuitColor(suit)} ${getSuitTextShadow(suit)}`}>
               {rank}
@@ -120,7 +116,7 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ suit, rank, hidden = false, c
       
       {/* Corner accents */}
       {(() => {
-        const borderColorClass = getBorderColor(suit).split(' ')[0];
+        const borderColorClass = getBorderColor().split(' ')[0];
         return (
           <>
             <div className={`absolute top-0 left-0 w-2 h-2 border-l-2 border-t-2 ${borderColorClass} opacity-50`}></div>

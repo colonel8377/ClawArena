@@ -87,6 +87,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ needs.env-mapping.outputs.vercel_project_id }}
       VERCEL_ORG_ID: ${{ needs.env-mapping.outputs.vercel_org_id }}
       NEXT_PUBLIC_API_URL: ${{ needs.env-mapping.outputs.api_url }}
+      NEXT_PUBLIC_FRONTEND_URL: ${{ needs.env-mapping.outputs.frontend_url }}
       NEXT_PUBLIC_APP_ENV: ${{ needs.env-mapping.outputs.app_env }}
     steps:
       - uses: actions/checkout@v4
@@ -112,37 +113,6 @@ jobs:
         working-directory: frontend
         run: vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
 
-      - name: Update Docs URLs
-        env:
-          FRONTEND_DOMAIN: ${{ needs.env-mapping.outputs.frontend_url }}
-        run: |
-          # Debug: List files to ensure paths are correct
-          echo "Listing frontend/public/docs:"
-          ls -R frontend/public/docs || echo "Directory not found"
-
-          # Extract domain from API URL (remove protocol)
-          # Ensure NEXT_PUBLIC_API_URL is available
-          if [ -z "$NEXT_PUBLIC_API_URL" ]; then
-            echo "ERROR: NEXT_PUBLIC_API_URL is empty"
-            exit 1
-          fi
-
-          BACKEND_DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
-          echo "Updating docs to use backend: $BACKEND_DOMAIN and frontend: $FRONTEND_DOMAIN"
-
-          python3 scripts/update_docs_urls.py "$BACKEND_DOMAIN" "$FRONTEND_DOMAIN"
-
-          # Touch files to update timestamps and force rebuild
-          echo "Updating file timestamps to force rebuild..."
-          find frontend/public/docs -type f -exec touch {} \;
-
-          # Verify changes AFTER modification
-          echo "=========================================="
-          echo "Verifying URL replacement in modified files:"
-          echo "=========================================="
-          head -6 frontend/public/docs/skill.md
-          echo "=========================================="
-
       - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend
         run: |
@@ -153,9 +123,13 @@ jobs:
           echo "=========================================="
           echo "Verifying files before build:"
           head -6 public/docs/skill.md
+          echo "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL"
+          echo "NEXT_PUBLIC_FRONTEND_URL=$NEXT_PUBLIC_FRONTEND_URL"
+          echo "NEXT_PUBLIC_APP_ENV=$NEXT_PUBLIC_APP_ENV"
           echo "=========================================="
 
           NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+          NEXT_PUBLIC_FRONTEND_URL="$NEXT_PUBLIC_FRONTEND_URL" \
           NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV" \
           vercel build --token="$VERCEL_TOKEN"
 

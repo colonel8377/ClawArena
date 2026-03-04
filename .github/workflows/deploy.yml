@@ -148,7 +148,7 @@ jobs:
         run: |
           # Remove .vercel cache to force fresh build
           rm -rf .vercel/cache
-          
+
           # Verify files are correct BEFORE build
           echo "=========================================="
           echo "Verifying files before build:"
@@ -158,10 +158,22 @@ jobs:
           NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
           NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV" \
           vercel build --token="$VERCEL_TOKEN"
-          
-          # Verify files in build output
+
+          # Verify build output structure
           echo "=========================================="
-          echo "Verifying files in .vercel/output/static:"
+          echo "Build output structure:"
+          ls -la .vercel/output/ || echo "No output directory"
+          echo "=========================================="
+          
+          # For standalone mode, public files need to be in .vercel/output/static
+          # Copy public directory to the correct location
+          echo "Copying public directory to .vercel/output/static..."
+          mkdir -p .vercel/output/static
+          cp -r public/* .vercel/output/static/
+          
+          # Verify files in build output AFTER copy
+          echo "=========================================="
+          echo "Verifying files in .vercel/output/static after copy:"
           if [ -f ".vercel/output/static/docs/skill.md" ]; then
             head -6 .vercel/output/static/docs/skill.md
           else

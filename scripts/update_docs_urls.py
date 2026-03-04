@@ -41,6 +41,8 @@ def main():
         "frontend/public/docs/api.json",
         "frontend/public/docs/socket.json",
         "frontend/public/docs/skill.md",
+        "frontend/public/docs/heartbeat.md",
+        "frontend/public/docs/messaging.md",
         "frontend/public/docs/skills/texas.md",
         "frontend/public/docs/skills/werewolf.md"
     ]

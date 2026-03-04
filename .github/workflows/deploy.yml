@@ -163,21 +163,17 @@ jobs:
           echo "=========================================="
           echo "Build output structure:"
           ls -la .vercel/output/ || echo "No output directory"
+          ls -la .vercel/output/static/ || echo "No static directory"
           echo "=========================================="
-          
-          # For standalone mode, public files need to be in .vercel/output/static
-          # Copy public directory to the correct location
-          echo "Copying public directory to .vercel/output/static..."
-          mkdir -p .vercel/output/static
-          cp -r public/* .vercel/output/static/
-          
-          # Verify files in build output AFTER copy
+
+          # Verify files in build output (Vercel already copies public to static)
           echo "=========================================="
-          echo "Verifying files in .vercel/output/static after copy:"
+          echo "Verifying files in .vercel/output/static:"
           if [ -f ".vercel/output/static/docs/skill.md" ]; then
+            echo "✅ File found! Content:"
             head -6 .vercel/output/static/docs/skill.md
           else
-            echo "File not found in .vercel/output/static/docs/"
+            echo "❌ File not found in .vercel/output/static/docs/"
             ls -la .vercel/output/static/ || echo "No static output"
           fi
           echo "=========================================="

@@ -32,18 +32,21 @@ export const unwrapSocketPayload = <T>(payload: { ok?: boolean; data?: T } | T):
 };
 
 export const mapTexasRoomState = (roomState: Record<string, unknown>): TexasGameState | null => {
-  const gameState = (roomState?.game_state ?? roomState?.gameState ?? roomState) as Record<string, any>;
+  const gameState = (roomState?.game_state ?? roomState?.gameState ?? roomState) as Record<string, unknown>;
   if (!gameState) return null;
-  const inner = (gameState.state && typeof gameState.state === 'object' ? gameState.state : gameState) as Record<string, any>;
+  const inner = (gameState.state && typeof gameState.state === 'object' ? gameState.state : gameState) as Record<string, unknown>;
   const smallBlind = toNumber(inner.small_blind ?? gameState.small_blind ?? 1, 1);
   const bigBlind = toNumber(inner.big_blind ?? gameState.big_blind ?? 2, 2);
   const playersRaw = Array.isArray(gameState.players) ? gameState.players : [];
-  const stacks = inner.stacks || gameState.stacks || {};
-  const bets = inner.bets || {};
-  const statuses = inner.statuses || {};
-  const leftPlayers = new Set<number>((gameState.left_players || inner.left_players || []).map((id: number | string) => toNumber(id)));
-  const eligiblePlayers = new Set<number>((inner.eligible_players || gameState.eligible_players || []).map((id: number | string) => toNumber(id)));
-  const inHandPlayers = new Set<number>((inner.in_hand_players || gameState.in_hand_players || []).map((id: number | string) => toNumber(id)));
+  const stacks = (inner.stacks || gameState.stacks || {}) as Record<string | number, unknown>;
+  const bets = (inner.bets || {}) as Record<string | number, unknown>;
+  const statuses = (inner.statuses || {}) as Record<string | number, unknown>;
+  const leftPlayersRaw = (gameState.left_players || inner.left_players || []) as (number | string)[];
+  const leftPlayers = new Set<number>(leftPlayersRaw.map((id: number | string) => toNumber(id)));
+  const eligiblePlayersRaw = (inner.eligible_players || gameState.eligible_players || []) as (number | string)[];
+  const eligiblePlayers = new Set<number>(eligiblePlayersRaw.map((id: number | string) => toNumber(id)));
+  const inHandPlayersRaw = (inner.in_hand_players || gameState.in_hand_players || []) as (number | string)[];
+  const inHandPlayers = new Set<number>(inHandPlayersRaw.map((id: number | string) => toNumber(id)));
   const handIndex = toNumber(inner.hand_index ?? gameState.hand_index ?? 0, 0);
   const seatOrder = [...playersRaw].sort((a, b) => toNumber(a.seat) - toNumber(b.seat));
 
@@ -181,11 +184,12 @@ export const normalizeWerewolfPhase = (phase: string): string => {
 };
 
 export const mapWerewolfRoomState = (roomState: Record<string, unknown>): WerewolfGameState | null => {
-  const gameState = (roomState?.game_state ?? roomState?.gameState ?? roomState) as Record<string, any>;
+  const gameState = (roomState?.game_state ?? roomState?.gameState ?? roomState) as Record<string, unknown>;
   if (!gameState) return null;
   const playersRaw = Array.isArray(gameState.players) ? gameState.players : [];
-  const roles = gameState.roles || {};
-  const alive = new Set<number>((gameState.alive || []).map((id: string | number) => toNumber(id)));
+  const roles = (gameState.roles || {}) as Record<string | number, unknown>;
+  const aliveRaw = (gameState.alive || []) as (string | number)[];
+  const alive = new Set<number>(aliveRaw.map((id: string | number) => toNumber(id)));
   const votesRaw = gameState.votes && typeof gameState.votes === 'object' ? gameState.votes : {};
   const votes: Record<string, string> = {};
   Object.entries(votesRaw).forEach(([voter, target]) => {
@@ -217,10 +221,13 @@ export const mapWerewolfRoomState = (roomState: Record<string, unknown>): Werewo
     if (roleInfo) {
       if (typeof roleInfo === 'string') {
         role = roleInfo;
-      } else if (roleInfo.label) {
-        role = roleInfo.label;
-      } else if (roleInfo.role) {
-        role = String(roleInfo.role);
+      } else if (typeof roleInfo === 'object') {
+        const roleObj = roleInfo as Record<string, unknown>;
+        if (roleObj.label) {
+          role = roleObj.label as string;
+        } else if (roleObj.role) {
+          role = String(roleObj.role);
+        }
       }
     }
     return {

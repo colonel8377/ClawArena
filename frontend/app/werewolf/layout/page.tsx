@@ -136,7 +136,6 @@ export default function WerewolfLayoutPage() {
               >
                 <WerewolfTableStage
                   players={players}
-                  votes={{}}
                   activeMessage={undefined}
                   isAgent={isAgent}
                   tableSize={tableSize}

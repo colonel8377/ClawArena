@@ -1174,7 +1174,7 @@ export default function WerewolfGamePage() {
       },
       'room:update': (data) => {
         if (data?.id) trackLastEventId(String(data.id));
-        if ((data?.payload as any)?.type === 'game_finish') {
+        if ((data?.payload as Record<string, unknown>)?.type === 'game_finish') {
           setLoadStatus('ended');
         }
       },
@@ -1199,9 +1199,9 @@ export default function WerewolfGamePage() {
       'ww:chat:day': (data) => {
         const envelope = data?.event_type ? data : null;
         const inner = (envelope?.payload ?? data) as WerewolfEvent;
-        const payload = (inner?.payload || {}) as Record<string, any>;
+        const payload = (inner?.payload || {}) as Record<string, unknown>;
         const content = String(payload.msg || payload.content || '').trim();
-        const meta = payload?.meta || {};
+        const meta = (payload?.meta || {}) as Record<string, unknown>;
         const isTimeout = meta?.reason === 'timeout' || meta?.auto === true;
         if (!content && !isTimeout) return;
         const chatId = envelope?.event_id || inner?.event_id || envelope?.id || inner?.id;
@@ -1212,12 +1212,12 @@ export default function WerewolfGamePage() {
             id: chatId ? String(chatId) : undefined,
             event_id: (envelope?.event_id || inner?.event_id) as string | undefined,
             action_id: (envelope?.action_id || inner?.action_id) as string | undefined,
-            nickname: inner?.actor_name || payload.actor_name || payload.sender_name || String(inner?.actor_id || 'player'),
+            nickname: String(inner?.actor_name || payload.actor_name || payload.sender_name || inner?.actor_id || 'player'),
             message: content,
             timestamp: new Date(tsMs).toISOString(),
             ts_ms: tsMs,
             sid: String(inner?.actor_id || payload.sender_id || 'player'),
-            phase: inner?.phase || payload?.phase,
+            phase: (inner?.phase || payload?.phase) as string | undefined,
           });
         }
         const item = buildActionFeedItem(data);
@@ -1226,7 +1226,7 @@ export default function WerewolfGamePage() {
       'ww:chat:wolf': (data) => {
         const envelope = data?.event_type ? data : null;
         const inner = (envelope?.payload ?? data) as WerewolfEvent;
-        const payload = (inner?.payload || {}) as Record<string, any>;
+        const payload = (inner?.payload || {}) as Record<string, unknown>;
         const content = String(payload.msg || payload.content || '').trim();
         if (!content) return;
         const chatId = envelope?.event_id || inner?.event_id || envelope?.id || inner?.id;
@@ -1247,7 +1247,7 @@ export default function WerewolfGamePage() {
       },
       'room:chat': (data) => {
         const envelope = data?.event_type ? data : null;
-        const payload = (envelope?.payload ?? data?.payload ?? data ?? {}) as Record<string, any>;
+        const payload = (envelope?.payload ?? data?.payload ?? data ?? {}) as Record<string, unknown>;
         const content = String(payload.content || payload.msg || '').trim();
         if (!content) return;
         const chatId = envelope?.event_id || envelope?.id || payload?.event_id || payload?.id;
@@ -1257,12 +1257,12 @@ export default function WerewolfGamePage() {
           id: chatId ? String(chatId) : undefined,
           event_id: (envelope?.event_id || payload?.event_id) as string | undefined,
           action_id: (envelope?.action_id || payload?.action_id) as string | undefined,
-          nickname: payload.sender_name || payload.actor_name || String(payload.sender_id || payload.actor_id || 'player'),
+          nickname: String(payload.sender_name || payload.actor_name || payload.sender_id || payload.actor_id || 'player'),
           message: content,
           timestamp: new Date(tsMs).toISOString(),
           ts_ms: tsMs,
           sid: String(payload.sender_id || payload.actor_id || 'player'),
-          phase: payload?.phase,
+          phase: payload?.phase as string | undefined,
         });
       },
       connect: () => setConnected(true),
@@ -1625,7 +1625,6 @@ export default function WerewolfGamePage() {
               >
                 <WerewolfTableStage
                   players={gameState.players}
-                  votes={gameState.votes || {}}
                   activeMessage={activeMessage}
                   isAgent={isAgent}
                   tableSize={tableSize}

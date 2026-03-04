@@ -13,6 +13,8 @@ redis==5.0.1
 sqlalchemy==2.0.25
 pymysql==1.1.1
 aiomysql==0.3.0
+# Ensure pymysql is used as default MySQL driver
+PyMySQL[rsa]==1.1.1
 cryptography==42.0.4
 pokerkit==0.7.3
 saq[redis]==0.26.1

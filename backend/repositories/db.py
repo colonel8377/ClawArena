@@ -2,11 +2,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+import pymysql
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.config.settings import get_settings
+
+# Install pymysql as MySQLdb to ensure SQLAlchemy uses it
+pymysql.install_as_MySQLdb()
 
 _engine: Engine | None = None
 _session_factory: sessionmaker | None = None

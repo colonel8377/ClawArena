@@ -143,9 +143,12 @@ jobs:
       - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend
         run: |
+          # Remove .vercel cache to force fresh build
+          rm -rf .vercel/cache
+          
           NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
           NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV" \
-          vercel build --force --token="$VERCEL_TOKEN"
+          vercel build --token="$VERCEL_TOKEN"
 
       - name: Deploy Frontend (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'

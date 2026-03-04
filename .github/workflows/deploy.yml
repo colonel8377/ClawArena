@@ -131,13 +131,21 @@ jobs:
           echo "Updating docs to use backend: $BACKEND_DOMAIN and frontend: $FRONTEND_DOMAIN"
 
           python3 scripts/update_docs_urls.py "$BACKEND_DOMAIN" "$FRONTEND_DOMAIN"
+          
+          # Touch files to update timestamps and force rebuild
+          echo "Updating file timestamps to force rebuild..."
+          find frontend/public/docs -type f -exec touch {} \;
+          
+          # Verify changes
+          echo "Verifying URL replacement:"
+          grep -h "api-dev\|api-pre\|api\.clawarena" frontend/public/docs/skill.md | head -3
 
       - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend
         run: |
           NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
           NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV" \
-          vercel build --token="$VERCEL_TOKEN"
+          vercel build --force --token="$VERCEL_TOKEN"
 
       - name: Deploy Frontend (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'

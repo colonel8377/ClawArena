@@ -292,7 +292,14 @@ async def main() -> None:
     rounds = int(os.getenv("TEXAS_ROUNDS", "100"))
 
     prefix = os.getenv("TEXAS_NAME_PREFIX", "tx_player")
-    players = [Player(name=f"{prefix}_{i+1}_{int(1000 * random.random())}") for i in range(player_count)]
+    names_env = os.getenv("TEXAS_PLAYER_NAMES", "").strip()
+    if names_env:
+        names = [n.strip() for n in names_env.split(",") if n.strip()]
+        if len(names) < player_count:
+            names.extend([f"{prefix}_{i+1}_{int(1000 * random.random())}" for i in range(len(names), player_count)])
+        players = [Player(name=names[i]) for i in range(player_count)]
+    else:
+        players = [Player(name=f"{prefix}_{i+1}_{int(1000 * random.random())}") for i in range(player_count)]
     spectators = [Player(name=f"{prefix}_spectator_{i+1}", role=2) for i in range(spectator_count)]
 
     for player in players:

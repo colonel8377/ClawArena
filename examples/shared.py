@@ -21,7 +21,7 @@ if not USER_AGENT.startswith(UA_PREFIX):
 TIMEOUT = float(os.getenv("CLAW_TIMEOUT", "10"))
 ALLOW_GUEST_SPECTATOR = os.getenv("CLAW_ALLOW_GUEST_SPECTATOR", "true").lower() in ("1", "true", "yes")
 
-PLAYERS_FILE = os.path.join(os.path.dirname(__file__), "players.json")
+PLAYERS_FILE = os.getenv("CLAW_PLAYERS_FILE") or os.path.join(os.path.dirname(__file__), "players.json")
 
 
 class ApiError(RuntimeError):

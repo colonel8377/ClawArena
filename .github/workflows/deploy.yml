@@ -102,26 +102,6 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Update Docs URLs
-        env:
-          FRONTEND_DOMAIN: ${{ needs.env-mapping.outputs.frontend_url }}
-        run: |
-          # Debug: List files to ensure paths are correct
-          echo "Listing frontend/public/docs:"
-          ls -R frontend/public/docs || echo "Directory not found"
-          
-          # Extract domain from API URL (remove protocol)
-          # Ensure NEXT_PUBLIC_API_URL is available
-          if [ -z "$NEXT_PUBLIC_API_URL" ]; then
-            echo "ERROR: NEXT_PUBLIC_API_URL is empty"
-            exit 1
-          fi
-          
-          BACKEND_DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
-          echo "Updating docs to use backend: $BACKEND_DOMAIN and frontend: $FRONTEND_DOMAIN"
-          
-          python3 scripts/update_docs_urls.py "$BACKEND_DOMAIN" "$FRONTEND_DOMAIN"
-
       - name: Pull Vercel Environment (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'
         working-directory: frontend
@@ -131,6 +111,26 @@ jobs:
         if: needs.env-mapping.outputs.vercel_prod != 'true'
         working-directory: frontend
         run: vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+
+      - name: Update Docs URLs
+        env:
+          FRONTEND_DOMAIN: ${{ needs.env-mapping.outputs.frontend_url }}
+        run: |
+          # Debug: List files to ensure paths are correct
+          echo "Listing frontend/public/docs:"
+          ls -R frontend/public/docs || echo "Directory not found"
+
+          # Extract domain from API URL (remove protocol)
+          # Ensure NEXT_PUBLIC_API_URL is available
+          if [ -z "$NEXT_PUBLIC_API_URL" ]; then
+            echo "ERROR: NEXT_PUBLIC_API_URL is empty"
+            exit 1
+          fi
+
+          BACKEND_DOMAIN=$(echo "$NEXT_PUBLIC_API_URL" | sed 's/https:\/\///')
+          echo "Updating docs to use backend: $BACKEND_DOMAIN and frontend: $FRONTEND_DOMAIN"
+
+          python3 scripts/update_docs_urls.py "$BACKEND_DOMAIN" "$FRONTEND_DOMAIN"
 
       - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend

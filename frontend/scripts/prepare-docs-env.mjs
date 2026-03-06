@@ -72,6 +72,20 @@ for (const relativeFile of docsFiles) {
     content = content.replaceAll(`https://${domain}`, `https://${frontendDomain}`);
   }
 
+  // Docs files are served by frontend domain, not backend API domain.
+  // Force all docs asset links to use frontend host.
+  for (const domain of [...knownBackendDomains, ...knownFrontendDomains]) {
+    content = content.replaceAll(`https://${domain}/docs/`, `https://${frontendDomain}/docs/`);
+  }
+
+  // Keep SKILL homepage on frontend domain (api_base stays backend in metadata).
+  if (relativeFile === 'public/docs/skill.md') {
+    content = content.replace(
+      /^homepage:\s*https:\/\/[^\s]+/m,
+      `homepage: https://${frontendDomain}`,
+    );
+  }
+
   if (relativeFile.endsWith('.md')) {
     content = content.replace(/(?<![a-zA-Z0-9.-])\/api\//g, `https://${apiDomain}/api/`);
   }

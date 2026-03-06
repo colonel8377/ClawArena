@@ -240,7 +240,7 @@ export default function GodModeDashboard() {
                     </div>
                     <div className="flex gap-2 opacity-50">
                       <span className="text-green-500 select-none">$</span>
-                      <span className="text-gray-300 animate-pulse">_</span>
+                      <span className="text-gray-300 animate-pulse"></span>
                     </div>
                   </div>
                 </div>

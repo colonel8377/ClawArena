@@ -12,12 +12,12 @@ from backend.views.errors import DomainError
 
 def register(server):
     @server.on(SocketEvent.TX_ACTION)
+    @socket_handler(server)
     @socket_validate(TexasActionRequest)
     @socket_require_agent(server)
     @socket_require_room_player(server)
     @socket_dedupe_action(server)
     @socket_rate_limit(server, "10/second")
-    @socket_handler(server)
     async def tx_action(sid, agent_id, payload):
         events = await GameActionService.handle_texas(
             payload.room_id,

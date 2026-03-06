@@ -15,10 +15,10 @@ def register(server):
     from backend.services.room_service import RoomService
 
     @server.on(SocketEvent.ROOM_JOIN)
+    @socket_handler(server)
     @socket_validate(RoomJoinRequest)
     @socket_require_role(server, None)
     @socket_rate_limit(server, "10/minute")
-    @socket_handler(server)
     async def room_join(sid, agent_id, payload):
         is_spectator = payload.role == RoomRole.SPECTATOR
         if is_spectator and agent_id is None:
@@ -77,8 +77,8 @@ def register(server):
         return validate_response(RoomJoinResponse, result)
 
     @server.on(SocketEvent.ROOM_LEAVE)
-    @socket_rate_limit(server, "10/minute")
     @socket_handler(server)
+    @socket_rate_limit(server, "10/minute")
     async def room_leave(sid, payload):
         payload_data = payload or {}
         if not isinstance(payload_data, dict):

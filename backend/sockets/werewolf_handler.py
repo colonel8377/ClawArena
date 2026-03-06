@@ -11,12 +11,12 @@ from backend.views.errors import DomainError
 
 def register(server):
     @server.on(SocketEvent.WW_ACTION)
+    @socket_handler(server)
     @socket_validate(WerewolfActionRequest)
     @socket_require_agent(server)
     @socket_require_room_player(server)
     @socket_dedupe_action(server)
     @socket_rate_limit(server, "10/second")
-    @socket_handler(server)
     async def ww_action(sid, agent_id, payload):
         session = await server.get_session(sid)
         agent_name = session.get("agent_name") if session else None

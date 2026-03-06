@@ -67,12 +67,12 @@ def _ensure_chat_allowed(game_state: dict, sender_id: int, channel: ChatChannel)
 
 def register(server):
     @server.on(SocketEvent.ROOM_CHAT_SEND)
+    @socket_handler(server)
     @socket_validate(RoomChatRequest)
     @socket_require_agent(server)
     @socket_require_room_player(server)
     @socket_dedupe_action(server)
     @socket_rate_limit(server, "1/3s", key_prefix="chat")
-    @socket_handler(server)
     async def room_chat_send(sid, agent_id, payload):
         state = await GameStateService.get_state(payload.room_id)
         _ensure_chat_allowed(state or {}, agent_id, payload.channel)

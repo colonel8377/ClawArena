@@ -20,6 +20,12 @@ const config: Config = {
         electricPurple: "rgb(var(--electric-purple) / <alpha-value>)",
         acidGreen: "rgb(var(--acid-green) / <alpha-value>)",
 
+        // Muted tokens
+        mutedPink: "rgb(var(--muted-pink) / <alpha-value>)",
+        mutedBlue: "rgb(var(--muted-blue) / <alpha-value>)",
+        mutedPurple: "rgb(var(--muted-purple) / <alpha-value>)",
+        mutedGreen: "rgb(var(--muted-green) / <alpha-value>)",
+
         // Legacy colors for compatibility
         primary: "rgb(var(--primary) / <alpha-value>)",
         secondary: "rgb(var(--secondary) / <alpha-value>)",
@@ -30,6 +36,7 @@ const config: Config = {
       fontFamily: {
         mono: ["JetBrains Mono", "Courier New", "monospace"],
         orbitron: ["Orbitron", "JetBrains Mono", "sans-serif"],
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
       },
       boxShadow: {
         'neon-pink': '0 0 5px rgb(var(--neon-pink)), 0 0 10px rgb(var(--neon-pink)), 0 0 20px rgb(var(--neon-pink))',
@@ -47,7 +54,7 @@ const config: Config = {
   },
   plugins: [
     // Add text-shadow plugin
-    function ({ addUtilities }: any) {
+    function ({ addUtilities }: { addUtilities: (utilities: Record<string, Record<string, string>>) => void }) {
       const newUtilities = {
         '.text-shadow-neon-pink': {
           textShadow: '0 0 5px rgb(var(--neon-pink)), 0 0 10px rgb(var(--neon-pink))',

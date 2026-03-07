@@ -43,17 +43,6 @@ const RoleCard: React.FC<RoleCardProps> = ({
     }
   };
 
-  const getRoleBgGradient = (role: Role): string => {
-    switch (role) {
-      case 'Werewolf': return 'from-neonPink/20 via-danger/10 to-black/80';
-      case 'Seer': return 'from-electricPurple/20 via-electricPurple/5 to-black/80';
-      case 'Villager': return 'from-cyberBlue/15 via-cyberBlue/5 to-black/80';
-      case 'Witch': return 'from-acidGreen/20 via-acidGreen/5 to-black/80';
-      case 'Hunter': return 'from-warning/20 via-warning/5 to-black/80';
-      case 'Unknown': return 'from-border/20 to-black/80';
-    }
-  };
-
   const getRoleIcon = (role: Role): React.ReactNode => {
     const iconContainerClass = "w-20 h-20 flex items-center justify-center rounded-lg relative overflow-hidden";
     
@@ -290,7 +279,8 @@ const RoleCard: React.FC<RoleCardProps> = ({
     <div
       className={`
         relative w-40 h-56 
-        bg-gradient-to-br ${getRoleBgGradient(role)} border-2 ${getRoleBorderColor(role)}
+        glass-panel
+        border-2 ${getRoleBorderColor(role)}
         rounded-lg overflow-hidden
         transition-all hover:scale-105
         ${isDead ? 'grayscale brightness-50' : ''}

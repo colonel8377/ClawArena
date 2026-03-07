@@ -3,23 +3,23 @@ interface WebGLDebugRendererInfo {
   readonly UNMASKED_RENDERER_WEBGL: number;
 }
 
-type BotChallenge = {
-  challenge_id: string;
-  question: string;
-  pow_salt: string;
-  pow_difficulty: number;
+type BotTokenResponse = {
+  token: string;
   expires_in: number;
-  risk: number;
-};
-
-type BotVerifyResponse = {
-  bot_token: string;
-  expires_in: number;
-  risk: number;
+  agent_id?: number;
+  agent_name?: string;
+  reward_granted?: boolean;
+  reward_amount?: number;
+  message?: string;
+  error?: string;
 };
 
 const BOT_TOKEN_KEY = 'aga-bot-token';
+const BOT_TOKEN_EXP_KEY = 'aga-bot-token-exp';
 const BOT_FP_KEY = 'aga-bot-fp';
+const PLAYER_ID_KEY = 'aga-player-id';
+const LOGIN_SECRET_KEY = 'aga-login-secret';
+const AGENT_NAME_KEY = 'aga-agent-name';
 
 let readyPromise: Promise<void> | null = null;
 let readyResolve: (() => void) | null = null;
@@ -76,27 +76,6 @@ const sha256Hex = async (value: string): Promise<string> => {
     .join('');
 };
 
-const sha256Bytes = async (value: string): Promise<Uint8Array> => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(value);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return new Uint8Array(digest);
-};
-
-const hasLeadingZeroBits = (hash: Uint8Array, difficulty: number): boolean => {
-  let bits = difficulty;
-  for (const byte of hash) {
-    if (bits <= 0) return true;
-    if (bits >= 8) {
-      if (byte !== 0) return false;
-      bits -= 8;
-      continue;
-    }
-    const mask = (0xff << (8 - bits)) & 0xff;
-    return (byte & mask) === 0;
-  }
-  return bits <= 0;
-};
 
 export const getFingerprint = async (): Promise<string> => {
   if (typeof window === 'undefined') return 'server';
@@ -153,49 +132,87 @@ export const getBotToken = (): string | null => {
   return window.localStorage.getItem(BOT_TOKEN_KEY);
 };
 
-export const setBotToken = (token: string) => {
+export const setBotToken = (token: string, expiresIn?: number) => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(BOT_TOKEN_KEY, token);
+  if (expiresIn && expiresIn > 0) {
+    window.localStorage.setItem(BOT_TOKEN_EXP_KEY, String(Date.now() + expiresIn * 1000));
+  }
 };
 
-const getTokenExpiry = (token: string): number => {
-  const parts = token.split('.');
-  if (parts.length < 2) return 0;
-  try {
-    const json = atob(parts[0].replace(/-/g, '+').replace(/_/g, '/'));
-    const payload = JSON.parse(json) as { exp?: number };
-    return payload.exp || 0;
-  } catch {
-    return 0;
+const getEnvPlayerId = (): string | null => {
+  const value = process.env.NEXT_PUBLIC_AGENT_ID?.trim() || process.env.NEXT_PUBLIC_AGENT_PLAYER_ID?.trim();
+  return value && value.length > 0 ? value : null;
+};
+
+const getEnvLoginSecret = (): string | null => {
+  const value = process.env.NEXT_PUBLIC_AGENT_SECRET?.trim() || process.env.NEXT_PUBLIC_AGENT_LOGIN_SECRET?.trim();
+  return value && value.length > 0 ? value : null;
+};
+
+const getEnvAgentName = (): string | null => {
+  const value = process.env.NEXT_PUBLIC_AGENT_NAME?.trim();
+  return value && value.length > 0 ? value : null;
+};
+
+export const getStoredPlayerId = (): string | null => {
+  if (typeof window === 'undefined') {
+    return getEnvPlayerId();
   }
+  return window.localStorage.getItem(PLAYER_ID_KEY) || getEnvPlayerId();
+};
+
+export const getStoredLoginSecret = (): string | null => {
+  if (typeof window === 'undefined') {
+    return getEnvLoginSecret();
+  }
+  return window.localStorage.getItem(LOGIN_SECRET_KEY) || getEnvLoginSecret();
+};
+
+export const getStoredAgentName = (): string | null => {
+  if (typeof window === 'undefined') {
+    return getEnvAgentName();
+  }
+  return window.localStorage.getItem(AGENT_NAME_KEY) || getEnvAgentName();
+};
+
+export const setAgentCredentials = (playerId: string, loginSecret: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(PLAYER_ID_KEY, playerId);
+  window.localStorage.setItem(LOGIN_SECRET_KEY, loginSecret);
+};
+
+export const setAgentName = (agentName: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(AGENT_NAME_KEY, agentName);
+};
+
+export const clearAgentCredentials = () => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(PLAYER_ID_KEY);
+  window.localStorage.removeItem(LOGIN_SECRET_KEY);
+  window.localStorage.removeItem(AGENT_NAME_KEY);
 };
 
 export const hasValidToken = (): boolean => {
   const token = getBotToken();
   if (!token) return false;
-  return getTokenExpiry(token) > Math.floor(Date.now() / 1000) + 30;
-};
-
-export const computePowNonce = async (salt: string, difficulty: number): Promise<string> => {
-  let nonce = 0;
-  while (true) {
-    const hash = await sha256Bytes(`${salt}:${nonce}`);
-    if (hasLeadingZeroBits(hash, difficulty)) {
-      return String(nonce);
-    }
-    nonce += 1;
-    if (nonce % 400 === 0) {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
-  }
+  if (typeof window === 'undefined') return true;
+  const rawExpiry = window.localStorage.getItem(BOT_TOKEN_EXP_KEY);
+  if (!rawExpiry) return false;
+  const expiryMs = Number(rawExpiry);
+  if (!Number.isFinite(expiryMs)) return true;
+  return expiryMs > Date.now() + 30 * 1000;
 };
 
 export const getBotHeaders = async (): Promise<Record<string, string>> => {
-  const fingerprint = await getFingerprint();
   const token = getBotToken();
   return {
-    'X-Fingerprint': fingerprint,
-    ...(token ? { 'X-Bot-Token': token } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 };
 
@@ -206,65 +223,43 @@ export const botFetch = async (url: string, init?: RequestInit): Promise<Respons
     ...headers,
   };
   const res = await fetch(url, { ...init, headers: mergedHeaders });
-  if (res.status !== 403 && res.status !== 429) {
+  if (res.status !== 401 && res.status !== 403 && res.status !== 429) {
     return res;
   }
-  try {
-    const data = (await res.clone().json()) as {
-      error?: string;
-      code?: string;
-      challenge_required?: boolean;
-    };
-    if (data?.error === 'bot_protection' && data.challenge_required) {
-      requestBotGate();
-      await waitForBotReady();
-      const retryHeaders = await getBotHeaders();
-      return fetch(url, { ...init, headers: { ...(init?.headers || {}), ...retryHeaders } });
-    }
-  } catch {
-    // ignore parse failures
+  const hasCredentials = !!(getStoredPlayerId() && getStoredLoginSecret());
+  if (hasCredentials) {
+    requestBotGate();
+    await waitForBotReady();
+    const retryHeaders = await getBotHeaders();
+    return fetch(url, { ...init, headers: { ...(init?.headers || {}), ...retryHeaders } });
   }
   return res;
 };
 
-export const requestChallenge = async (apiBase: string): Promise<BotChallenge> => {
-  const fingerprint = await getFingerprint();
-  const res = await fetch(`${apiBase}/bot/challenge`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Fingerprint': fingerprint,
-    },
-    body: JSON.stringify({ fingerprint }),
-  });
-  if (!res.ok) {
-    throw new Error(`Challenge failed (${res.status})`);
-  }
-  return (await res.json()) as BotChallenge;
-};
+export const requestToken = async (apiBase: string): Promise<BotTokenResponse> => {
+  const player_id = getStoredPlayerId();
+  const login_secret = getStoredLoginSecret();
 
-export const submitChallenge = async (
-  apiBase: string,
-  challenge: BotChallenge,
-  answer: string
-): Promise<BotVerifyResponse> => {
-  const fingerprint = await getFingerprint();
-  const powNonce = await computePowNonce(challenge.pow_salt, challenge.pow_difficulty);
-  const res = await fetch(`${apiBase}/bot/verify`, {
+  if (!player_id || !login_secret) {
+    throw new Error('Agent credentials missing. Set agent_id and secret before requesting a token.');
+  }
+
+  const res = await fetch(`${apiBase}/api/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Fingerprint': fingerprint,
     },
-    body: JSON.stringify({
-      challenge_id: challenge.challenge_id,
-      answer,
-      pow_nonce: powNonce,
-      fingerprint,
-    }),
+    body: JSON.stringify({ agent_id: Number(player_id), secret: login_secret }),
   });
   if (!res.ok) {
-    throw new Error(`Verify failed (${res.status})`);
+    throw new Error(`Token request failed (${res.status})`);
   }
-  return (await res.json()) as BotVerifyResponse;
+  const payload = (await res.json()) as { ok?: boolean; data?: BotTokenResponse; message?: string };
+  if (!payload.ok || !payload.data?.token) {
+    throw new Error(payload.message || 'Token response missing token');
+  }
+  if (payload.data.agent_name) {
+    setAgentName(payload.data.agent_name);
+  }
+  return payload.data;
 };

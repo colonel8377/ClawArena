@@ -1,0 +1,330 @@
+'use client';
+
+import React from 'react';
+import { SpectatorPlayer } from '@/store/types';
+import PlayingCard from '../poker/PlayingCard'; 
+import { parseCard } from '../poker/utils';
+import { getSeatPosition } from './seatPositions';
+import { motion } from 'framer-motion';
+import type { AnchoredCenter } from '@/hooks/useAnchoredCenter';
+import AgentSummaryHover from '@/components/AgentSummaryHover';
+
+interface PlayerSeatProps {
+  player: SpectatorPlayer;
+  index: number;
+  totalPlayers: number;
+  center: AnchoredCenter;
+  positionOverride?: { x: number; y: number };
+  onPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  avatarOverride?: string;
+  paidTotal?: number;
+  debugLayout?: boolean;
+  layoutNonce?: number;
+  isAgent?: boolean;
+  isDealer?: boolean;
+  isSmallBlind?: boolean;
+  isBigBlind?: boolean;
+  isCurrentTurn?: boolean;
+  isSpeaking?: boolean;
+  isWinner?: boolean;
+  onAvatarAnchor?: (sid: string, rect: DOMRect) => void;
+}
+
+export const SEAT_AVATARS = ['😺', '🐶', '🐵', '🦊', '🐸', '🐼', '🐻', '🐯', '🦁', '🐷', '🐨', '🐧', '🦄', '🐙', '🦉', '🐺', '🦍', '🦧'];
+
+const formatChips = (value?: number) => (Number.isFinite(value) ? Number(value).toLocaleString() : '0');
+
+export default function PlayerSeat({
+  player,
+  index,
+  totalPlayers,
+  center,
+  positionOverride,
+  onPointerDown,
+  avatarOverride,
+  paidTotal,
+  debugLayout = false,
+  layoutNonce = 0,
+  isAgent = true,
+  isDealer = false,
+  isSmallBlind = false,
+  isBigBlind = false,
+  isCurrentTurn = false,
+  isWinner = false,
+  onAvatarAnchor
+}: PlayerSeatProps) {
+  const storageKey = React.useMemo(() => `texas:seatLayout:${totalPlayers}`, [totalPlayers]);
+  const [debugOffset, setDebugOffset] = React.useState({ x: 0, y: 0 });
+  const debugOffsetRef = React.useRef({ x: 0, y: 0 });
+  const dragRef = React.useRef<{ startX: number; startY: number; offsetX: number; offsetY: number } | null>(null);
+  const avatarRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!debugLayout || typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const saved = parsed?.[index];
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+        setDebugOffset(saved);
+        debugOffsetRef.current = saved;
+      } else {
+        setDebugOffset({ x: 0, y: 0 });
+        debugOffsetRef.current = { x: 0, y: 0 };
+      }
+    } catch {
+      setDebugOffset({ x: 0, y: 0 });
+      debugOffsetRef.current = { x: 0, y: 0 };
+    }
+  }, [debugLayout, storageKey, index, layoutNonce]);
+
+  React.useEffect(() => {
+    if (!debugLayout) return;
+    const onMove = (event: PointerEvent) => {
+      if (!dragRef.current) return;
+      const dx = event.clientX - dragRef.current.startX;
+      const dy = event.clientY - dragRef.current.startY;
+      const next = { x: dragRef.current.offsetX + dx, y: dragRef.current.offsetY + dy };
+      debugOffsetRef.current = next;
+      setDebugOffset(next);
+    };
+    const onUp = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      try {
+        const raw = window.localStorage.getItem(storageKey);
+        const parsed = raw ? JSON.parse(raw) : {};
+        parsed[index] = debugOffsetRef.current;
+        window.localStorage.setItem(storageKey, JSON.stringify(parsed));
+        console.log('[Texas SeatLayout] saved', { index, offset: debugOffsetRef.current, totalPlayers });
+      } catch {
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [debugLayout, index, storageKey, totalPlayers]);
+
+  const offset = positionOverride ?? getSeatPosition(index, totalPlayers, center.stageSize);
+  const baseX = Number.isFinite(center.pixel.x) ? center.pixel.x : center.stageSize.width / 2;
+  const baseY = Number.isFinite(center.pixel.y) ? center.pixel.y : center.stageSize.height / 2;
+  const bottomNudge = offset.y > 0 ? Math.min(38, offset.y * 0.15) : 0;
+  const seatScale = totalPlayers >= 9 ? 0.88 : totalPlayers >= 7 ? 0.94 : 1;
+  const left = `${baseX + offset.x + (debugLayout ? debugOffset.x : 0)}px`;
+  const top = `${baseY + offset.y - bottomNudge - 150 + (debugLayout ? debugOffset.y : 0)}px`;
+  const isFolded = player.status === 'folded';
+  const isActive = player.status === 'active' || player.status === 'allin';
+  const isTrulyActiveTurn = isCurrentTurn && player.status === 'active';
+  const showCards = player.status !== 'out' && player.status !== 'sitout' && player.status !== 'busted' && player.status !== 'folded';
+  const cardList = showCards
+    ? ((player.hole_cards && player.hole_cards.length > 0)
+      ? player.hole_cards
+      : (player.cards && player.cards.length > 0 ? player.cards : ['??', '??']))
+    : [];
+  const avatar = avatarOverride ?? SEAT_AVATARS[index % SEAT_AVATARS.length];
+  const nickname = player.nickname || `Player ${index + 1}`;
+  const nameLabel = nickname.length > 10 ? `${nickname.slice(0, 10)}…` : nickname;
+  const totalPaid = Number.isFinite(paidTotal) ? Number(paidTotal) : 0;
+  const statusLabel = player.status === 'allin'
+    ? 'ALL-IN'
+    : player.status === 'folded'
+      ? 'FOLD'
+      : player.status === 'busted'
+        ? 'BUSTED'
+        : player.status === 'sitout'
+          ? 'SITOUT'
+          : player.status === 'out'
+            ? 'OUT'
+            : undefined;
+  
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (debugLayout) {
+      event.preventDefault();
+      dragRef.current = {
+        startX: event.clientX,
+        startY: event.clientY,
+        offsetX: debugOffsetRef.current.x,
+        offsetY: debugOffsetRef.current.y
+      };
+    }
+    onPointerDown?.(event);
+  };
+
+  React.useLayoutEffect(() => {
+    if (!onAvatarAnchor || !avatarRef.current) return;
+    const node = avatarRef.current;
+    const update = () => {
+      const rect = node.getBoundingClientRect();
+      onAvatarAnchor(player.sid, rect);
+    };
+    update();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(update);
+      observer.observe(node);
+      window.addEventListener('resize', update);
+      return () => {
+        observer.disconnect();
+        window.removeEventListener('resize', update);
+      };
+    }
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('resize', update);
+    };
+  }, [onAvatarAnchor, player.sid, left, top, seatScale, debugOffset.x, debugOffset.y, layoutNonce]);
+
+  return (
+    <div 
+      className="absolute w-44 flex flex-col items-center gap-2"
+      style={{ left, top, transform: `translate(-50%, -50%) scale(${seatScale})`, cursor: debugLayout || onPointerDown ? 'grab' : 'default' }}
+      onPointerDown={handlePointerDown}
+      onDoubleClick={() => {
+        if (!debugLayout || typeof window === 'undefined') return;
+        debugOffsetRef.current = { x: 0, y: 0 };
+        setDebugOffset({ x: 0, y: 0 });
+        try {
+          const raw = window.localStorage.getItem(storageKey);
+          const parsed = raw ? JSON.parse(raw) : {};
+          delete parsed[index];
+          window.localStorage.setItem(storageKey, JSON.stringify(parsed));
+          console.log('[Texas SeatLayout] reset', { index, totalPlayers });
+        } catch {
+        }
+      }}
+    >
+      {debugLayout && (
+        <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] px-2 py-0.5 rounded-full bg-black/70 text-emerald-200 border border-emerald-400/40">
+          {Math.round(debugOffset.x)},{Math.round(debugOffset.y)}
+        </div>
+      )}
+      {/* Cards */}
+      <div className="flex gap-1 z-0 items-center justify-center">
+        {cardList.map((card, i) => {
+          const parsed = parseCard(card);
+          if (!parsed && card && card !== '??' && process.env.NODE_ENV === 'development') {
+            console.warn('[Texas] card parse failed', { card, player: player.nickname, sid: player.sid });
+          }
+          return (
+            <motion.div 
+              key={i}
+              initial={{ y: 10, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: i * 0.08 }}
+              className={isFolded ? 'opacity-50 grayscale' : ''}
+            >
+              {parsed ? (
+                 <PlayingCard rank={parsed.rank} suit={parsed.suit} className="w-20 h-28 text-base shadow-2xl" />
+              ) : (
+                 <PlayingCard rank="A" suit="spades" hidden className="w-20 h-28 text-base shadow-2xl" />
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Avatar + Blinds/Dealer */}
+      <div className="relative flex items-center justify-center">
+        {isTrulyActiveTurn && (
+          <div className={`absolute -inset-4 rounded-full blur-xl ${
+            isAgent ? 'bg-emerald-400/22' : 'bg-emerald-300/32'
+          }`} />
+        )}
+        {(isSmallBlind || isBigBlind) && (
+          <div className={`absolute -inset-2 rounded-full blur-lg ${
+            isSmallBlind
+              ? (isAgent ? 'bg-cyan-400/25' : 'bg-amber-300/25')
+              : (isAgent ? 'bg-fuchsia-400/25' : 'bg-orange-300/25')
+          }`} />
+        )}
+        <AgentSummaryHover agentId={player.sid} agentName={player.nickname} isAgent={isAgent}>
+          <div
+            ref={avatarRef}
+            className={`relative w-16 h-16 rounded-full border-2 ${
+            isTrulyActiveTurn
+              ? (isAgent ? 'border-emerald-300 shadow-[0_0_30px_rgba(52,211,153,0.65)]' : 'border-sky-500 shadow-[0_0_25px_rgba(14,165,233,0.55)]')
+              : isSmallBlind
+                ? (isAgent ? 'border-cyan-500/70' : 'border-amber-400/70')
+                : isBigBlind
+                  ? (isAgent ? 'border-fuchsia-500/70' : 'border-orange-400/70')
+                  : isDealer
+                    ? (isAgent ? 'border-emerald-500/70' : 'border-sky-400/70')
+                    : (isActive ? 'border-slate-400/60' : 'border-slate-600/40')
+          } ${isAgent ? 'bg-[#0b0b14]/90' : 'bg-slate-900/90'} ${isWinner ? (isAgent ? 'ring-4 ring-amber-300/80 shadow-[0_0_30px_rgba(251,191,36,0.65)]' : 'ring-4 ring-amber-400/70 shadow-[0_0_22px_rgba(251,191,36,0.4)]') : ''} flex items-center justify-center overflow-hidden z-10 transition-all duration-300`}
+          >
+            <span className="text-2xl">{avatar}</span>
+          </div>
+        </AgentSummaryHover>
+        {(isDealer || isSmallBlind || isBigBlind) && (
+          <div className="absolute top -right-6 flex flex-col gap-1 items-end z-30">
+            {isDealer && (
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${
+                isAgent
+                  ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-400/60 shadow-[0_0_14px_rgba(16,185,129,0.5)]'
+                  : 'bg-sky-100 text-sky-700 border border-sky-200'
+              }`}>
+                D
+              </div>
+            )}
+            {isSmallBlind && (
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${isAgent ? 'bg-cyan-500/20 text-cyan-100 border border-cyan-400/60 shadow-[0_0_14px_rgba(34,211,238,0.6)]' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+                SB
+              </div>
+            )}
+            {isBigBlind && (
+              <div className={`px-2.5 py-0.5 rounded-full text-sm font-bold ${isAgent ? 'bg-fuchsia-500/20 text-fuchsia-100 border border-fuchsia-400/60 shadow-[0_0_14px_rgba(217,70,239,0.6)]' : 'bg-orange-100 text-orange-700 border border-orange-200'}`}>
+                BB
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className={`text-[10px] uppercase tracking-[0.24em] ${
+        isAgent ? 'text-emerald-200/80' : 'text-sky-700/80'
+      }`}>
+        {nameLabel}
+      </div>
+
+      {(statusLabel || isTrulyActiveTurn) && (
+        <div className={`-mt-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest shadow-lg border ${
+          statusLabel
+            ? (player.status === 'busted'
+              ? (isAgent ? 'bg-rose-500/20 text-rose-100 border-rose-400/40' : 'bg-rose-100 text-rose-700 border-rose-200')
+              : player.status === 'sitout'
+                ? (isAgent ? 'bg-slate-500/20 text-slate-100 border-slate-400/40' : 'bg-slate-100 text-slate-700 border-slate-200')
+                : (isAgent ? 'bg-amber-500/20 text-amber-100 border-amber-400/40' : 'bg-amber-100 text-amber-700 border-amber-200'))
+            : (isAgent ? 'bg-emerald-500/20 text-emerald-100 border-emerald-400/40' : 'bg-sky-100 text-sky-700 border-sky-200')
+        }`}>
+          {statusLabel || 'TURN'}
+        </div>
+      )}
+
+      {/* Info Box */}
+      <div className={`w-full rounded-3xl border px-10 py-1 text-center backdrop-blur-md ${
+        isAgent ? 'bg-black/70 border-emerald-500/20' : 'bg-white/90 border-sky-200 shadow-sm'
+      }`}>
+        <div className="mt-1 flex items-center justify-center gap-3 text-[12px] font-mono flex-nowrap whitespace-nowrap">
+          <div className={`flex items-center gap-1 whitespace-nowrap ${isAgent ? 'text-emerald-300' : 'text-sky-600'}`}>
+            <span>LEFT</span>
+            <span>🪙{formatChips(player.chips)}</span>
+          </div>
+          <div className={`flex items-center gap-1 whitespace-nowrap ${isAgent ? 'text-emerald-200' : 'text-blue-700'}`}>
+            <span>IN</span>
+            <span>🪙{formatChips(totalPaid)}</span>
+          </div>
+        </div>
+      </div>
+      {player.status === 'busted' && (
+        <div className={`text-[10px] uppercase tracking-[0.3em] ${
+          isAgent ? 'text-rose-200/80' : 'text-rose-600/80'
+        }`}>
+          Spectate / Exit
+        </div>
+      )}
+
+    </div>
+  );
+}

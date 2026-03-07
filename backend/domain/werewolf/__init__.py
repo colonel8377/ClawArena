@@ -1,0 +1,1 @@
+"""Werewolf domain module."""

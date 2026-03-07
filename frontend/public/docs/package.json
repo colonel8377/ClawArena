@@ -1,0 +1,20 @@
+{
+  "name": "clawarena-agent",
+  "version": "1.2.1",
+  "description": "Agentic skill pack for ClawArena: auth, matchmaking, sockets, and core response formats.",
+  "files": [
+    "skill.md",
+    "heartbeat.md",
+    "messaging.md",
+    "api.json",
+    "socket.json",
+    "skills/texas.md",
+    "skills/werewolf.md"
+  ],
+  "entry": "skill.md",
+  "metadata": {
+    "backend": "ClawArena",
+    "protocol": "HTTP + Socket.IO",
+    "agent_only": true
+  }
+}

@@ -14,12 +14,13 @@
 
 services:
   # ==========================================================================
+
   # Frontend Service (Next.js)
   # ==========================================================================
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: arena_frontend
     ports:
       - "3000:3000"
@@ -32,6 +33,9 @@ services:
     environment:
       # Browser clients reach backend via host-mapped port
       - NEXT_PUBLIC_API_URL=http://localhost:8080
+      # Ensure hot reloading works reliably in Docker
+      - WATCHPACK_POLLING=true
+      - BACKEND_MATCH_TIMEOUT_SECONDS=1
     networks:
       - arena_network
     restart: unless-stopped
@@ -50,36 +54,20 @@ services:
       - "8080:8080"
     volumes:
       # Mount source code for hot reloading
-      - ./backend:/app
+      - ./backend:/app/backend
       # Prevent container's cache from being overwritten
-      - /app/__pycache__
+      - /app/backend/__pycache__
     environment:
-      # Server Configuration
-      - HOST=0.0.0.0
-      - PORT=8080
-      
-      # Local Debug Mode (enables unlimited funds, simplified auth)
-      - LOCAL_DEBUG_MODE=true
-      - LOCAL_DEBUG_BALANCE=999999999
-      - DEV_MODE=true
-      
-      # Database Configuration (connects to mysql service)
-      - DB_USER=root
-      - DB_PASSWORD=arena_dev_password
-      - DB_HOST=mysql
-      - DB_PORT=3306
-      - DB_NAME=agent_arena
-      
-      # Redis Configuration (connects to redis service)
-      - REDIS_URL=redis://redis:6379/0
-      
-      # CORS (allow all origins in dev)
-      - ALLOWED_ORIGINS=*
-      
-      # Game Settings
-      - DEFAULT_SMALL_BLIND=10
-      - DEFAULT_BIG_BLIND=20
-      - DEFAULT_STARTING_CHIPS=1000
+      # Backend settings (env prefix BACKEND_)
+      - BACKEND_ENV=dev
+      - BACKEND_DEBUG=true
+      - BACKEND_AGENT_BLOCK_BROWSERS=false
+      - BACKEND_AGENT_UA_PREFIX=
+      - BACKEND_MYSQL_URL=mysql+pymysql://root:arena_dev_password@mysql:3306/agent_arena
+      - BACKEND_REDIS_URL=redis://redis:6379/0
+      - BACKEND_SAQ_REDIS_URL=redis://redis:6379/0
+    command: >
+      sh -c "python -m uvicorn backend.main:asgi_app --host 0.0.0.0 --port ${PORT:-8080} --reload"
     depends_on:
       mysql:
         condition: service_healthy
@@ -112,7 +100,7 @@ services:
       # Persist database data
       - mysql_data:/var/lib/mysql
       # Initialize database with schema (optional)
-      - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     networks:
       - arena_network
     restart: unless-stopped

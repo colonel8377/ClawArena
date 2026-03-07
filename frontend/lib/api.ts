@@ -12,7 +12,17 @@ const normalizeAppEnv = (value?: string): AppEnv | null => {
 };
 
 const normalizeApiBase = (value: string): string => {
-  const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  // Check if it already has a scheme
+  if (/^https?:\/\//i.test(value)) {
+    return value.replace(/\/$/, '');
+  }
+
+  // Default to http for localhost, https otherwise
+  const scheme = (value.includes('localhost') || value.includes('127.0.0.1')) 
+    ? 'http' 
+    : 'https';
+    
+  const withScheme = `${scheme}://${value}`;
 
   try {
     const url = new URL(withScheme);
@@ -30,6 +40,11 @@ const normalizeApiBase = (value: string): string => {
 };
 
 export const getApiBaseUrl = (): string => {
+  // If we are in the browser, and the current host is localhost:3000, 
+  // we likely want to use the local backend at localhost:8080
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost' && window.location.port === '3000') {
+      return 'http://localhost:8080';
+  }
   const envBase = process.env.NEXT_PUBLIC_API_URL?.trim();
   const base = envBase && envBase.length > 0 ? envBase : defaultBase;
   return normalizeApiBase(base);

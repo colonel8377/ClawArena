@@ -38,6 +38,7 @@ jobs:
       deploy_env: ${{ steps.map.outputs.deploy_env }}
       railway_env: ${{ steps.map.outputs.railway_env }}
       api_url: ${{ steps.map.outputs.api_url }}
+      frontend_url: ${{ steps.map.outputs.frontend_url }}
       app_env: ${{ steps.map.outputs.app_env }}
       vercel_prod: ${{ steps.map.outputs.vercel_prod }}
       vercel_org_id: ${{ steps.map.outputs.vercel_org_id }}
@@ -52,6 +53,7 @@ jobs:
             echo "deploy_env=prod" >> "$GITHUB_OUTPUT"
             echo "railway_env=production" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=clawarena.io" >> "$GITHUB_OUTPUT"
             echo "app_env=prod" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=true" >> "$GITHUB_OUTPUT"
             echo "vercel_org_id=${{ secrets.VERCEL_ORG_ID_PROD }}" >> "$GITHUB_OUTPUT"
@@ -60,6 +62,7 @@ jobs:
             echo "deploy_env=pre" >> "$GITHUB_OUTPUT"
             echo "railway_env=preview" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api-pre.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=pre.clawarena.io" >> "$GITHUB_OUTPUT"
             echo "app_env=pre" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=false" >> "$GITHUB_OUTPUT"
             echo "vercel_org_id=${{ secrets.VERCEL_ORG_ID_PRE }}" >> "$GITHUB_OUTPUT"
@@ -68,6 +71,7 @@ jobs:
             echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
             echo "railway_env=development" >> "$GITHUB_OUTPUT"
             echo "api_url=https://api-dev.clawarena.io" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=dev.clawarena.io" >> "$GITHUB_OUTPUT"
             echo "app_env=dev" >> "$GITHUB_OUTPUT"
             echo "vercel_prod=false" >> "$GITHUB_OUTPUT"
             echo "vercel_org_id=${{ secrets.VERCEL_ORG_ID_DEV }}" >> "$GITHUB_OUTPUT"
@@ -83,6 +87,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ needs.env-mapping.outputs.vercel_project_id }}
       VERCEL_ORG_ID: ${{ needs.env-mapping.outputs.vercel_org_id }}
       NEXT_PUBLIC_API_URL: ${{ needs.env-mapping.outputs.api_url }}
+      NEXT_PUBLIC_FRONTEND_URL: ${{ needs.env-mapping.outputs.frontend_url }}
       NEXT_PUBLIC_APP_ENV: ${{ needs.env-mapping.outputs.app_env }}
     steps:
       - uses: actions/checkout@v4
@@ -111,9 +116,41 @@ jobs:
       - name: Build Frontend (inject NEXT_PUBLIC_API_URL + NEXT_PUBLIC_APP_ENV)
         working-directory: frontend
         run: |
+          # Remove .vercel cache to force fresh build
+          rm -rf .vercel/cache
+
+          # Verify files are correct BEFORE build
+          echo "=========================================="
+          echo "Verifying files before build:"
+          head -6 public/docs/skill.md
+          echo "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL"
+          echo "NEXT_PUBLIC_FRONTEND_URL=$NEXT_PUBLIC_FRONTEND_URL"
+          echo "NEXT_PUBLIC_APP_ENV=$NEXT_PUBLIC_APP_ENV"
+          echo "=========================================="
+
           NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+          NEXT_PUBLIC_FRONTEND_URL="$NEXT_PUBLIC_FRONTEND_URL" \
           NEXT_PUBLIC_APP_ENV="$NEXT_PUBLIC_APP_ENV" \
           vercel build --token="$VERCEL_TOKEN"
+
+          # Verify build output structure
+          echo "=========================================="
+          echo "Build output structure:"
+          ls -la .vercel/output/ || echo "No output directory"
+          ls -la .vercel/output/static/ || echo "No static directory"
+          echo "=========================================="
+
+          # Verify files in build output (Vercel already copies public to static)
+          echo "=========================================="
+          echo "Verifying files in .vercel/output/static:"
+          if [ -f ".vercel/output/static/docs/skill.md" ]; then
+            echo "✅ File found! Content:"
+            head -6 .vercel/output/static/docs/skill.md
+          else
+            echo "❌ File not found in .vercel/output/static/docs/"
+            ls -la .vercel/output/static/ || echo "No static output"
+          fi
+          echo "=========================================="
 
       - name: Deploy Frontend (prod)
         if: needs.env-mapping.outputs.vercel_prod == 'true'

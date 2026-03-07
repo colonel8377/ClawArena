@@ -1,18 +1,22 @@
 import { io, Socket } from 'socket.io-client';
 import getApiBaseUrl from './api';
-import { getBotToken, getStoredFingerprint } from './antiBot';
+import { getBotToken, getStoredAgentName, hasValidToken } from './antiBot';
 
 let socketInstance: Socket | null = null;
 
-const buildSocketAuth = (botToken?: string, fingerprint?: string) => {
-  const resolvedToken = botToken ?? getBotToken();
-  const spectatorMode = !resolvedToken;
-  return {
-    botToken: resolvedToken,
-    fingerprint: fingerprint ?? getStoredFingerprint(),
-    spectator: spectatorMode,
-    read_only: spectatorMode,
-  };
+const buildSocketAuth = (
+  token?: string,
+  role?: number,
+  agentName?: string,
+  useStoredToken: boolean = true
+) => {
+  const resolvedToken = token ?? (useStoredToken ? getBotToken() : null);
+  const resolvedAgentName = agentName ?? getStoredAgentName();
+  const auth: Record<string, unknown> = {};
+  if (resolvedToken) auth.token = resolvedToken;
+  if (typeof role === 'number') auth.role = role;
+  if (resolvedAgentName) auth.agent_name = resolvedAgentName;
+  return auth;
 };
 
 export const getSocket = (): Socket | null => {
@@ -21,8 +25,9 @@ export const getSocket = (): Socket | null => {
 
   const API_URL = getApiBaseUrl();
 
+  const resolvedToken = getBotToken();
   socketInstance = io(API_URL, {
-    autoConnect: true,
+    autoConnect: hasValidToken(),
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 8000,
@@ -30,10 +35,10 @@ export const getSocket = (): Socket | null => {
     reconnectionAttempts: Infinity,
     timeout: 15000,
     transports: ['websocket', 'polling'],
-    auth: buildSocketAuth(),
+    auth: buildSocketAuth(resolvedToken || undefined),
   });
 
-  // Ensure reconnect attempts always carry the latest token/fingerprint.
+  // Ensure reconnect attempts always carry the latest token.
   socketInstance.io.on('reconnect_attempt', () => {
     if (!socketInstance) return;
     socketInstance.auth = buildSocketAuth();
@@ -47,25 +52,46 @@ export const socketEvents = {
   CONNECT: 'connect',
   DISCONNECT: 'disconnect',
   CONNECT_ERROR: 'connect_error',
-  
-  // Game events
-  GAME_STATE: 'game_state',
-  PLAYER_JOIN: 'player_join',
-  PLAYER_LEAVE: 'player_leave',
-  GAME_START: 'game_start',
-  GAME_END: 'game_end',
-  
-  // Texas Hold'em events
-  TEXAS_ACTION: 'texas_action',
-  TEXAS_DEAL: 'texas_deal',
-  TEXAS_BET: 'texas_bet',
-  TEXAS_FOLD: 'texas_fold',
-  
-  // Werewolf events
-  WEREWOLF_VOTE: 'werewolf_vote',
-  WEREWOLF_NIGHT_ACTION: 'werewolf_night_action',
-  WEREWOLF_DAY_START: 'werewolf_day_start',
-  WEREWOLF_NIGHT_START: 'werewolf_night_start',
+
+  SYSTEM_CONNECTED: 'system:connected',
+  SYSTEM_ERROR: 'system:error',
+
+  QUEUE_JOIN: 'queue:join',
+  QUEUE_LEAVE: 'queue:leave',
+
+  ROOM_JOIN: 'room:join',
+  ROOM_LEAVE: 'room:leave',
+  ROOM_STATE: 'room:state',
+  ROOM_UPDATE: 'room:update',
+  ROOM_CHAT_SEND: 'room:chat:send',
+  ROOM_CHAT: 'room:chat',
+
+  WW_ACTION: 'ww:action',
+  WW_CHAT_WOLF: 'ww:chat:wolf',
+  WW_CHAT_DAY: 'ww:chat:day',
+  WW_DAY_VOTE: 'ww:day:vote',
+  WW_NIGHT_ACTION: 'ww:night:action',
+  WW_PHASE_CHANGE: 'ww:phase:change',
+
+  TX_ACTION: 'tx:action',
+  TX_PHASE_CHANGE: 'tx:phase:change',
+  TX_SETTLEMENT: 'tx:settlement',
+};
+
+type SocketMode = 'player' | 'spectator';
+
+export const ensureSocketMode = (mode: SocketMode) => {
+  const socket = getSocket();
+  if (!socket) return null;
+  if (mode === 'spectator') {
+    socket.auth = buildSocketAuth(undefined, 2, undefined, false);
+  } else {
+    socket.auth = buildSocketAuth(undefined, 1, undefined, true);
+  }
+  if (socket.disconnected) {
+    socket.connect();
+  }
+  return socket;
 };
 
 // Add some debug logging in development
@@ -89,10 +115,15 @@ if (process.env.NODE_ENV === 'development') {
 
 export default getSocket;
 
-export const refreshSocketAuth = (botToken?: string, fingerprint?: string) => {
+export const refreshSocketAuth = (
+  token?: string,
+  role?: number,
+  agentName?: string,
+  useStoredToken: boolean = true
+) => {
   const socket = getSocket();
   if (!socket) return;
-  socket.auth = buildSocketAuth(botToken, fingerprint);
+  socket.auth = buildSocketAuth(token, role, agentName, useStoredToken);
   if (socket.disconnected) {
     socket.connect();
   }

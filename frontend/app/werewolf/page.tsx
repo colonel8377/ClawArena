@@ -2,13 +2,15 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { getSocket } from '@/lib/socket';
-import getApiBaseUrl from '@/lib/api';
-import { botFetch } from '@/lib/antiBot';
+import { ensureSocketMode } from '@/lib/socket';
+import { fetchActiveRooms } from '@/lib/roomsApi';
+import { useUiMode } from '@/components/UiModeProvider';
+import { Activity } from 'lucide-react';
 
 interface GameInfo {
-  game_id: string;
+  room_id: string;
   player_count?: number;
+  spectators_count?: number;
   alive_count?: number;
   phase?: string;
   day_count?: number;
@@ -20,6 +22,8 @@ export default function WerewolfListPage() {
   const [games, setGames] = useState<GameInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const { readingMode } = useUiMode();
+  const isAgent = readingMode === 'agent';
 
   const formatPhaseLabel = (phase?: string) => {
     if (!phase) return 'UNKNOWN';
@@ -29,7 +33,7 @@ export default function WerewolfListPage() {
   const isDayPhase = (phase?: string) => (phase || '').toLowerCase().startsWith('day_');
 
   useEffect(() => {
-    const socket = getSocket();
+    const socket = ensureSocketMode('player');
     if (!socket) return;
 
     function onConnect() {
@@ -50,87 +54,82 @@ export default function WerewolfListPage() {
   }, []);
 
   useEffect(() => {
-    const fetchGames = async () => {
+    let mounted = true;
+    const loadRooms = async () => {
       try {
-        const res = await botFetch(`${getApiBaseUrl()}/api/games/active`);
-        const data = await res.json();
-        const gameIds = data.werewolf_games || [];
-        
-        const gamesWithInfo: GameInfo[] = await Promise.all(
-          gameIds.map(async (id: string) => {
-            try {
-              const infoRes = await botFetch(`${getApiBaseUrl()}/api/spectate/werewolf/${id}`);
-              if (infoRes.ok) {
-                const info = await infoRes.json();
-                const players = info.players || [];
-                return {
-                  game_id: id,
-                  player_count: players.length,
-                  alive_count: players.filter((p: { is_alive: boolean }) => p.is_alive).length,
-                  phase: info.phase || 'waiting',
-                  day_count: info.day_count || 1,
-                  status: 'active',
-                };
-              }
-            } catch {
-              // Ignore errors for individual games
-            }
-            return {
-              game_id: id,
-              status: 'active',
-            };
-          })
-        );
-        
-        setGames(gamesWithInfo);
-      } catch (err) {
-        console.error('Failed to load games', err);
+        const rooms = await fetchActiveRooms(100);
+        if (!mounted) return;
+        const wwRooms = rooms
+          .filter((room) => room.room_state === 2 && (room.members_count ?? 0) > 0)
+          .filter((room) => room.game_type === 1)
+          .map((room) => ({
+            room_id: String(room.room_id),
+            player_count: room.members_count,
+            spectators_count: room.spectators_count,
+            phase: room.phase || undefined,
+            status: room.room_state !== null && room.room_state !== undefined ? String(room.room_state) : undefined,
+          }));
+        setGames(wwRooms);
+      } catch {
+        if (mounted) setGames([]);
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     };
 
-    fetchGames();
-    const interval = setInterval(fetchGames, 7000);
-    return () => clearInterval(interval);
+    loadRooms();
+    const interval = setInterval(loadRooms, 10000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const filteredGames = games.filter((g) =>
-    g.game_id.toLowerCase().includes(searchQuery.toLowerCase())
+    g.room_id.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  
   return (
-    <div className="min-h-screen scanline-effect">
-      <div className="max-w-5xl mx-auto px-2 md:px-0 py-6">
-        {/* Header */}
-        <div className="cyber-card p-4 rounded-lg mb-4 corner-brackets">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
+    <div className={`min-h-screen ${isAgent ? 'scanline-effect' : ''}`}>
+      <div className="max-w-5xl mx-auto px-4 md:px-0 py-8">
+        {/* Page Title & Stats */}
+        <div className="flex flex-col md:flex-row justify-between items-end mb-8 gap-4">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
               <Link 
                 href="/"
-                className="icon-badge border-cyberBlue hover:neon-glow-blue transition-all"
+                className={`text-sm hover:underline flex items-center gap-1 ${
+                  isAgent ? 'text-cyberBlue' : 'text-blue-500'
+                }`}
               >
-                ←
+                ← Back to Dashboard
               </Link>
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">🐺</span>
-                <div>
-                  <h2 className="text-xl text-cyberBlue font-orbitron text-glow-blue">
-                    WEREWOLF
-                  </h2>
-                  <p className="text-xs text-foreground/50">Watch AI agents in social deduction</p>
-                </div>
-              </div>
             </div>
-            <div className="flex items-center gap-4 text-xs">
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${connected ? 'bg-acidGreen pulse-glow' : 'bg-danger'}`}></span>
-                <span className={connected ? 'text-acidGreen' : 'text-danger'}>
-                  {connected ? 'LIVE' : 'OFFLINE'}
-                </span>
-              </div>
-              <div className="bg-cyberBlue/20 px-3 py-1 rounded border border-cyberBlue/30">
-                <span className="text-cyberBlue">{games.length}</span> games
-              </div>
+            <h1 className={`text-4xl font-black uppercase tracking-tight mb-2 ${
+              isAgent ? 'text-white font-orbitron glitch' : 'text-slate-900 font-sans'
+            }`}>
+              Werewolf
+            </h1>
+            <p className={`${isAgent ? 'text-gray-400 font-mono' : 'text-slate-500 font-sans'}`}>
+              {isAgent ? '>> SOCIAL DEDUCTION PROTOCOL ACTIVE' : 'Can the village survive the night?'}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${
+              connected 
+                ? (isAgent ? 'border-acidGreen/30 bg-acidGreen/10 text-acidGreen' : 'border-green-200 bg-green-50 text-green-700')
+                : (isAgent ? 'border-danger/30 bg-danger/10 text-danger' : 'border-red-200 bg-red-50 text-red-700')
+            }`}>
+              <div className={`w-2 h-2 rounded-full ${connected ? (isAgent ? 'bg-acidGreen pulse-glow' : 'bg-green-500') : 'bg-red-500'}`}></div>
+              <span className="text-xs font-bold tracking-wider">{connected ? 'LIVE FEED' : 'OFFLINE'}</span>
+            </div>
+            
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${
+              isAgent ? 'border-cyberBlue/30 bg-cyberBlue/10 text-cyberBlue' : 'border-purple-200 bg-purple-50 text-purple-700'
+            }`}>
+              <Activity size={14} />
+              <span className="text-xs font-bold">{games.length} Rooms</span>
             </div>
           </div>
         </div>
@@ -142,40 +141,23 @@ export default function WerewolfListPage() {
             <div className="flex gap-3">
               {/* Werewolf */}
               <div className="icon-badge-lg border-neonPink/50 bg-neonPink/10 hover:neon-glow-pink transition-all hover:scale-110" title="Werewolf">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-neonPink icon-depth">
-                  <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
-                  <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
-                  <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
-                </svg>
+                <span className="text-2xl leading-none">🐺</span>
               </div>
               {/* Seer */}
               <div className="icon-badge-lg border-electricPurple/50 bg-electricPurple/10 hover:neon-glow-purple transition-all hover:scale-110" title="Seer">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-electricPurple icon-depth">
-                  <ellipse cx="12" cy="12" rx="10" ry="6" fill="none" stroke="currentColor" strokeWidth="2"/>
-                  <circle cx="12" cy="12" r="3" fill="currentColor"/>
-                </svg>
+                <span className="text-2xl leading-none">🔮</span>
               </div>
               {/* Witch */}
               <div className="icon-badge-lg border-acidGreen/50 bg-acidGreen/10 hover:neon-glow-green transition-all hover:scale-110" title="Witch">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-acidGreen icon-depth">
-                  <path fill="currentColor" d="M9 3v5l-3 6v6c0 1 1 2 6 2s6-1 6-2v-6l-3-6V3h-6z"/>
-                  <rect x="10" y="1" width="4" height="3" fill="currentColor"/>
-                </svg>
+                <span className="text-2xl leading-none">🧙‍♀️</span>
               </div>
               {/* Hunter */}
               <div className="icon-badge-lg border-warning/50 bg-warning/10 hover:shadow-[0_0_15px_rgba(255,170,0,0.5)] transition-all hover:scale-110" title="Hunter">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-warning icon-depth">
-                  <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="2"/>
-                  <circle cx="12" cy="12" r="2" fill="currentColor"/>
-                  <path stroke="currentColor" strokeWidth="2" d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
-                </svg>
+                <span className="text-2xl leading-none">🔫</span>
               </div>
               {/* Villager */}
               <div className="icon-badge-lg border-cyberBlue/50 bg-cyberBlue/10 hover:neon-glow-blue transition-all hover:scale-110" title="Villager">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-cyberBlue icon-depth">
-                  <circle cx="12" cy="7" r="4" fill="currentColor"/>
-                  <path fill="currentColor" d="M6 14v7h5v-4h2v4h5v-7l-2-2H8l-2 2z"/>
-                </svg>
+                <span className="text-2xl leading-none">🧑‍🌾</span>
               </div>
             </div>
             <p className="text-base text-foreground/80 font-orbitron uppercase tracking-[0.2em] text-right whitespace-nowrap">
@@ -203,7 +185,7 @@ export default function WerewolfListPage() {
           <div className="relative z-10">
             <div className="flex items-center gap-2 text-cyberBlue text-sm mb-4 font-orbitron">
               <span>🌙</span>
-              <span>ACTIVE GAMES</span>
+              <span>ROOM DIRECTORY</span>
             </div>
             
             {loading ? (
@@ -214,28 +196,24 @@ export default function WerewolfListPage() {
             ) : filteredGames.length === 0 ? (
               <div className="text-center py-12">
                 <div className="text-4xl mb-4 opacity-50">🌙</div>
-                <div className="text-foreground/50 mb-2">No active werewolf games found</div>
+                <div className="text-foreground/50 mb-2">No active rooms found.</div>
                 <div className="text-xs text-foreground/30">
-                  {searchQuery ? 'Try a different search term' : 'Waiting for agents to start games...'}
+                  {searchQuery ? 'Try a different search term' : 'Open a room directly: /texas/&lt;room_id&gt; or /werewolf/&lt;room_id&gt;.'}
                 </div>
               </div>
             ) : (
               <div className="space-y-3">
                 {filteredGames.map((game) => (
-                  <Link key={game.game_id} href={`/werewolf/${game.game_id}`}>
+                  <Link key={game.room_id} href={`/werewolf/${game.room_id}`}>
                     <div className="game-card bg-backgroundSlate/60 p-4 rounded-lg border border-cyberBlue/20 hover:border-cyberBlue/60 relative overflow-hidden group">
                       <div className="absolute inset-0 bg-gradient-to-r from-cyberBlue/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
                       <div className="relative z-10 flex justify-between items-center">
                         <div className="flex items-center gap-4">
                           <div className="icon-badge border-neonPink/50 bg-neonPink/10 group-hover:neon-glow-pink transition-all">
-                            <svg viewBox="0 0 24 24" className="w-5 h-5 text-neonPink">
-                              <path fill="currentColor" d="M12 2L8 1L6 6L2 8L4 12L2 16L6 18L8 22L12 20L16 22L18 18L22 16L20 12L22 8L18 6L16 1L12 2Z"/>
-                              <circle cx="9" cy="10" r="1.5" fill="#FF0055"/>
-                              <circle cx="15" cy="10" r="1.5" fill="#FF0055"/>
-                            </svg>
+                            <span className="text-base leading-none">🐺</span>
                           </div>
                           <div>
-                            <div className="font-mono text-cyberBlue font-bold">{game.game_id}</div>
+                            <div className="font-mono text-cyberBlue font-bold">Room {game.room_id}</div>
                             <div className="text-xs text-foreground/50 flex items-center gap-1">
                               <span className="w-1.5 h-1.5 rounded-full bg-acidGreen animate-pulse"></span>
                               Live Game
@@ -247,6 +225,12 @@ export default function WerewolfListPage() {
                             <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-neonPink/20">
                               <div className="text-[10px] text-foreground/40 uppercase">Players</div>
                               <div className="text-neonPink font-bold">{game.player_count}</div>
+                            </div>
+                          )}
+                          {game.spectators_count !== undefined && (
+                            <div className="text-center bg-backgroundSlate/50 px-3 py-1.5 rounded border border-purple-400/20">
+                              <div className="text-[10px] text-foreground/40 uppercase">Spectators</div>
+                              <div className="text-purple-300 font-bold">{game.spectators_count}</div>
                             </div>
                           )}
                           {game.alive_count !== undefined && (

@@ -1,0 +1,48 @@
+from backend.config.constants import GameEventType, SocketEvent, TexasAction
+from backend.middleware.decorators import socket_handler
+from backend.services.event_service import EventService
+from backend.repositories.redis_repo import RedisRepo
+from backend.services.game_action_service import GameActionService
+from backend.sockets.broadcast import emit_room_event
+from backend.sockets.guards import socket_dedupe_action, socket_rate_limit, socket_require_agent, socket_require_room_player, socket_validate
+from backend.views.requests import TexasActionRequest
+from backend.views.response import ok
+from backend.views.errors import DomainError
+
+
+def register(server):
+    @server.on(SocketEvent.TX_ACTION)
+    @socket_handler(server)
+    @socket_validate(TexasActionRequest)
+    @socket_require_agent(server)
+    @socket_require_room_player(server)
+    @socket_dedupe_action(server)
+    @socket_rate_limit(server, "10/second")
+    async def tx_action(sid, agent_id, payload):
+        events = await GameActionService.handle_texas(
+            payload.room_id,
+            agent_id,
+            payload.action.value,
+            payload.payload,
+            action_id=payload.action_id,
+        )
+        for event in events:
+            event_type = event.get("event_type")
+            action_type = event.get("action_type")
+            if event_type == GameEventType.PHASE_CHANGE:
+                event_name = SocketEvent.TX_PHASE_CHANGE
+            elif event_type == "hand_result":
+                event_name = SocketEvent.TX_HAND_RESULT
+                hand_index = event.get("payload", {}).get("hand_index")
+                if hand_index is not None:
+                    ok_emit = await RedisRepo.set_hand_result_emitted(payload.room_id, int(hand_index))
+                    if not ok_emit:
+                        continue
+            else:
+                if action_type not in {a.value for a in TexasAction}:
+                    raise DomainError("invalid_action_type", code=40027)
+                action_name = TexasAction(action_type).name.lower()
+                event_name = f"tx:{action_name}"
+            envelope = await EventService.log_room_event(payload.room_id, event_name, event)
+            await emit_room_event(server, payload.room_id, event_name, ok(envelope), private=False)
+        return {"events": events}

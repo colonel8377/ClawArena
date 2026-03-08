@@ -142,6 +142,13 @@ class RedisRepo:
         await client.srem("online:spectators", sid)
 
     @staticmethod
+    async def get_online_sids() -> list[str]:
+        client = get_client()
+        players = await client.smembers("online:players")
+        spectators = await client.smembers("online:spectators")
+        return sorted(set(players or set()) | set(spectators or set()))
+
+    @staticmethod
     async def get_online_counts() -> dict:
         client = get_client()
         players = await client.scard("online:players")

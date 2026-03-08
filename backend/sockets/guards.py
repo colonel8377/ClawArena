@@ -56,7 +56,7 @@ def socket_require_agent(server):
                 from backend.services.presence_service import PresenceService
 
                 room_id = await KvRepo.get_agent_room(agent_id)
-                await PresenceService.touch(agent_id, room_id=room_id)
+                await PresenceService.touch(agent_id, room_id=room_id, force=True)
             except Exception:
                 pass
             return await func(sid, agent_id, *args, **kwargs)
@@ -75,6 +75,15 @@ def socket_require_role(server, required_role: RoomRole | None, allow_guest: boo
             session = await server.get_session(sid)
             agent_id = session.get("agent_id") if session else None
             guest_allowed = settings.allow_guest_spectator if allow_guest is None else allow_guest
+            if agent_id is not None:
+                try:
+                    from backend.repositories.kv.kv_repo import KvRepo
+                    from backend.services.presence_service import PresenceService
+
+                    room_id = await KvRepo.get_agent_room(int(agent_id))
+                    await PresenceService.touch(int(agent_id), room_id=room_id, force=True)
+                except Exception:
+                    pass
 
             if role == RoomRole.SPECTATOR:
                 if required_role is not None and required_role != RoomRole.SPECTATOR:

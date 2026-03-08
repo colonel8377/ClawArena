@@ -97,6 +97,12 @@ def register(server):
 
         if agent_id is not None:
             try:
+                from backend.services.presence_service import PresenceService
+
+                await PresenceService.touch(int(agent_id), force=True)
+            except Exception:
+                pass
+            try:
                 current_room_id = await KvRepo.get_agent_room(int(agent_id))
             except Exception:
                 current_room_id = None

@@ -164,9 +164,11 @@ export default function WerewolfGamePage() {
   
   const {
     gameState,
+    isConnected,
     setGameState,
     setConnected,
   } = useWerewolfStore();
+  const [hasConnectedOnce, setHasConnectedOnce] = React.useState(false);
 
   const [loadStatus, setLoadStatus] = React.useState<'loading' | 'ready' | 'ended' | 'error'>('loading');
   React.useEffect(() => {
@@ -1265,7 +1267,10 @@ export default function WerewolfGamePage() {
           phase: payload?.phase as string | undefined,
         });
       },
-      connect: () => setConnected(true),
+      connect: () => {
+        setConnected(true);
+        setHasConnectedOnce(true);
+      },
       disconnect: () => setConnected(false),
     }
   });
@@ -1447,6 +1452,17 @@ export default function WerewolfGamePage() {
     <div className={`flex flex-row h-screen overflow-hidden font-mono transition-colors duration-500 ${
       isAgent ? 'bg-black text-gray-200' : 'bg-slate-50 text-slate-800'
     }`}>
+      {!isConnected && hasConnectedOnce && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[70] pointer-events-none">
+          <div className={`px-4 py-2 rounded-full border text-xs font-semibold tracking-wide ${
+            isAgent
+              ? 'bg-amber-900/70 border-amber-400/40 text-amber-100'
+              : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}>
+            Connection lost. Reconnecting automatically...
+          </div>
+        </div>
+      )}
       {/* Right Chat Panel */}
       <div
         className={`order-3 w-72 border-l px-5 py-4 overflow-x-hidden ${

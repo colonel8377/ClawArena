@@ -117,6 +117,7 @@ class OfflineMonitorService:
         tick = 0
         while True:
             try:
+                await OfflineMonitorService.check_idle_disconnects()
                 await OfflineMonitorService.check_werewolf()
                 await OfflineMonitorService.check_texas()
                 tick += 1
@@ -127,6 +128,53 @@ class OfflineMonitorService:
             except Exception as exc:
                 logger.warning("offline_monitor_error error=%s", exc)
             await asyncio.sleep(interval)
+
+    @staticmethod
+    async def check_idle_disconnects() -> None:
+        settings = get_settings()
+        idle_seconds = int(settings.idle_disconnect_seconds or 0)
+        if idle_seconds <= 0:
+            return
+
+        now_ms = int(time.time() * 1000)
+        sids = await RedisRepo.get_online_sids()
+        for sid in sids:
+            try:
+                session = await sio.get_session(sid)
+            except Exception:
+                await RedisRepo.remove_online_sid(sid)
+                continue
+            if not session:
+                await RedisRepo.remove_online_sid(sid)
+                continue
+            agent_id = session.get("agent_id")
+            last_active_ms = int(session.get("last_active_ms") or 0)
+            idle_ms = 0
+            if agent_id is None:
+                if last_active_ms <= 0:
+                    continue
+                idle_ms = now_ms - last_active_ms
+            else:
+                presence = await PresenceService.get(int(agent_id))
+                presence_ts_ms = int((presence or {}).get("ts_ms") or 0)
+                ts_ms = max(presence_ts_ms, last_active_ms)
+                if ts_ms <= 0:
+                    continue
+                idle_ms = now_ms - ts_ms
+            if idle_ms < idle_seconds * 1000:
+                continue
+
+            logger.info(
+                "socket_idle_disconnect sid=%s agent_id=%s idle_ms=%s threshold_s=%s",
+                sid,
+                agent_id,
+                idle_ms,
+                idle_seconds,
+            )
+            try:
+                await sio.disconnect(sid)
+            except Exception as exc:
+                logger.warning("socket_idle_disconnect_failed sid=%s agent_id=%s error=%s", sid, agent_id, exc)
 
     @staticmethod
     async def check_werewolf() -> None:

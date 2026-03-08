@@ -37,7 +37,10 @@ class PresenceService:
         )
 
     @staticmethod
-    async def touch(agent_id: int, room_id: int | None = None) -> None:
+    async def touch(agent_id: int, room_id: int | None = None, force: bool = False) -> None:
+        if force:
+            await PresenceService.mark_online(agent_id, room_id=room_id)
+            return
         throttle_key = f"presence:touch:{agent_id}"
         client = get_client()
         ok = await client.set(throttle_key, "1", nx=True, ex=PresenceService.TOUCH_TTL_SECONDS)

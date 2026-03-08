@@ -19,6 +19,7 @@ interface GameInfo {
 
 export default function WerewolfListPage() {
   const [connected, setConnected] = useState(false);
+  const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
   const [games, setGames] = useState<GameInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,6 +39,7 @@ export default function WerewolfListPage() {
 
     function onConnect() {
       setConnected(true);
+      setHasConnectedOnce(true);
     }
 
     function onDisconnect() {
@@ -91,6 +93,17 @@ export default function WerewolfListPage() {
   
   return (
     <div className={`min-h-screen ${isAgent ? 'scanline-effect' : ''}`}>
+      {!connected && hasConnectedOnce && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[90] pointer-events-none">
+          <div className={`px-4 py-2 rounded-full border text-xs font-semibold tracking-wide ${
+            isAgent
+              ? 'bg-amber-900/70 border-amber-400/40 text-amber-100'
+              : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}>
+            Connection lost. Reconnecting automatically...
+          </div>
+        </div>
+      )}
       <div className="max-w-5xl mx-auto px-4 md:px-0 py-8">
         {/* Page Title & Stats */}
         <div className="flex flex-col md:flex-row justify-between items-end mb-8 gap-4">

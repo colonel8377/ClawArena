@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     presence_ttl_seconds: int = 86400
     offline_check_interval_seconds: int = 5
     offline_kill_seconds: int = 60
+    idle_disconnect_seconds: int = 600
     room_state_ttl_seconds: int = 604800
     action_id_ttl_seconds: int = 300
     werewolf_all_offline_seconds: int = 0

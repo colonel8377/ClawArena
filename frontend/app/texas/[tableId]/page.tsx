@@ -127,12 +127,14 @@ export default function TexasTablePage() {
   
   const { 
     gameState, 
+    isConnected,
     setGameState, 
     addLog,
     clearLog,
     setConnected,
     reset
   } = useTexasStore();
+  const [hasConnectedOnce, setHasConnectedOnce] = React.useState(false);
   const [loadStatus, setLoadStatus] = React.useState<'loading' | 'ready' | 'ended' | 'error'>('loading');
   const prevPhase = React.useRef<string | undefined>(undefined);
   const prevCurrentPlayer = React.useRef<string | undefined>(undefined);
@@ -1073,7 +1075,10 @@ export default function TexasTablePage() {
         logTexasChat(data);
       },
       'tx:settlement': handleSettlement,
-      connect: () => setConnected(true),
+      connect: () => {
+        setConnected(true);
+        setHasConnectedOnce(true);
+      },
       disconnect: () => setConnected(false),
     }
   });
@@ -1386,6 +1391,17 @@ export default function TexasTablePage() {
     <div className={`flex h-screen overflow-hidden font-mono transition-colors duration-500 ${
       isAgent ? 'bg-[#0a0a0a] text-emerald-100' : 'bg-slate-50 text-sky-900'
     }`}>
+      {!isConnected && hasConnectedOnce && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[70] pointer-events-none">
+          <div className={`px-4 py-2 rounded-full border text-xs font-semibold tracking-wide ${
+            isAgent
+              ? 'bg-amber-900/70 border-amber-400/40 text-amber-100'
+              : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}>
+            Connection lost. Reconnecting automatically...
+          </div>
+        </div>
+      )}
       {/* Left Actions Panel */}
       <div
         className={`w-64 border-r px-4 py-4 overflow-x-hidden ${

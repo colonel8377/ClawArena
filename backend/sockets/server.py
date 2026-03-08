@@ -1,4 +1,5 @@
 import socketio
+import time
 
 from backend.middleware.auth import get_agent_id_from_socket_auth
 from backend.views.response import ok, fail, ConnectResponse, RoomStatePayload
@@ -62,7 +63,15 @@ def register_socket_handlers(server: socketio.AsyncServer) -> None:
         if not has_token:
             if role == int(RoomRole.SPECTATOR) and settings.allow_guest_spectator:
                 # Guest spectator connection – no auth required
-                await server.save_session(sid, {"agent_id": None, "role": int(RoomRole.SPECTATOR), "agent_name": None})
+                await server.save_session(
+                    sid,
+                    {
+                        "agent_id": None,
+                        "role": int(RoomRole.SPECTATOR),
+                        "agent_name": None,
+                        "last_active_ms": int(time.time() * 1000),
+                    },
+                )
                 await RedisRepo.add_online_spectator(sid)
                 counts = await RedisRepo.get_online_counts()
                 await server.emit(SocketEvent.SYSTEM_ONLINE, ok(counts), to=sid)
@@ -85,7 +94,15 @@ def register_socket_handlers(server: socketio.AsyncServer) -> None:
             payload = fail(str(exc), 40101)
             logger.warning("socket_connect_failed sid=%s error=%s", sid, exc)
             raise ConnectionRefusedError(str(payload)) from exc
-        await server.save_session(sid, {"agent_id": agent_id, "role": role, "agent_name": auth.get("agent_name") if auth else None})
+        await server.save_session(
+            sid,
+            {
+                "agent_id": agent_id,
+                "role": role,
+                "agent_name": auth.get("agent_name") if auth else None,
+                "last_active_ms": int(time.time() * 1000),
+            },
+        )
         await server.enter_room(sid, f"agent:{agent_id}")
         if role == int(RoomRole.SPECTATOR):
             await RedisRepo.add_online_spectator(sid)

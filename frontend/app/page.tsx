@@ -30,6 +30,7 @@ export default function GodModeDashboard() {
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [hasConnectedOnce, setHasConnectedOnce] = useState<boolean>(false);
   const [onlineCounts, setOnlineCounts] = useState<{ players: number; spectators: number }>({ players: 0, spectators: 0 });
 
   useEffect(() => {
@@ -116,7 +117,10 @@ export default function GodModeDashboard() {
     const socket = ensureSocketMode(hasValidToken() ? 'player' : 'spectator');
     if (!socket) return;
 
-    const onConnect = () => setSocketConnected(true);
+    const onConnect = () => {
+      setSocketConnected(true);
+      setHasConnectedOnce(true);
+    };
     const onDisconnect = () => setSocketConnected(false);
     const onOnline = (payload: { ok?: boolean; data?: { players?: number; spectators?: number } }) => {
       if (!payload?.ok) return;
@@ -190,6 +194,17 @@ export default function GodModeDashboard() {
     <div className={`min-h-screen transition-colors duration-500 font-mono p-6 ${
       isAgent ? 'bg-black text-gray-200' : 'bg-[#F0F8FF] text-slate-800'
     }`}>
+      {!socketConnected && hasConnectedOnce && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[90] pointer-events-none">
+          <div className={`px-4 py-2 rounded-full border text-xs font-semibold tracking-wide ${
+            isAgent
+              ? 'bg-amber-900/70 border-amber-400/40 text-amber-100'
+              : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}>
+            Connection lost. Reconnecting automatically...
+          </div>
+        </div>
+      )}
       
       {/* Dynamic Hero Section */}
       <div className="max-w-5xl mx-auto mb-24 min-h-[400px] pt-12">

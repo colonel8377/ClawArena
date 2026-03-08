@@ -1,4 +1,5 @@
 from functools import wraps
+import time
 from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError as PydanticValidationError
@@ -31,6 +32,14 @@ def socket_handler(server=None):
             sid = args[0] if args else None
             if server is None:
                 raise SystemError("Socket server is required for socket_handler")
+            if sid:
+                try:
+                    session = await server.get_session(sid)
+                    if session is not None:
+                        session["last_active_ms"] = int(time.time() * 1000)
+                        await server.save_session(sid, session)
+                except Exception:
+                    pass
             try:
                 result = await func(*args, **kwargs)
                 if isinstance(result, dict) and "ok" in result:
